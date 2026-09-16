@@ -1,6 +1,13 @@
-'use client';
-import {useState} from 'react';
-export default function NewRequest(){
- const [saved,setSaved]=useState(false);
- return <form className="max-w-xl space-y-4" onSubmit={e=>{e.preventDefault();setSaved(true)}}><h1 className="text-2xl font-bold">Create Request</h1>{['Project ID','Target URL','Anchor','Approved Site Domain','Placement Page','Shared With'].map(x=><input key={x} placeholder={x} className="w-full rounded border p-3" required={['Project ID','Target URL','Anchor','Approved Site Domain'].includes(x)}/>)}<button className="rounded bg-black px-5 py-3 text-white">Create</button>{saved&&<p>Request saved.</p>}</form>
+import RequestForm from '@/components/app/request-form';
+import { getProjects } from '@/services/projects';
+import { getAssignableUsers } from '@/services/users';
+
+export default async function NewRequest() {
+  const [projects, users] = await Promise.all([getProjects(), getAssignableUsers()]);
+  return (
+    <div>
+      <h1 className="mb-6 text-2xl font-bold text-slate-900">Create Request</h1>
+      <RequestForm projects={projects} users={users} />
+    </div>
+  );
 }
