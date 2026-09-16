@@ -1,14 +1,11 @@
 # Inhouse Request
 
-Deployment ready Next.js foundation.
+Tailwind CSS v4 + Next.js deployment fix.
 
-Run:
+Steps:
 
 npm install
 
-npm run dev
+npm run build
 
-Deploy:
-GitHub -> Vercel
-
-Configure Supabase environment variables before enabling backend features.
+Push to GitHub and redeploy on Vercel.
