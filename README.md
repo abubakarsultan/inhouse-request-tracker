@@ -1,22 +1,23 @@
-# Inhouse Request
+# Inhouse Request v3 Production Foundation
 
-Rankviz internal outreach management platform.
+Rankviz internal outreach management system.
 
-This is the complete frontend/backend foundation.
+Included modules:
+- Rankviz SaaS UI foundation
+- Sidebar navigation
+- Dashboard analytics foundation
+- Supabase architecture
+- Google OAuth ready
+- Projects CRUD foundation
+- Requests workflow
+- Tables and filters foundation
+- Guest Post Anchor sync layer
+- User roles foundation
+- Notifications foundation
+- Audit logs foundation
 
-Included:
-- Dashboard
-- Projects
-- Requests
-- Authentication structure
-- Supabase structure
-- Google Sheet sync structure
-- Import structure
-
-Install:
-
+Setup:
 npm install
-
-Run:
-
 npm run dev
+
+Add Supabase and Google OAuth credentials in .env.local

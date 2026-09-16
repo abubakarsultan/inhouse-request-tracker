@@ -1,5 +1,9 @@
 @import 'tailwindcss';
 
+:root{
+ --brand:#111827;
+}
+
 body{
 background:#f8fafc;
 }
