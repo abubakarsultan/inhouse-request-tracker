@@ -1,24 +1,22 @@
-# Inhouse Request Complete v1
+# Inhouse Request
 
-Rankviz internal outreach management system.
+Rankviz internal outreach management platform.
 
-Stack:
-- Next.js App Router
-- TypeScript
-- Tailwind CSS v4
-- Supabase
-- Google OAuth ready
-- Vercel ready
+This is the complete frontend/backend foundation.
 
-Modules:
-- Authentication
+Included:
 - Dashboard
 - Projects
 - Requests
-- Status Workflow
-- Guest Post Anchor Sync
-- Import System
+- Authentication structure
+- Supabase structure
+- Google Sheet sync structure
+- Import structure
+
+Install:
+
+npm install
 
 Run:
-npm install
+
 npm run dev
