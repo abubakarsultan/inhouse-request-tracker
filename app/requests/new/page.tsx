@@ -1,1 +1,6 @@
-export default function NewRequest(){return <><h1 className="text-3xl font-bold mb-6">Create Request</h1><form className="card grid gap-4">{['Project','Sub Project','Target URL','Anchor','Approved Site','Placement Page','Shared With','Priority','Assign To','Status','Deadline'].map(x=><input className="border p-3 rounded" placeholder={x} key={x}/>)}<button className="bg-blue-600 text-white p-3 rounded">Create</button></form></>}
+'use client';
+import {useState} from 'react';
+export default function NewRequest(){
+ const [saved,setSaved]=useState(false);
+ return <form className="max-w-xl space-y-4" onSubmit={e=>{e.preventDefault();setSaved(true)}}><h1 className="text-2xl font-bold">Create Request</h1>{['Project ID','Target URL','Anchor','Approved Site Domain','Placement Page','Shared With'].map(x=><input key={x} placeholder={x} className="w-full rounded border p-3" required={['Project ID','Target URL','Anchor','Approved Site Domain'].includes(x)}/>)}<button className="rounded bg-black px-5 py-3 text-white">Create</button>{saved&&<p>Request saved.</p>}</form>
+}
