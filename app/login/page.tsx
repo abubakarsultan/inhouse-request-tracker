@@ -1,6 +1,1 @@
-export default function Login(){
-return <main className="p-10">
-<h1 className="text-3xl font-bold">Continue with Google</h1>
-<p>Only @rankviz.com users allowed</p>
-</main>
-}
+export default function Login(){return <div className="max-w-md mx-auto mt-20 card text-center"><h1 className="text-2xl font-bold">Rankviz Login</h1><p className="my-4">Only @rankviz.com Google accounts are allowed.</p><button className="bg-blue-600 text-white px-5 py-3 rounded">Continue with Google</button></div>}

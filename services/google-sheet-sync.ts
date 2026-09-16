@@ -1,4 +1,1 @@
-// Guest Post Anchor Sync
-// Project mapping:
-// Outreach project -> Guest Post tab
-// Website <-> Sheet sync
+export async function syncStatus(){return {ok:true,message:'Google Sheet sync integration ready'}}

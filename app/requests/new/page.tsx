@@ -1,5 +1,1 @@
-export default function NewRequest(){
-return <main className="ml-64 p-10">
-<h1 className="text-3xl font-bold">Create Request</h1>
-</main>
-}
+export default function NewRequest(){return <><h1 className="text-3xl font-bold mb-6">Create Request</h1><form className="card grid gap-4">{['Project','Sub Project','Target URL','Anchor','Approved Site','Placement Page','Shared With','Priority','Assign To','Status','Deadline'].map(x=><input className="border p-3 rounded" placeholder={x} key={x}/>)}<button className="bg-blue-600 text-white p-3 rounded">Create</button></form></>}

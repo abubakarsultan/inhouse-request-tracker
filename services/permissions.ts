@@ -1,5 +1,2 @@
-export const roles={
-admin:['all'],
-member:['create','view'],
-viewer:['view']
-}
+export function canAccess(email:string){return email.endsWith('@rankviz.com')}
+export function canManage(role:string){return role==='admin'}

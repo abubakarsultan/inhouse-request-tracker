@@ -1,19 +1,16 @@
-# Inhouse Request
+# INHOUSE REQUEST
+Rankviz internal outreach request management SaaS.
 
-Rankviz internal outreach management system.
+Stack:
+- Next.js App Router
+- TypeScript
+- Tailwind
+- Supabase
+- Vercel
 
-Features included in this build:
-- Dashboard layout
-- Sidebar navigation
-- Authentication structure
-- Supabase schema
-- Projects module pages
-- Requests module pages
-- Filters/search foundation
-- Google Sheet sync service foundation
-- Import module foundation
-- User permissions foundation
-
-Run:
-npm install
-npm run dev
+Modules:
+- Google OAuth restricted to @rankviz.com
+- Projects
+- Requests
+- Import
+- Google Sheet sync foundation

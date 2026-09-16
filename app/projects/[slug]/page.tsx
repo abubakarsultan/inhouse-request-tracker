@@ -1,5 +1,1 @@
-export default function ProjectDetail(){
-return <main className="ml-64 p-10">
-<h1 className="text-3xl font-bold">Project Workspace</h1>
-</main>
-}
+export default function ProjectPage({params}:{params:{slug:string}}){return <div><h1 className="text-3xl font-bold">{params.slug}</h1><div className="card mt-5">Website | Opportunity | Anchor | DR | Traffic | Status | Note</div></div>}

@@ -1,10 +1,2 @@
-const cards=['Total Requests','Live Links','Pending','Projects'];
-
-export default function Dashboard(){
-return <main className="ml-64 p-10">
-<h1 className="text-3xl font-bold">Dashboard</h1>
-<div className="grid grid-cols-4 gap-5 mt-8">
-{cards.map(x=><div key={x} className="bg-white rounded-xl shadow p-6">{x}</div>)}
-</div>
-</main>
-}
+const cards=['Total Requests','Live Links','Pending Requests','Removed Links','Total Projects'];
+export default function Dashboard(){return <><h1 className="text-3xl font-bold mb-6">Dashboard</h1><div className="grid md:grid-cols-5 gap-4">{cards.map(c=><div className="card" key={c}><p className="text-sm text-slate-500">{c}</p><strong className="text-3xl">0</strong></div>)}</div></>}

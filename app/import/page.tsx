@@ -1,5 +1,1 @@
-export default function ImportPage(){
-return <main className="ml-64 p-10">
-<h1 className="text-3xl font-bold">Import CSV/XLSX</h1>
-</main>
-}
+export default function Import(){return <div><h1 className="text-3xl font-bold mb-6">Import</h1><div className="card">Upload CSV/XLSX. Required: Website, Opportunity, Anchor, DR, Traffic, Status, Note.</div></div>}
