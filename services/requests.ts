@@ -1,3 +1,1 @@
-// Request create/update/search/filter services
-export async function createRequest(){}
-export async function searchRequests(){}
+// Request CRUD, search and filters service

@@ -1,6 +1,4 @@
-// Guest Post Anchor sync
-// Uses project mapping:
-// Outreach project name -> Guest Post tab name
-// No automatic tab creation
-export async function syncToGuestPostSheet(){}
-export async function syncFromGuestPostSheet(){}
+// Guest Post Anchor Sync
+// Project mapping:
+// Outreach project -> Guest Post tab
+// Website <-> Sheet sync

@@ -1,19 +1,19 @@
-# Inhouse Request v4
+# Inhouse Request
 
 Rankviz internal outreach management system.
 
-Includes:
-- Fixed Next.js import paths
-- Supabase CRUD architecture
-- Google OAuth foundation
-- Projects CRUD services
-- Requests database services
-- Search/filter utilities
-- Guest Post Anchor sync service
-- Permission helpers
+Features included in this build:
+- Dashboard layout
+- Sidebar navigation
+- Authentication structure
+- Supabase schema
+- Projects module pages
+- Requests module pages
+- Filters/search foundation
+- Google Sheet sync service foundation
+- Import module foundation
+- User permissions foundation
 
-Setup:
+Run:
 npm install
-Create .env.local
-Run database/schema.sql in Supabase
 npm run dev

@@ -1,5 +1,5 @@
 export const roles={
-admin:['*'],
-member:['create_request','view_projects'],
+admin:['all'],
+member:['create','view'],
 viewer:['view']
 }
