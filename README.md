@@ -1,11 +1,24 @@
-# Inhouse Request
+# Inhouse Request Complete v1
 
-Tailwind CSS v4 + Next.js deployment fix.
+Rankviz internal outreach management system.
 
-Steps:
+Stack:
+- Next.js App Router
+- TypeScript
+- Tailwind CSS v4
+- Supabase
+- Google OAuth ready
+- Vercel ready
 
+Modules:
+- Authentication
+- Dashboard
+- Projects
+- Requests
+- Status Workflow
+- Guest Post Anchor Sync
+- Import System
+
+Run:
 npm install
-
-npm run build
-
-Push to GitHub and redeploy on Vercel.
+npm run dev

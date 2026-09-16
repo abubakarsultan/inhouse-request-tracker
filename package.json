@@ -10,7 +10,11 @@
   "dependencies": {
     "next": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "@supabase/ssr": "latest",
+    "@supabase/supabase-js": "latest",
+    "lucide-react": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "typescript": "latest",
@@ -19,7 +23,6 @@
     "@types/react-dom": "latest",
     "tailwindcss": "latest",
     "@tailwindcss/postcss": "latest",
-    "postcss": "latest",
-    "autoprefixer": "latest"
+    "postcss": "latest"
   }
 }
