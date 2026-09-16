@@ -1,13 +1,13 @@
 export default function Sidebar(){
 return (
-<aside className="fixed left-0 top-0 h-screen w-56 bg-black text-white p-5">
-<h2 className="font-bold text-xl mb-8">Inhouse Request</h2>
-<nav className="space-y-3">
-<div>Dashboard</div>
-<div>Projects</div>
-<div>Requests</div>
-<div>Import</div>
-<div>Settings</div>
+<aside className="fixed left-0 top-0 h-screen w-64 bg-black text-white p-6">
+<h2 className="font-bold text-xl">Inhouse Request</h2>
+<nav className="mt-8 space-y-4">
+<p>Dashboard</p>
+<p>Projects</p>
+<p>Requests</p>
+<p>Import</p>
+<p>Settings</p>
 </nav>
 </aside>
 )

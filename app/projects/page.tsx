@@ -1,8 +1,5 @@
 export default function Projects(){
-return <main className="p-10 ml-60">
-<h1 className="text-3xl font-bold">Projects</h1>
-<button className="mt-5 rounded bg-black text-white px-5 py-2">
-Add Project
-</button>
+return <main className="ml-64 p-10">
+<h1 className="text-3xl font-bold">Projects CRUD</h1>
 </main>
 }
