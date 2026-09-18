@@ -36,3 +36,14 @@ export const adminClient = new Proxy({} as SupabaseClient, {
 });
 
 export const isRankvizEmail = (email: string) => email.toLowerCase().endsWith('@rankviz.com');
+
+// Shared with app/api/auth/signup/route.ts so both the Google callback and
+// the email/password signup route agree on who gets the 'admin' role on
+// their first login.
+export const isAdminEmail = (email: string) => {
+  const adminEmails = (process.env.ADMIN_EMAILS ?? '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return adminEmails.includes(email.toLowerCase());
+};
