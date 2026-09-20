@@ -7,7 +7,7 @@ import type { AppRole } from '@/lib/auth-types';
 
 const memberLinks = [
   ['Dashboard', '/dashboard', LayoutDashboard],
-  ['Requests', '/requests', ListTodo],
+  ['My Requests', '/my-requests', ListTodo],
   ['Create Request', '/requests/new', PlusCircle],
   ['Site Check', '/site-check', ScanSearch],
   ['Profile', '/profile', UserRound],
@@ -16,7 +16,8 @@ const memberLinks = [
 const adminPrimaryLinks = [
   ['Dashboard', '/dashboard', LayoutDashboard],
   ['Projects', '/projects', FolderKanban],
-  ['Requests', '/requests', ListTodo],
+  ['All Requests', '/requests', ListTodo],
+  ['My Requests', '/my-requests', UserRound],
   ['Create Request', '/requests/new', PlusCircle],
   ['Search', '/search', Search],
   ['Site Check', '/site-check', ScanSearch],
@@ -31,12 +32,16 @@ const adminControlLinks = [
 
 type LinkTuple = readonly [string, string, LucideIcon];
 
+function signalNavigation() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('rankviz:navigation-start'));
+}
+
 export default function Sidebar({ role }: { role: AppRole }) {
   const pathname = usePathname();
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const renderLinks = (links: readonly LinkTuple[]) => links.map(([label, href, Icon]) => (
-    <Link key={href} href={href} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)] hover:bg-[var(--canvas)]'}`}>
-      <Icon size={17} />{label}
+    <Link onClick={signalNavigation} key={href} href={href} className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-150 active:scale-[0.98] ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)] hover:bg-[var(--canvas)] hover:text-[var(--text)]'}`}>
+      <Icon size={17} className="transition-transform duration-150 group-hover:scale-105" />{label}
     </Link>
   ));
   const mobileLinks = role === 'admin' ? [...adminPrimaryLinks, ...adminControlLinks] : memberLinks;
@@ -57,7 +62,7 @@ export default function Sidebar({ role }: { role: AppRole }) {
 
       <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto border-t border-[var(--border)] bg-[var(--card)] px-1 py-1 lg:hidden" aria-label="Mobile navigation">
         {mobileLinks.map(([label, href, Icon]) => (
-          <Link key={href} href={href} className={`flex min-w-[72px] flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)]'}`}>
+          <Link onClick={signalNavigation} key={href} href={href} className={`flex min-w-[76px] flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition active:scale-95 ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)]'}`}>
             <Icon size={17} /><span className="whitespace-nowrap">{label}</span>
           </Link>
         ))}

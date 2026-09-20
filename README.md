@@ -81,6 +81,27 @@ Sheet status edits support `Request shared`, `Live`, and `Rejected`. The Apps Sc
 
 The service account remains the technical Sheets API writer; column H stores the real signed-in employee email for business auditing.
 
+
+## UX + Performance Patch
+
+The current build also includes the focused My Requests / speed patch:
+
+- `My Requests` is visible in member and admin navigation; admin company-wide list is labeled `All Requests`.
+- My Requests supports quick status tabs, search, Project/Priority/Deadline/Source filters, sorting and 25/50/100-row pagination.
+- Internal navigation shows an immediate top progress bar, skeleton loaders and a short page transition.
+- Member Dashboard uses a compact summary query instead of loading the full request history.
+- My Requests loads only the requested page from Postgres.
+- Admin Dashboard and admin attention cards use aggregate database RPCs instead of full request scans in Next.js.
+- Protected navigation no longer writes/upserts the user profile on every page click.
+
+For an existing Final V2 production database, run only:
+
+```text
+database/migrations/006_my_requests_performance.sql
+```
+
+No new environment variables or Google/Apps Script setup is required for this patch.
+
 ## Environment variables
 
 ```env
@@ -97,13 +118,13 @@ No new environment variable is introduced by Final V2.
 
 ## Database upgrades
 
-For the user's current production installation, migrations 001–004 are already installed. Run only:
+For a production installation already running Final V2 / migration 005, run only:
 
 ```text
-database/migrations/005_final_workflow_upgrade.sql
+database/migrations/006_my_requests_performance.sql
 ```
 
-`005` is designed to be re-runnable. It adds Final V2 fields/functions, converts existing unlinked `project_sites` history to real requests, activates only the exact seven-person roster, normalizes `Abubakar Sultan`, adds `Rejected`, archive/edit audit support and the project-domain guard.
+`006` adds performance indexes plus member/admin summary and paginated My Requests RPCs. It does not rewrite business data. If 005 has not yet been installed, run 005 first and then 006.
 
 For a completely fresh database use current `database/schema.sql`.
 

@@ -42,3 +42,28 @@ html[data-theme='dark'] {
 * { box-sizing: border-box; }
 html, body { min-width: 0; overflow-x: hidden; }
 img, svg { max-width: 100%; }
+
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.page-enter {
+  animation: page-enter 160ms ease-out both;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--border) 20%, var(--card) 45%, var(--border) 70%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.15s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter, .skeleton { animation: none !important; }
+  * { scroll-behavior: auto !important; }
+}

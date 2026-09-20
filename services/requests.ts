@@ -546,39 +546,30 @@ export async function getDashboardOverview() {
   const month = karachiMonthBounds();
   const liveSince = karachiDateOffsetString(-6);
 
-  const [
-    { count: total },
-    { count: live },
-    { count: pending },
-    { count: rejected },
-    { count: failedSync },
-    { count: thisMonth },
-    recentResult,
-    becameLiveResult,
-    failedResult,
-    projectsResult,
-    requestStatuses,
-    refreshResult,
-  ] = await Promise.all([
-    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Live'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Request shared'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Rejected'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('sync_state', 'failed'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).gte('created_at', month.start).lt('created_at', month.end),
-    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').is('deleted_at', null).order('created_at', { ascending: false }).limit(8),
-    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').is('deleted_at', null).gte('live_date', liveSince).order('live_date', { ascending: false }).limit(50),
-    supabase.from('requests').select('id,approved_site,anchor,sync_error,updated_at,projects(name,slug)').is('deleted_at', null).eq('sync_state', 'failed').order('updated_at', { ascending: false }).limit(50),
-    supabase.from('projects').select('id,name,slug').order('name'),
-    loadAllRequestStatuses(supabase),
+  const [dashboardResult, refreshResult] = await Promise.all([
+    supabase.rpc('get_admin_dashboard', {
+      p_month_start: month.start,
+      p_month_end: month.end,
+      p_live_since: liveSince,
+    }),
     supabase.from('sync_logs').select('created_at,detail').eq('direction', 'from_sheet').eq('sheet_name', '__refresh__').order('created_at', { ascending: false }).limit(1).maybeSingle(),
   ]);
-
-  if (recentResult.error) throw recentResult.error;
-  if (becameLiveResult.error) throw becameLiveResult.error;
-  if (failedResult.error) throw failedResult.error;
-  if (projectsResult.error) throw projectsResult.error;
+  if (dashboardResult.error) throw dashboardResult.error;
   if (refreshResult.error) throw refreshResult.error;
+
+  const payload = (dashboardResult.data ?? {}) as any;
+  const stats = payload.stats ?? {};
+  const toActivity = (row: any): DashboardActivityRow => ({
+    id: String(row.id),
+    created_at: String(row.created_at),
+    approved_site: String(row.approved_site ?? ''),
+    assign_to: row.assign_to == null ? null : String(row.assign_to),
+    status: String(row.status ?? 'Request shared'),
+    live_date: row.live_date == null ? null : String(row.live_date),
+    sync_state: String(row.sync_state ?? 'skipped'),
+    sync_error: row.sync_error == null ? null : String(row.sync_error),
+    projects: row.project_name ? { name: String(row.project_name), slug: String(row.project_slug ?? '') } : null,
+  });
 
   let lastRefresh: { createdAt: string; updated: number; checked: number } | null = null;
   if (refreshResult.data?.created_at) {
@@ -591,33 +582,37 @@ export async function getDashboardOverview() {
     };
   }
 
-  const counts = new Map<string, { total: number; live: number; pending: number; rejected: number }>();
-  for (const row of requestStatuses) {
-    const item = counts.get(row.project_id) ?? { total: 0, live: 0, pending: 0, rejected: 0 };
-    item.total += 1;
-    if (row.status === 'Live') item.live += 1;
-    if (row.status === 'Request shared') item.pending += 1;
-    if (row.status === 'Rejected') item.rejected += 1;
-    counts.set(row.project_id, item);
-  }
+  const breakdown: ProjectBreakdownRow[] = Array.isArray(payload.breakdown) ? payload.breakdown.map((row: any) => ({
+    id: String(row.id),
+    name: String(row.name),
+    slug: String(row.slug),
+    total: Number(row.total ?? 0),
+    live: Number(row.live ?? 0),
+    pending: Number(row.pending ?? 0),
+    rejected: Number(row.rejected ?? 0),
+  })) : [];
 
-  const breakdown: ProjectBreakdownRow[] = (projectsResult.data ?? []).map((project: any) => {
-    const item = counts.get(String(project.id)) ?? { total: 0, live: 0, pending: 0, rejected: 0 };
-    return { id: String(project.id), name: String(project.name), slug: String(project.slug), ...item };
-  });
+  const failed = Array.isArray(payload.failed) ? payload.failed.map((row: any) => ({
+    id: String(row.id),
+    approved_site: String(row.approved_site ?? ''),
+    anchor: String(row.anchor ?? ''),
+    sync_error: row.sync_error == null ? null : String(row.sync_error),
+    updated_at: row.updated_at == null ? null : String(row.updated_at),
+    projects: row.project_name ? { name: String(row.project_name), slug: String(row.project_slug ?? '') } : null,
+  })) : [];
 
   return {
     stats: {
-      total: total ?? 0,
-      live: live ?? 0,
-      pending: pending ?? 0,
-      rejected: rejected ?? 0,
-      failedSync: failedSync ?? 0,
-      thisMonth: thisMonth ?? 0,
+      total: Number(stats.total ?? 0),
+      live: Number(stats.live ?? 0),
+      pending: Number(stats.pending ?? 0),
+      rejected: Number(stats.rejected ?? 0),
+      failedSync: Number(stats.failedSync ?? 0),
+      thisMonth: Number(stats.thisMonth ?? 0),
     },
-    recent: normalizeDashboardActivityRows(recentResult.data),
-    becameLive: normalizeDashboardActivityRows(becameLiveResult.data),
-    failed: failedResult.data ?? [],
+    recent: Array.isArray(payload.recent) ? payload.recent.map(toActivity) : [],
+    becameLive: Array.isArray(payload.becameLive) ? payload.becameLive.map(toActivity) : [],
+    failed,
     breakdown,
     liveSince,
     lastRefresh,

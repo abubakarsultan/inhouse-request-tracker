@@ -194,31 +194,13 @@ export type AdminTeamAttention = {
 
 export async function getAdminTeamAttention(): Promise<AdminTeamAttention> {
   await requireAdminForAction();
-  const [{ count: pendingApprovals, error: pendingError }, { count: activeMembers, error: activeError }, { data: roster, error: rosterError }] = await Promise.all([
-    adminClient.from('users').select('*', { count: 'exact', head: true }).eq('account_status', 'pending'),
-    adminClient.from('users').select('*', { count: 'exact', head: true }).eq('account_status', 'active'),
-    adminClient.from('team_names').select('name').eq('active', true),
-  ]);
-  if (pendingError) throw new Error(pendingError.message);
-  if (activeError) throw new Error(activeError.message);
-  if (rosterError) throw new Error(rosterError.message);
-
-  const allowed = new Set((roster ?? []).map((row: any) => String(row.name).trim().toLowerCase()));
-  const invalid = new Map<string, string>();
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await adminClient.from('requests').select('assign_to').is('deleted_at', null).not('assign_to', 'is', null).range(from, from + 999);
-    if (error) throw new Error(error.message);
-    for (const row of data ?? []) {
-      const label = String(row.assign_to ?? '').trim();
-      if (label && !allowed.has(label.toLowerCase())) invalid.set(label.toLowerCase(), label);
-    }
-    if ((data ?? []).length < 1000) break;
-  }
-
+  const { data, error } = await adminClient.rpc('get_admin_team_attention');
+  if (error) throw new Error(error.message);
+  const payload = (data ?? {}) as any;
   return {
-    pendingApprovals: pendingApprovals ?? 0,
-    activeMembers: activeMembers ?? 0,
-    invalidAssignments: invalid.size,
-    invalidLabels: [...invalid.values()].sort((a, b) => a.localeCompare(b)),
+    pendingApprovals: Number(payload.pendingApprovals ?? 0),
+    activeMembers: Number(payload.activeMembers ?? 0),
+    invalidAssignments: Number(payload.invalidAssignments ?? 0),
+    invalidLabels: Array.isArray(payload.invalidLabels) ? payload.invalidLabels.map((value: unknown) => String(value)) : [],
   };
 }

@@ -4,24 +4,15 @@ import { getProjects } from '@/services/projects';
 import StatusControl from '@/components/app/status-control';
 import StatusBadge from '@/components/status-badge';
 import RequestActions from '@/components/app/request-actions';
-import MemberWorkspaceView from '@/components/app/member-workspace-view';
-import { getMemberWorkspace } from '@/services/member-workspace';
 import { Plus } from 'lucide-react';
+import { redirect } from 'next/navigation';
 import DeadlineCell from '@/components/deadline-cell';
 import { karachiDateString } from '@/lib/date';
 import { requireActiveProfile } from '@/lib/auth';
 
 export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string }> }) {
   const profile = await requireActiveProfile();
-  if (profile.role !== 'admin') {
-    const data = await getMemberWorkspace();
-    return (
-      <div className="min-w-0">
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-bold text-[var(--text)]">My Requests</h1><p className="mt-1 text-sm text-[var(--muted)]">Your new requests and imported Guest Post Anchor history in one place.</p></div><Link href="/requests/new" className="flex items-center gap-1.5 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--brand-dark)]"><Plus size={16} /> New Request</Link></div>
-        <MemberWorkspaceView data={data} />
-      </div>
-    );
-  }
+  if (profile.role !== 'admin') redirect('/my-requests');
 
   const { status, project } = await searchParams;
   const today = karachiDateString();

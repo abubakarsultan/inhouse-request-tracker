@@ -6,7 +6,7 @@ import { formatKarachiDateTime } from '@/lib/date';
 import { Link2, Clock, AlertTriangle, LayoutGrid, CalendarDays, Activity, CheckCircle2, BarChart3, XCircle, ShieldCheck } from 'lucide-react';
 import RefreshLiveStatusButton from '@/components/app/refresh-live-status-button';
 import { requireActiveProfile } from '@/lib/auth';
-import { getMemberWorkspace } from '@/services/member-workspace';
+import { getMemberDashboardWorkspace } from '@/services/member-workspace';
 import MemberWorkspaceView from '@/components/app/member-workspace-view';
 import { getAdminTeamAttention } from '@/services/team';
 
@@ -22,7 +22,7 @@ const CARDS = [
 export default async function Dashboard() {
   const profile = await requireActiveProfile();
   if (profile.role !== 'admin') {
-    const memberData = await getMemberWorkspace();
+    const memberData = await getMemberDashboardWorkspace();
     return (
       <div>
         <div className="mb-6"><h1 className="text-2xl font-bold text-[var(--text)]">My Dashboard</h1><p className="mt-1 text-sm text-[var(--muted)]">Your assigned Guest Post Anchor work, deadlines, and project activity.</p></div>
