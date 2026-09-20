@@ -1,26 +1,17 @@
--- INHOUSE REQUEST — Rankviz internal outreach ops
--- Fresh-DB schema (matches database/migrations/*.sql applied in order).
--- Run this whole file once in the Supabase SQL editor (or `supabase db push`)
--- for a brand new project. For an existing DB, run the migrations instead.
+-- INHOUSE REQUEST - canonical schema after Phase 1.
+-- New installs can run this file directly. Existing installs should run
+-- database/migrations/001_phase1_core.sql.
 
 create extension if not exists "pgcrypto";
 
 do $$ begin
-  create type user_role as enum ('admin','member');
+  create type user_role as enum ('admin', 'member');
 exception when duplicate_object then null; end $$;
 
--- NOTE: request_status / request_priority enums are intentionally NOT
--- created here. Phase 1 replaced both with `text` + CHECK constraints
--- (see decisions in the master prompt, section 3) so status/priority
--- values can never get stuck behind a forward-only enum transition again.
-
--- ============================================================
--- USERS  — kept but UNUSED (no login in this app). Left in place only
--- so nothing that references the table name breaks; no FK from requests
--- points here any more (see 4.2 — assign_to is free text).
--- ============================================================
-create table if not exists users(
-  id uuid primary key default gen_random_uuid(),
+-- Legacy directory table retained for compatibility only. The Phase 1 app
+-- never reads/writes it and does not use Supabase Auth.
+create table if not exists users (
+  id uuid primary key references auth.users(id) on delete cascade,
   email text unique not null,
   name text,
   avatar text,
@@ -29,29 +20,21 @@ create table if not exists users(
   created_at timestamptz not null default now()
 );
 
--- ============================================================
--- PROJECTS  (replaces the old NAME_MAP — section 4.1)
--- ============================================================
-create table if not exists projects(
+create table if not exists projects (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   slug text unique not null,
   outreach_project_name text,
   guest_post_tab_name text,
-  google_sheet_id text,          -- unused now (TEAM_SHEET_ID env var is the single sheet); kept nullable
-  sync_enabled boolean not null default false,
+  google_sheet_id text,
+  sync_enabled boolean not null default true,
   active boolean not null default true,
   created_by uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index if not exists projects_active_idx on projects(active);
 
--- ============================================================
--- REQUESTS  (4.2) — DB is the source of truth; the team sheet is a mirror.
--- (Created before PROJECT_SITES because project_sites.request_id points here.)
--- ============================================================
-create table if not exists requests(
+create table if not exists requests (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references projects(id),
   sub_project text,
@@ -60,56 +43,41 @@ create table if not exists requests(
   approved_site text not null,
   placement_page text,
   shared_with text,
-  priority text not null default 'Medium' check (priority in ('High','Medium','Low')),
+  priority text not null default 'Medium' check (priority in ('High', 'Medium', 'Low')),
   assign_to text,
   deadline date,
-  status text not null default 'Request shared' check (status in ('Request shared','Live')),
-  initial_status text,
+  status text not null default 'Request shared' check (status in ('Request shared', 'Live')),
+  initial_status text not null default 'Request shared' check (initial_status in ('Request shared', 'Live')),
   live_date date,
   team_tab text,
-  team_row int,
-  sync_state text not null default 'skipped' check (sync_state in ('synced','skipped','failed')),
+  team_row integer,
+  sync_state text not null default 'skipped' check (sync_state in ('synced', 'skipped', 'failed')),
   sync_error text,
   status_changed_by text,
   status_changed_at timestamptz,
-  created_by uuid,
   created_by_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index if not exists requests_project_idx on requests(project_id);
-create index if not exists requests_status_idx on requests(status);
-create index if not exists requests_approved_site_lower_idx on requests (lower(approved_site));
-create index if not exists requests_assign_to_idx on requests(assign_to);
-create index if not exists requests_created_at_idx on requests(created_at);
 
--- ============================================================
--- PROJECT_SITES — the per-project opportunity/placement table (4.3),
--- mirrors each team-sheet tab (Website, Opportunity, Anchor, DR,
--- Traffic, Status, Note).
--- ============================================================
-create table if not exists project_sites(
+create table if not exists project_sites (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references projects(id) on delete cascade,
   request_id uuid references requests(id) on delete set null,
   website text not null,
   opportunity text,
   anchor text,
-  dr int,
+  dr integer,
   traffic bigint,
   status text default 'Request shared',
   note text,
-  sheet_row int,                 -- legacy, unused
-  team_row int,                  -- row in the team-sheet tab this mirrors
+  team_row integer,
   created_by uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index if not exists project_sites_project_idx on project_sites(project_id);
-create index if not exists project_sites_request_idx on project_sites(request_id);
 
--- Status history — changed_by is free text now (no login/users FK).
-create table if not exists request_logs(
+create table if not exists request_logs (
   id uuid primary key default gen_random_uuid(),
   request_id uuid references requests(id) on delete cascade,
   old_status text,
@@ -118,70 +86,114 @@ create table if not exists request_logs(
   created_at timestamptz not null default now()
 );
 
--- ============================================================
--- SYNC_LOGS — Google Sheet sync history (both directions)
--- ============================================================
-create table if not exists sync_logs(
+create table if not exists sync_logs (
   id uuid primary key default gen_random_uuid(),
   request_id uuid references requests(id) on delete set null,
   project_site_id uuid references project_sites(id) on delete set null,
-  direction text not null,        -- 'to_sheet' | 'from_sheet'
+  direction text not null,
   sheet_name text,
-  sheet_row int,
-  status text not null,           -- 'queued' | 'success' | 'skipped' | 'error'
+  sheet_row integer,
+  status text not null,
   detail text,
   created_at timestamptz not null default now()
 );
 
--- ============================================================
--- IMPORTS
--- ============================================================
-create table if not exists imports(
+create table if not exists imports (
   id uuid primary key default gen_random_uuid(),
   project_id uuid references projects(id),
   file_name text,
   uploaded_by uuid,
-  rows_imported int not null default 0,
+  rows_imported integer not null default 0,
   errors jsonb,
   created_at timestamptz not null default now()
 );
 
--- ============================================================
--- SHEET_WRITE_LOCKS — mutex so two simultaneous saves never pick the
--- same "lastRow + 2" in the same team-sheet tab (section 5).
--- ============================================================
-create table if not exists sheet_write_locks(
-  tab_name text primary key,
-  locked_at timestamptz not null default now()
+create table if not exists migration_audit (
+  migration_key text not null,
+  row_id uuid not null,
+  field_name text not null,
+  old_value text,
+  new_value text,
+  created_at timestamptz not null default now(),
+  primary key (migration_key, row_id, field_name)
 );
 
--- ============================================================
--- updated_at triggers
--- ============================================================
+create table if not exists sheet_write_locks (
+  lock_key text primary key,
+  owner_token uuid,
+  locked_until timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists projects_active_idx on projects(active);
+create index if not exists requests_approved_site_lower_idx on requests (lower(approved_site));
+create index if not exists requests_project_idx on requests(project_id);
+create index if not exists requests_status_idx on requests(status);
+create index if not exists requests_assign_to_idx on requests(assign_to);
+create index if not exists requests_created_at_idx on requests(created_at);
+create index if not exists project_sites_project_idx on project_sites(project_id);
+create index if not exists project_sites_request_idx on project_sites(request_id);
+
 create or replace function set_updated_at() returns trigger as $$
-begin new.updated_at = now(); return new; end;
+begin
+  new.updated_at = now();
+  return new;
+end;
 $$ language plpgsql;
 
 drop trigger if exists trg_projects_updated on projects;
 create trigger trg_projects_updated before update on projects
   for each row execute function set_updated_at();
-
 drop trigger if exists trg_requests_updated on requests;
 create trigger trg_requests_updated before update on requests
   for each row execute function set_updated_at();
-
 drop trigger if exists trg_project_sites_updated on project_sites;
 create trigger trg_project_sites_updated before update on project_sites
   for each row execute function set_updated_at();
 
--- ============================================================
--- ROW LEVEL SECURITY — left ENABLED with no policies for anon/authenticated,
--- which means: nobody using the anon key can read or write anything. The
--- app never uses the anon key (no login — see lib/session.ts); every DB
--- call goes through the server-side service-role client in
--- lib/supabase-admin.ts, which bypasses RLS entirely. This is defense in
--- depth in case NEXT_PUBLIC_SUPABASE_ANON_KEY is ever exposed to the browser.
--- ============================================================
+create or replace function try_acquire_sheet_write_lock(
+  p_lock_key text,
+  p_owner_token uuid,
+  p_ttl_seconds integer default 30
+) returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  acquired boolean := false;
+begin
+  insert into sheet_write_locks(lock_key, owner_token, locked_until, updated_at)
+  values (p_lock_key, p_owner_token, now() + make_interval(secs => greatest(p_ttl_seconds, 5)), now())
+  on conflict (lock_key) do update
+    set owner_token = excluded.owner_token,
+        locked_until = excluded.locked_until,
+        updated_at = now()
+    where sheet_write_locks.locked_until is null
+       or sheet_write_locks.locked_until < now()
+       or sheet_write_locks.owner_token = excluded.owner_token;
+
+  select owner_token = p_owner_token
+  into acquired
+  from sheet_write_locks
+  where lock_key = p_lock_key;
+  return coalesce(acquired, false);
+end;
+$$;
+
+create or replace function release_sheet_write_lock(
+  p_lock_key text,
+  p_owner_token uuid
+) returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update sheet_write_locks
+  set owner_token = null, locked_until = now(), updated_at = now()
+  where lock_key = p_lock_key and owner_token = p_owner_token;
+$$;
+
 alter table users enable row level security;
 alter table projects enable row level security;
 alter table project_sites enable row level security;
@@ -189,11 +201,9 @@ alter table requests enable row level security;
 alter table request_logs enable row level security;
 alter table sync_logs enable row level security;
 alter table imports enable row level security;
+alter table migration_audit enable row level security;
 alter table sheet_write_locks enable row level security;
 
--- ============================================================
--- SEED — the 19 projects from the sheet's NAME_MAP (section 4.1).
--- ============================================================
 insert into projects (name, slug, outreach_project_name, guest_post_tab_name, sync_enabled, active)
 values
   ('AIproductindex', 'aiproductindex', 'AIproductindex', 'Ai Product Index', true, true),
@@ -216,6 +226,25 @@ values
   ('Russiannamegenerator', 'russiannamegenerator', 'Russiannamegenerator', 'russiannamegenerator', true, true),
   ('Get Pro Links', 'get-pro-links', 'Get Pro Links', 'getprolinks', true, true)
 on conflict (slug) do update set
+  name = excluded.name,
   outreach_project_name = excluded.outreach_project_name,
   guest_post_tab_name = excluded.guest_post_tab_name,
-  sync_enabled = excluded.sync_enabled;
+  sync_enabled = excluded.sync_enabled,
+  updated_at = now();
+
+create or replace function find_request_duplicate(p_approved_site text, p_anchor text)
+returns table(request_id uuid, created_at timestamptz, project_name text)
+language sql
+stable
+set search_path = public
+as $$
+  select r.id, r.created_at, p.name
+  from requests r
+  join projects p on p.id = r.project_id
+  where regexp_replace(lower(coalesce(r.approved_site, '')), '[^a-z0-9]', '', 'g') =
+        regexp_replace(lower(coalesce(p_approved_site, '')), '[^a-z0-9]', '', 'g')
+    and regexp_replace(lower(coalesce(r.anchor, '')), '[^a-z0-9]', '', 'g') =
+        regexp_replace(lower(coalesce(p_anchor, '')), '[^a-z0-9]', '', 'g')
+  order by r.created_at asc
+  limit 1;
+$$;

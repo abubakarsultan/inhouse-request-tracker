@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { getRequests } from '@/services/requests';
 import { getProjects } from '@/services/projects';
 import StatusControl from '@/components/app/status-control';
-import { STATUS_OPTIONS } from '@/lib/validators';
+import StatusBadge from '@/components/status-badge';
 import { Plus } from 'lucide-react';
 
 export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string }> }) {
@@ -15,27 +15,30 @@ export default async function Requests({ searchParams }: { searchParams: Promise
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold text-slate-900">Requests</h1>
-        <Link href="/requests/new" className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
+        <div>
+          <h1 className="text-2xl font-bold text-[var(--text)]">Requests</h1>
+          <p className="mt-1 text-sm text-[var(--muted)]">Status changes here update the database, linked project row, audit log, and verified team-sheet row.</p>
+        </div>
+        <Link href="/requests/new" className="flex items-center gap-1.5 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--brand-dark)]">
           <Plus size={16} /> New Request
         </Link>
       </div>
 
       <form className="mb-5 flex flex-wrap gap-3">
-        <select name="project" defaultValue={project ?? ''} className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm">
+        <select name="project" defaultValue={project ?? ''} className="h-10 rounded-lg border border-[var(--border)] bg-white px-3 text-sm text-[var(--text)]">
           <option value="">All projects</option>
-          {projects.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {projects.map((item: any) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
-        <select name="status" defaultValue={status ?? ''} className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm">
+        <select name="status" defaultValue={status ?? ''} className="h-10 rounded-lg border border-[var(--border)] bg-white px-3 text-sm text-[var(--text)]">
           <option value="">All statuses</option>
-          {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+          {['Request shared', 'Live'].map((item) => <option key={item} value={item}>{item}</option>)}
         </select>
-        <button className="rounded-lg border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50">Filter</button>
+        <button className="rounded-lg border border-[var(--border)] bg-white px-4 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">Filter</button>
       </form>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
+      <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-white">
+        <table className="w-full min-w-[980px] text-sm">
+          <thead className="bg-[var(--canvas)] text-left text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
             <tr>
               <th className="p-4">Project</th>
               <th className="p-4">Approved Site</th>
@@ -43,32 +46,32 @@ export default async function Requests({ searchParams }: { searchParams: Promise
               <th className="p-4">Priority</th>
               <th className="p-4">Assign To</th>
               <th className="p-4">Deadline</th>
-              <th className="p-4">Sync</th>
               <th className="p-4">Status</th>
+              <th className="p-4">Sync</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r: any) => (
-              <tr key={r.id} className="border-t border-slate-100">
-                <td className="p-4 font-medium text-slate-800">
-                  {r.projects ? <Link href={`/projects/${r.projects.slug}`} className="hover:text-indigo-600">{r.projects.name}</Link> : '—'}
+            {rows.map((row: any) => (
+              <tr key={row.id} className="border-t border-[var(--border)]/70 align-top">
+                <td className="p-4 font-medium text-[var(--text)]">
+                  {row.projects ? <Link href={`/projects/${row.projects.slug}`} className="hover:text-[var(--brand)]">{row.projects.name}</Link> : '—'}
                 </td>
-                <td className="p-4 text-slate-500">{r.approved_site}</td>
-                <td className="p-4 text-slate-500">{r.anchor}</td>
-                <td className="p-4 text-slate-500">{r.priority}</td>
-                <td className="p-4 text-slate-500">{r.assign_to || 'Unassigned'}</td>
-                <td className="p-4 text-slate-500">{r.deadline ?? '—'}</td>
-                <td className="p-4 text-xs">
-                  {r.sync_state === 'synced' && <span className="text-emerald-600">Synced</span>}
-                  {r.sync_state === 'skipped' && <span className="text-slate-400">No tab</span>}
-                  {r.sync_state === 'failed' && <span className="text-red-600" title={r.sync_error}>Failed</span>}
+                <td className="p-4 text-[var(--muted)]">{row.approved_site}</td>
+                <td className="p-4 text-[var(--muted)]">{row.anchor}</td>
+                <td className="p-4 text-[var(--muted)]">{row.priority}</td>
+                <td className="p-4 text-[var(--muted)]">{row.assign_to || 'Unassigned'}</td>
+                <td className="p-4 text-[var(--muted)]">{row.deadline ?? '—'}</td>
+                <td className="p-4"><StatusControl id={row.id} status={row.status} syncState={row.sync_state} /></td>
+                <td className="p-4">
+                  {row.sync_state === 'failed' ? (
+                    <div><StatusBadge status={row.status} failedSync /><p className="mt-1 max-w-64 text-xs text-[#c5221f]">{row.sync_error || 'Sheet sync failed'}</p></div>
+                  ) : (
+                    <span className="text-xs text-[var(--muted)]">{row.sync_state === 'synced' ? `${row.team_tab || 'Team sheet'} · row ${row.team_row ?? '—'}` : 'Saved here only'}</span>
+                  )}
                 </td>
-                <td className="p-4"><StatusControl id={r.id} status={r.status} /></td>
               </tr>
             ))}
-            {rows.length === 0 && (
-              <tr><td colSpan={8} className="p-8 text-center text-slate-400">No requests match these filters.</td></tr>
-            )}
+            {rows.length === 0 && <tr><td colSpan={8} className="p-8 text-center text-[var(--muted)]">No requests match these filters.</td></tr>}
           </tbody>
         </table>
       </div>

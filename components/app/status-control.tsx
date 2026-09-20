@@ -1,61 +1,44 @@
 'use client';
+
 import { useState, useTransition } from 'react';
 import { setRequestStatus } from '@/services/requests';
-import { useWhoAmI } from '@/lib/use-who-am-i';
 import StatusBadge from '@/components/status-badge';
-import { Check, Undo2 } from 'lucide-react';
+import { getBrowserIdentityName } from '@/lib/identity';
 
-// The ONLY UI path for changing a request's status — every entry point
-// (requests table, search, My Requests, project page) calls
-// setRequestStatus (section 6.2). Mark Live / Revert, per the exact two
-// statuses the team sheet uses.
-export default function StatusControl({ id, status }: { id: string; status: string }) {
-  const { name } = useWhoAmI();
+export default function StatusControl({ id, status, syncState }: { id: string; status: string; syncState?: string | null }) {
   const [current, setCurrent] = useState(status);
+  const [currentSync, setCurrentSync] = useState(syncState ?? null);
   const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const next = current === 'Live' ? 'Request shared' : 'Live';
 
-  function change(next: 'Live' | 'Request shared') {
-    if (next === current) return;
-    setError(null);
+  function changeStatus() {
+    setMessage(null);
     startTransition(async () => {
       try {
-        const result = await setRequestStatus(id, next, name || undefined);
+        const result = await setRequestStatus(id, next, getBrowserIdentityName() || 'unknown');
         setCurrent(next);
-        setSaved(true);
-        if (!result.details.teamSheet.ok) {
-          setError(`Saved, but the team sheet update failed: ${result.details.teamSheet.reason ?? 'unknown error'}`);
-        }
-        setTimeout(() => setSaved(false), 1500);
-      } catch (e: any) {
-        setError(e.message);
+        setCurrentSync(result.teamSheet.state ?? currentSync);
+        setMessage(result.ok ? 'Saved ✓' : 'Saved with warnings');
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Could not save status');
       }
     });
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-48 flex-wrap items-center gap-2">
       <StatusBadge status={current} />
-      {current === 'Request shared' ? (
-        <button
-          onClick={() => change('Live')}
-          disabled={pending}
-          className="flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50"
-        >
-          {pending ? '…' : <><Check size={12} /> Mark Live</>}
-        </button>
-      ) : (
-        <button
-          onClick={() => change('Request shared')}
-          disabled={pending}
-          className="flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50"
-        >
-          {pending ? '…' : <><Undo2 size={12} /> Revert</>}
-        </button>
-      )}
-      {saved && !error && <span className="text-xs text-emerald-600">Saved ✓</span>}
-      {error && <span className="text-xs text-red-600">{error}</span>}
+      {currentSync === 'failed' && <StatusBadge status={current} failedSync />}
+      <button
+        type="button"
+        onClick={changeStatus}
+        disabled={pending}
+        className="rounded-md border border-[var(--border)] bg-white px-2 py-1 text-xs font-medium text-[var(--muted)] hover:bg-[var(--canvas)] disabled:opacity-50"
+      >
+        {pending ? 'Saving…' : current === 'Live' ? '↩ Revert' : '✓ Mark Live'}
+      </button>
+      {message && <span className={`text-xs ${message.startsWith('Saved') ? 'text-[var(--muted)]' : 'text-[#c5221f]'}`}>{message}</span>}
     </div>
   );
 }

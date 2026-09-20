@@ -1,12 +1,18 @@
 import RequestForm from '@/components/app/request-form';
-import { getProjects } from '@/services/projects';
+import { getActiveProjects } from '@/services/projects';
+import { getAutocompleteOptions } from '@/services/requests';
 
 export default async function NewRequest() {
-  const projects = await getProjects();
+  const [projects, autocomplete] = await Promise.all([getActiveProjects(), getAutocompleteOptions()]);
   return (
     <div>
-      <h1 className="mb-6 text-2xl font-bold text-slate-900">Create Request</h1>
-      <RequestForm projects={projects} />
+      <h1 className="mb-2 text-2xl font-bold text-[var(--text)]">Create Request</h1>
+      <p className="mb-6 text-sm text-[var(--muted)]">Save once here. Supabase stays authoritative and the team sheet is updated automatically when available.</p>
+      <RequestForm
+        projects={projects}
+        assignToSuggestions={autocomplete.assignTo}
+        sharedWithSuggestions={autocomplete.sharedWith}
+      />
     </div>
   );
 }

@@ -1,12 +1,12 @@
-import { Badge } from '@/components/ui/badge';
-
-// Section 6.9 — Live green, Request shared amber, Failed sync red.
-const TONES: Record<string, 'blue' | 'green' | 'red' | 'amber' | 'slate'> = {
-  'Request shared': 'amber',
-  Live: 'green',
-  'Failed sync': 'red',
-};
-
-export default function StatusBadge({ status }: { status: string }) {
-  return <Badge tone={TONES[status] ?? 'slate'}>{status}</Badge>;
+export default function StatusBadge({ status, failedSync = false }: { status: string; failedSync?: boolean }) {
+  if (failedSync) {
+    return <span className="inline-flex rounded-full bg-[#fce8e6] px-2.5 py-1 text-xs font-medium text-[#c5221f]">Failed sync</span>;
+  }
+  if (status === 'Live') {
+    return <span className="inline-flex rounded-full bg-[#e6f4ea] px-2.5 py-1 text-xs font-medium text-[#188038]">Live</span>;
+  }
+  if (status === 'Request shared') {
+    return <span className="inline-flex rounded-full bg-[#fef7e0] px-2.5 py-1 text-xs font-medium text-[#b06000]">Request shared</span>;
+  }
+  return <span className="inline-flex rounded-full bg-[#f1f3f4] px-2.5 py-1 text-xs font-medium text-[#5f6368]">{status || '—'}</span>;
 }

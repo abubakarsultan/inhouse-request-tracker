@@ -1,138 +1,93 @@
 # INHOUSE REQUEST
 
-Rankviz's internal outreach request management site — replaces the
-"Inhouse Request Tracker" (Google Sheet + Apps Script). The database is
-the source of truth; the team's **Guest Post Anchor** Google Sheet is a
-mirror kept in sync both ways.
+Phase 1 of the no-login Rankviz outreach request app. The database is the source of truth and the **Guest Post Anchor** Google Sheet is a server-side mirror.
 
-Stack: Next.js (App Router) · TypeScript · Tailwind · Supabase (Postgres) · Vercel
+## Phase 1 behavior
 
-> **No login.** Opening the site opens the dashboard directly. No sign-in
-> page, no session, no cookies. Every DB call runs server-side with the
-> Supabase service-role key — keep the site URL private.
+- No login, auth page, middleware redirect, or Supabase Auth flow.
+- All Supabase access is server-side with `SUPABASE_SERVICE_ROLE_KEY`.
+- Request statuses are exactly `Request shared` and `Live`; both directions are allowed.
+- Priorities are `High`, `Medium`, and `Low` with `Medium` as the default.
+- `Assign To` and `Shared With` are free text with autocomplete from previous request values.
+- The browser-only **Who are you?** picker supplies `created_by_name` and `status_changed_by`.
+- Creating a request writes the request to Supabase first, creates its linked `project_sites` row, then mirrors it to the mapped team-sheet tab.
+- A Sheet failure never rolls back or loses the database request.
+- New team-sheet rows are written to `lastRow + 2`, serialized with a Postgres lease lock.
+- Status writes verify both Website (column A) and Anchor (column C) before changing Status (column F). A stale stored row is searched and repaired instead of trusted blindly.
+- Missing mapped tabs are treated as `skipped`, not failed, and tabs are never auto-created.
 
-## 1. Supabase setup
+## Environment variables
 
-**New project:** open the SQL editor and run the entire contents of
-`database/schema.sql` once.
+Copy `.env.example` to `.env.local` and set exactly these values:
 
-**Existing project (upgrading from the pre-Phase-1 build):** run the
-files in `database/migrations/` **in order** instead — right now that's
-just `001_phase1.sql`. It is idempotent (safe to re-run) and:
-- drops the old 3-status enum + forward-only trigger, replaces `status`
-  with `text` + a 2-value CHECK (`Request shared` / `Live`)
-- drops the old 4-value priority enum, replaces with `text` + CHECK
-  (`High` / `Medium` / `Low`)
-- converts `requests.assigned_to` (uuid → users) into `requests.assign_to`
-  (free text), backfilling names from the old FK first
-- adds the sync-tracking columns (`team_tab`, `team_row`, `sync_state`,
-  `sync_error`, `live_date`, `initial_status`, `status_changed_by/at`,
-  `created_by_name`)
-- adds `sheet_write_locks` (mutex for concurrent sheet appends)
-- seeds/updates the 19 projects from the old `NAME_MAP`
-
-After running it, check `_migration_001_removed_status_rows` — it lists
-any request that used to be `Removed` and is now `Request shared` (see
-"Assumptions" below). Drop that table once you've reviewed it; it's not
-used by the app.
-
-## 2. Environment variables
-
-Copy `.env.example` to `.env.local` (or set in Vercel → Project →
-Settings → Environment Variables):
-
-- `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- `GOOGLE_SERVICE_ACCOUNT_JSON`, `TEAM_SHEET_ID`, `SHEET_WEBHOOK_SECRET` —
-  needed for the Google Sheet sync (see below). The app runs fine without
-  them: every request is still saved, `sync_state` is just `'skipped'` or
-  `'failed'` and it's all logged in `sync_logs`.
-
-## 3. Run it
-
+```env
+NEXT_PUBLIC_SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+GOOGLE_SERVICE_ACCOUNT_JSON=
+TEAM_SHEET_ID=
+SHEET_WEBHOOK_SECRET=
 ```
-npm install
+
+`GOOGLE_SERVICE_ACCOUNT_JSON` is the **base64-encoded complete Google service-account JSON**. Share `TEAM_SHEET_ID` with that service-account email as **Editor**.
+
+`SHEET_WEBHOOK_SECRET` is reserved for the sheet-to-site webhook. The webhook/trigger is completed in Phase 4; do not install the old simple `onEdit` snippet.
+
+## Database
+
+For an existing installation, run:
+
+```text
+database/migrations/001_phase1_core.sql
+```
+
+The migration is designed to be re-runnable. It:
+
+- removes the legacy forward-only status trigger;
+- maps `Request Shared` -> `Request shared`;
+- maps legacy `Removed` -> `Request shared` and records affected request IDs in `migration_audit`;
+- maps `Urgent` -> `High` and records affected request IDs in `migration_audit`;
+- changes status/priority to text + CHECK constraints;
+- converts assignment and audit identity fields to free text;
+- adds request/team-sheet sync metadata and `project_sites.request_id` / `team_row`;
+- creates the append lease lock RPCs;
+- seeds/repairs the 19 current project mappings.
+
+For a new database, `database/schema.sql` is the canonical Phase 1 schema.
+
+To inspect migrated legacy rows after running the migration:
+
+```sql
+select *
+from migration_audit
+where migration_key = '001_phase1_core'
+order by created_at, field_name, row_id;
+```
+
+## Local setup
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
 npm run dev
 ```
 
-Open http://localhost:3000 — it goes straight to the dashboard.
+Open `http://localhost:3000`. The app redirects straight to `/dashboard` and has no login.
 
-To verify a production build: `npx tsc --noEmit && npm run build`.
+## Phase 1 manual acceptance checks
 
-## 4. Google Sheet sync (two-way) — Phase 1 scope
+1. Pick a browser name from **Who are you?**.
+2. Create a request with a mapped project. Confirm `requests` and a linked `project_sites` row exist before checking the Sheet.
+3. Confirm Sheet columns are `Website | Opportunity | Anchor | DR | Traffic | Status | Note`, with the new row separated by one blank row.
+4. Create the same normalized Approved Site + Anchor again. Confirm the duplicate warning offers **Save anyway** and **Cancel**.
+5. Mark the request `Live`. Confirm DB, linked project site, Sheet column F, `request_logs`, and `live_date` update.
+6. Revert it to `Request shared`. Confirm `live_date` is preserved.
+7. Temporarily use invalid Google credentials. Create a request and confirm it remains in Supabase with `sync_state='failed'` and the UI offers **Retry sync**.
+8. Map a project to a nonexistent Sheet tab and confirm the request is saved with `sync_state='skipped'` and the saved-here-only message.
+9. Insert/sort rows in a mapped Sheet tab, then change status in the app. Confirm the row is found by Website + Anchor and `team_row` repairs itself before column F changes.
 
-**App → Sheet** (section 5 of the master prompt):
-1. Google Cloud Console → create a service account → generate a JSON key.
-2. Share the **Guest Post Anchor** spreadsheet with the service account's
-   `client_email` (Editor access).
-3. Base64-encode the key file (`base64 -i key.json | tr -d '\n'`) and set
-   it as `GOOGLE_SERVICE_ACCOUNT_JSON`. Set `TEAM_SHEET_ID` to the
-   spreadsheet's ID (from its URL) — **one sheet for every project now**,
-   there is no more per-project spreadsheet ID.
-4. On each project (Projects page → edit), fill in the exact tab name
-   (`guest_post_tab_name`) and toggle sync on. A project with sync off,
-   or whose tab doesn't exist in the sheet yet, is skipped — never an
-   error, never auto-created.
+## Deferred by the agreed phase plan
 
-New requests are appended at **lastRow + 2** in that tab (one blank row
-gap — intentional, matches the old sheet's behaviour), serialized through
-a DB-backed lock (`sheet_write_locks`) so two people saving at the same
-moment can't collide on the same row. Status changes re-verify that the
-stored row still matches (website + anchor) before writing column F, and
-search the tab to self-heal if it doesn't.
-
-**Sheet → App** (section 8) — the installable-trigger Apps Script and the
-`POST /api/sheet-webhook` receiver are the Phase 4 deliverable. The route
-already exists and expects `{ tab, row, website, anchor, status }` with
-header `x-sheet-webhook-secret`, but nothing calls it yet until the Apps
-Script trigger is added in Phase 4.
-
-## Modules delivered in Phase 1
-
-- **Create Request** (`/requests/new`) — the full write order from
-  section 6.1: insert `requests` → insert/link `project_sites` → push to
-  the team sheet → show the same three outcomes the old sheet did
-  (✅ synced / ⚪ no tab, saved here only / ❌ failed, retry later). The
-  duplicate rule (approved site + anchor, normalized, across all clients)
-  warns with **Save anyway** / **Cancel**.
-- **setRequestStatus`** (`services/requests.ts`) — the *only* place status
-  is ever written. `Mark Live` / `Revert` on the Requests list calls it;
-  it updates the request, the linked `project_sites` row, `request_logs`,
-  and the verified team-sheet cell, and is idempotent (same status twice
-  is a no-op that still returns ok).
-- **"Who are you?"** — a browser-localStorage name picker (not auth),
-  supplies `created_by_name` / `changed_by` and pre-fills Assign To /
-  Shared With autocomplete from previously used values.
-- **Dashboard** — Total / Live / Pending / Failed Sync / This Month, all
-  live counts in Asia/Karachi time; a Failed Sync count > 0 links to the
-  list of failing requests.
-- **Projects** — the 19 seeded projects; add/edit/disable still works.
-
-## Not yet built (later phases, per the master prompt's build plan)
-
-- Phase 2: inline "already used" hint while typing Approved Site, the
-  Site Check page, Search, Download Today CSV (Outreach OS format),
-  Import from team sheet.
-- Phase 3: full dashboard (recent activity, became-live-in-7-days,
-  per-project breakdown, Refresh button), Projects card grid, My
-  Requests, deadline/status visual polish.
-- Phase 4: the sheet webhook's Apps Script installable trigger, Retry
-  Sync button in the UI (the `retrySync` server action already exists),
-  Health Check page, Settings diagnostics page, CSV/XLSX importer status
-  vocabulary fix.
-
-## Assumptions made in Phase 1 (flagged per hard rule #9)
-
-- **`Removed` → `Request shared`.** The old 3-status enum had `Removed`;
-  the new spec only has two statuses. Any existing row that was `Removed`
-  is now `Request shared` (per the master prompt's explicit instruction).
-  The migration keeps a list of which rows this touched in
-  `_migration_001_removed_status_rows` for a one-time review.
-- **`Urgent` priority → `High`.** The spec removes `Urgent` but doesn't
-  say what existing `Urgent` rows should become; `High` is the closest
-  equivalent. Flagging this in case a different mapping is wanted.
-- **`assigned_to` (uuid → users) dropped in favor of `assign_to` (text)**,
-  backfilled once from the user's name/email before the column is
-  dropped, per the "no login, no users table dependency" decision.
-- **CSV/XLSX importer (`services/sites.ts`) still writes whatever status
-  string is in the file** (e.g. `Pending`) rather than the two-status
-  vocabulary — that fix is explicitly Phase 4, section 7.3.
+Phase 2: inline site hint, Site Check, Search, Outreach OS CSV, import from team sheet.  
+Phase 3: complete dashboard, project card grid/counts, My Requests, deadline visuals.  
+Phase 4: webhook + installable Apps Script trigger, refresh/retry tooling, health check, diagnostics, and importer sheet-push update.

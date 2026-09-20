@@ -1,10 +1,25 @@
 @import 'tailwindcss';
 
-body {
-  font-family: Inter, ui-sans-serif, system-ui, Arial, sans-serif;
-  color: #0f172a;
+:root {
+  --brand: #1a73e8;
+  --brand-dark: #174ea6;
+  --brand-soft: #e8f0fe;
+  --canvas: #f1f3f4;
+  --card: #ffffff;
+  --border: #dadce0;
+  --text: #202124;
+  --muted: #5f6368;
+  --green: #188038;
+  --amber: #b06000;
+  --red: #c5221f;
 }
 
-::selection {
-  background: #e0e7ff;
+html { background: var(--canvas); }
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, Arial, sans-serif;
+  color: var(--text);
+  background: var(--canvas);
 }
+
+::selection { background: var(--brand-soft); }

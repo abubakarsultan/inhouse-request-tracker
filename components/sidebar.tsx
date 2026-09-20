@@ -1,4 +1,5 @@
 'use client';
+
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings } from 'lucide-react';
@@ -13,30 +14,32 @@ const links = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+
   return (
-    <aside className="fixed left-0 top-0 hidden h-screen w-64 border-r border-slate-200 bg-white p-5 lg:block">
-      <div className="mb-8 flex items-center gap-2 px-2">
-        <div className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-600 text-sm font-bold text-white">R</div>
-        <div>
-          <p className="text-sm font-bold leading-tight text-slate-900">INHOUSE REQUEST</p>
-          <p className="text-[11px] leading-tight text-slate-400">Rankviz</p>
+    <>
+      <aside className="fixed left-0 top-0 z-30 hidden h-screen w-64 border-r border-[var(--border)] bg-white p-5 lg:block">
+        <div className="mb-8 flex items-center gap-2 px-2">
+          <div className="grid h-8 w-8 place-items-center rounded-lg bg-[var(--brand)] text-sm font-bold text-white">R</div>
+          <div>
+            <p className="text-sm font-bold leading-tight text-[var(--text)]">INHOUSE REQUEST</p>
+            <p className="text-[11px] leading-tight text-[var(--muted)]">Rankviz</p>
+          </div>
         </div>
-      </div>
-      {links.map(([label, href, Icon]) => {
-        const active = pathname === href || pathname.startsWith(href + '/');
-        return (
-          <Link
-            key={href}
-            href={href}
-            className={`mb-1 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
-              active ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            <Icon size={17} />
-            {label}
+        {links.map(([label, href, Icon]) => (
+          <Link key={href} href={href} className={`mb-1 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)] hover:bg-[var(--canvas)]'}`}>
+            <Icon size={17} />{label}
           </Link>
-        );
-      })}
-    </aside>
+        ))}
+      </aside>
+
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-[var(--border)] bg-white px-1 py-1 lg:hidden" aria-label="Mobile navigation">
+        {links.map(([label, href, Icon]) => (
+          <Link key={href} href={href} className={`flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)]'}`}>
+            <Icon size={17} /><span className="truncate">{label}</span>
+          </Link>
+        ))}
+      </nav>
+    </>
   );
 }
