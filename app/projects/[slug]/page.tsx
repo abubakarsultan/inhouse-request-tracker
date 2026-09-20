@@ -9,6 +9,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
   const { slug } = await params;
   const project = await getProjectBySlug(slug);
   const sites = await getProjectSites(project.id);
+  const liveCount = sites.filter((site: any) => site.status === 'Live').length;
+  const pendingCount = sites.filter((site: any) => site.status === 'Request shared').length;
 
   return (
     <div>
@@ -23,6 +25,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
             <UploadCloud size={15} /> Import sites
           </Link>
         </div>
+      </div>
+
+      <div className="mb-5 grid gap-3 sm:grid-cols-3">
+        <div className="rounded-xl border border-[var(--border)] bg-white p-4"><p className="text-2xl font-bold">{sites.length}</p><p className="text-xs text-[var(--muted)]">Project rows</p></div>
+        <div className="rounded-xl border border-[#c9e7d0] bg-[#e6f4ea] p-4"><p className="text-2xl font-bold text-[#188038]">{liveCount}</p><p className="text-xs text-[#188038]">Live</p></div>
+        <div className="rounded-xl border border-[#f3dfad] bg-[#fef7e0] p-4"><p className="text-2xl font-bold text-[#b06000]">{pendingCount}</p><p className="text-xs text-[#b06000]">Request shared</p></div>
       </div>
 
       <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-white">

@@ -5,7 +5,7 @@ import { setRequestStatus } from '@/services/requests';
 import StatusBadge from '@/components/status-badge';
 import { getBrowserIdentityName } from '@/lib/identity';
 
-export default function StatusControl({ id, status, syncState }: { id: string; status: string; syncState?: string | null }) {
+export default function StatusControl({ id, status, syncState, onChanged }: { id: string; status: string; syncState?: string | null; onChanged?: (status: string) => void }) {
   const [current, setCurrent] = useState(status);
   const [currentSync, setCurrentSync] = useState(syncState ?? null);
   const [pending, startTransition] = useTransition();
@@ -20,6 +20,7 @@ export default function StatusControl({ id, status, syncState }: { id: string; s
         setCurrent(next);
         setCurrentSync(result.teamSheet.state ?? currentSync);
         setMessage(result.ok ? 'Saved ✓' : 'Saved with warnings');
+        onChanged?.(next);
       } catch (error) {
         setMessage(error instanceof Error ? error.message : 'Could not save status');
       }

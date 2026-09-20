@@ -2,7 +2,7 @@
 
 import { createClient } from '@/lib/supabase-server';
 import { requestSchema, isRequestStatus, looksLikeHttpUrl, type RequestInput } from '@/lib/validators';
-import { karachiDateString, karachiMonthBounds } from '@/lib/date';
+import { karachiDateString, karachiDateOffsetString, karachiMonthBounds } from '@/lib/date';
 import { appendRequestToTeamSheet, syncRequestStatusToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { revalidatePath } from 'next/cache';
 
@@ -329,6 +329,154 @@ export async function setRequestStatus(
   return { ok: database.ok && projectSite.ok && teamSheet.ok, database, projectSite, teamSheet };
 }
 
+
+export type DashboardActivityRow = {
+  id: string;
+  created_at: string;
+  approved_site: string;
+  assign_to: string | null;
+  status: string;
+  live_date: string | null;
+  sync_state: string;
+  sync_error: string | null;
+  projects: { name: string; slug: string } | null;
+};
+
+export type ProjectBreakdownRow = {
+  id: string;
+  name: string;
+  slug: string;
+  total: number;
+  live: number;
+  pending: number;
+};
+
+async function loadAllRequestStatuses(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const rows: Array<{ project_id: string; status: string }> = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from('requests').select('project_id,status').range(from, from + 999);
+    if (error) throw error;
+    rows.push(...((data ?? []) as Array<{ project_id: string; status: string }>));
+    if ((data ?? []).length < 1000) break;
+  }
+  return rows;
+}
+
+export async function getDashboardOverview() {
+  const supabase = await createClient();
+  const month = karachiMonthBounds();
+  const liveSince = karachiDateOffsetString(-6);
+
+  const [
+    { count: total },
+    { count: live },
+    { count: pending },
+    { count: failedSync },
+    { count: thisMonth },
+    recentResult,
+    becameLiveResult,
+    failedResult,
+    projectsResult,
+    requestStatuses,
+  ] = await Promise.all([
+    supabase.from('requests').select('*', { count: 'exact', head: true }),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('status', 'Live'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('status', 'Request shared'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('sync_state', 'failed'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).gte('created_at', month.start).lt('created_at', month.end),
+    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').order('created_at', { ascending: false }).limit(8),
+    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').gte('live_date', liveSince).order('live_date', { ascending: false }).limit(50),
+    supabase.from('requests').select('id,approved_site,anchor,sync_error,updated_at,projects(name,slug)').eq('sync_state', 'failed').order('updated_at', { ascending: false }).limit(50),
+    supabase.from('projects').select('id,name,slug').order('name'),
+    loadAllRequestStatuses(supabase),
+  ]);
+
+  if (recentResult.error) throw recentResult.error;
+  if (becameLiveResult.error) throw becameLiveResult.error;
+  if (failedResult.error) throw failedResult.error;
+  if (projectsResult.error) throw projectsResult.error;
+
+  const counts = new Map<string, { total: number; live: number; pending: number }>();
+  for (const row of requestStatuses) {
+    const item = counts.get(row.project_id) ?? { total: 0, live: 0, pending: 0 };
+    item.total += 1;
+    if (row.status === 'Live') item.live += 1;
+    if (row.status === 'Request shared') item.pending += 1;
+    counts.set(row.project_id, item);
+  }
+
+  const breakdown: ProjectBreakdownRow[] = (projectsResult.data ?? []).map((project: any) => {
+    const item = counts.get(String(project.id)) ?? { total: 0, live: 0, pending: 0 };
+    return { id: String(project.id), name: String(project.name), slug: String(project.slug), ...item };
+  });
+
+  return {
+    stats: {
+      total: total ?? 0,
+      live: live ?? 0,
+      pending: pending ?? 0,
+      failedSync: failedSync ?? 0,
+      thisMonth: thisMonth ?? 0,
+    },
+    recent: (recentResult.data ?? []) as DashboardActivityRow[],
+    becameLive: (becameLiveResult.data ?? []) as DashboardActivityRow[],
+    failed: failedResult.data ?? [],
+    breakdown,
+    liveSince,
+  };
+}
+
+export type MyRequestsResult = {
+  name: string;
+  today: string;
+  kpis: { assigned: number; live: number; pending: number; overdue: number };
+  upcoming: any[];
+  requests: any[];
+};
+
+function escapeLikePattern(value: string) {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+export async function getMyRequests(name: string): Promise<MyRequestsResult> {
+  const clean = name.trim();
+  const today = karachiDateString();
+  if (!clean) {
+    return { name: '', today, kpis: { assigned: 0, live: 0, pending: 0, overdue: 0 }, upcoming: [], requests: [] };
+  }
+
+  const supabase = await createClient();
+  const rows: any[] = [];
+  const pattern = escapeLikePattern(clean);
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from('requests')
+      .select('id,project_id,sub_project,approved_site,anchor,priority,assign_to,deadline,status,sync_state,sync_error,created_at,projects(name,slug)')
+      .ilike('assign_to', pattern)
+      .order('created_at', { ascending: false })
+      .range(from, from + 999);
+    if (error) throw error;
+    rows.push(...(data ?? []));
+    if ((data ?? []).length < 1000) break;
+  }
+
+  const live = rows.filter((row) => row.status === 'Live').length;
+  const pending = rows.filter((row) => row.status === 'Request shared').length;
+  const overdue = rows.filter((row) => row.status !== 'Live' && row.deadline && String(row.deadline).slice(0, 10) < today).length;
+  const upcomingEnd = karachiDateOffsetString(6);
+  const upcoming = rows
+    .filter((row) => row.status !== 'Live' && row.deadline && String(row.deadline).slice(0, 10) >= today && String(row.deadline).slice(0, 10) <= upcomingEnd)
+    .sort((a, b) => String(a.deadline).localeCompare(String(b.deadline)));
+
+  return {
+    name: clean,
+    today,
+    kpis: { assigned: rows.length, live, pending, overdue },
+    upcoming,
+    requests: rows,
+  };
+}
+
 export async function getDashboardStats() {
   const supabase = await createClient();
   const month = karachiMonthBounds();
@@ -353,5 +501,6 @@ function revalidatePhase1Paths(projectSlug?: string | null) {
   revalidatePath('/requests/new');
   revalidatePath('/dashboard');
   revalidatePath('/projects');
+  revalidatePath('/my-requests');
   if (projectSlug) revalidatePath(`/projects/${projectSlug}`);
 }

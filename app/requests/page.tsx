@@ -4,9 +4,12 @@ import { getProjects } from '@/services/projects';
 import StatusControl from '@/components/app/status-control';
 import StatusBadge from '@/components/status-badge';
 import { Plus } from 'lucide-react';
+import DeadlineCell from '@/components/deadline-cell';
+import { karachiDateString } from '@/lib/date';
 
 export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string }> }) {
   const { status, project } = await searchParams;
+  const today = karachiDateString();
   const [rows, projects] = await Promise.all([
     getRequests({ status, project_id: project }),
     getProjects(),
@@ -60,7 +63,7 @@ export default async function Requests({ searchParams }: { searchParams: Promise
                 <td className="p-4 text-[var(--muted)]">{row.anchor}</td>
                 <td className="p-4 text-[var(--muted)]">{row.priority}</td>
                 <td className="p-4 text-[var(--muted)]">{row.assign_to || 'Unassigned'}</td>
-                <td className="p-4 text-[var(--muted)]">{row.deadline ?? '—'}</td>
+                <td className="p-4"><DeadlineCell deadline={row.deadline} status={row.status} today={today} /></td>
                 <td className="p-4"><StatusControl id={row.id} status={row.status} syncState={row.sync_state} /></td>
                 <td className="p-4">
                   {row.sync_state === 'failed' ? (

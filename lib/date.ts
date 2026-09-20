@@ -11,6 +11,13 @@ export function karachiDateString(date = new Date()) {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+export function karachiDateOffsetString(days: number, date = new Date()) {
+  const today = karachiDateString(date);
+  const shifted = new Date(`${today}T00:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
 export function karachiMonthBounds(date = new Date()) {
   const today = karachiDateString(date);
   const [year, month] = today.split('-').map(Number);
@@ -21,4 +28,39 @@ export function karachiMonthBounds(date = new Date()) {
     start: `${year}-${pad(month)}-01T00:00:00+05:00`,
     end: `${nextYear}-${pad(nextMonth)}-01T00:00:00+05:00`,
   };
+}
+
+export function formatKarachiDateTime(value: string | Date | null | undefined) {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: KARACHI_TIME_ZONE,
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+export type DeadlineTone = 'overdue' | 'soon' | 'normal';
+
+export function deadlineTone(deadline: string | null | undefined, status: string, today = karachiDateString()): DeadlineTone {
+  if (!deadline || status === 'Live') return 'normal';
+  const clean = String(deadline).slice(0, 10);
+  if (clean < today) return 'overdue';
+  const soonEnd = (() => {
+    const shifted = new Date(`${today}T00:00:00Z`);
+    shifted.setUTCDate(shifted.getUTCDate() + 2);
+    return shifted.toISOString().slice(0, 10);
+  })();
+  return clean <= soonEnd ? 'soon' : 'normal';
+}
+
+export function deadlineCellClass(deadline: string | null | undefined, status: string, today = karachiDateString()) {
+  const tone = deadlineTone(deadline, status, today);
+  if (tone === 'overdue') return 'bg-[#f4c7c3] text-[#8a1c16]';
+  if (tone === 'soon') return 'bg-[#fff2cc] text-[#7a5400]';
+  return 'text-[var(--muted)]';
 }

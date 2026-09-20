@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch, UserRoundCheck } from 'lucide-react';
 
 const links = [
   ['Dashboard', '/dashboard', LayoutDashboard],
   ['Projects', '/projects', FolderKanban],
   ['Requests', '/requests', ListTodo],
+  ['My Requests', '/my-requests', UserRoundCheck],
   ['Search', '/search', Search],
   ['Site Check', '/site-check', ScanSearch],
   ['Import', '/import', Upload],

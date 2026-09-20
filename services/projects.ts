@@ -15,6 +15,33 @@ export async function getProjects(search?: string, activeOnly = false) {
   return data;
 }
 
+
+export async function getProjectsWithCounts(search?: string) {
+  const supabase = await createClient();
+  const projects = await getProjects(search);
+  const rows: Array<{ project_id: string; status: string }> = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from('requests').select('project_id,status').range(from, from + 999);
+    if (error) throw error;
+    rows.push(...((data ?? []) as Array<{ project_id: string; status: string }>));
+    if ((data ?? []).length < 1000) break;
+  }
+
+  const counts = new Map<string, { requests: number; live: number; pending: number }>();
+  for (const row of rows) {
+    const item = counts.get(row.project_id) ?? { requests: 0, live: 0, pending: 0 };
+    item.requests += 1;
+    if (row.status === 'Live') item.live += 1;
+    if (row.status === 'Request shared') item.pending += 1;
+    counts.set(row.project_id, item);
+  }
+
+  return projects.map((project: any) => ({
+    ...project,
+    counts: counts.get(String(project.id)) ?? { requests: 0, live: 0, pending: 0 },
+  }));
+}
+
 export async function getActiveProjects() {
   return getProjects(undefined, true);
 }

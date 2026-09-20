@@ -1,6 +1,6 @@
 # INHOUSE REQUEST
 
-Phase 2 of the no-login Rankviz outreach request app. Supabase is the source of truth and the **Guest Post Anchor** Google Sheet remains a server-side mirror.
+Phase 3 of the no-login Rankviz outreach request app. Supabase is the source of truth and the **Guest Post Anchor** Google Sheet remains a server-side mirror.
 
 ## Current behavior
 
@@ -25,6 +25,15 @@ Phase 2 of the no-login Rankviz outreach request app. Supabase is the source of 
 - **Import from team sheet** reads mapped project tabs A2:G and creates missing `project_sites` rows only. It never creates `requests` rows and is safe to run repeatedly.
 - **Download Today CSV** exports the selected Asia/Karachi date in the exact 9-column Outreach OS bulk-add format with UTF-8 BOM and CRLF records.
 
+### Phase 3 views
+
+- **Dashboard** now includes Total Requests, Live Links, Pending, Failed Sync, and This Month KPIs; failed-sync drill-down with Retry; the latest 8 requests; links that first became Live in the last 7 Karachi calendar days; and a per-project status breakdown.
+- **Projects** is a responsive card grid (3 per row on desktop) with Requests / Live / Pending database counts plus add/edit/disable controls. Project detail keeps the `project_sites` table and canonical linked-request status control.
+- **My Requests** uses the browser-only name picker and shows Assigned / Live / Pending / Overdue KPIs, upcoming deadlines for the next 7 Karachi calendar days, and the full assigned request list with Live/Revert controls.
+- Deadline visuals now use red `#f4c7c3` for overdue non-Live work and yellow `#fff2cc` for non-Live work due within 2 days.
+- Shared loading and error states were added for route transitions/server view failures.
+- The Dashboard visibly reserves **Refresh live status**, but the button is intentionally disabled until the Phase 4 sheet-to-site reconciliation implementation.
+
 ## Environment variables
 
 Copy `.env.example` to `.env.local` and set:
@@ -37,7 +46,7 @@ TEAM_SHEET_ID=
 SHEET_WEBHOOK_SECRET=
 ```
 
-No new environment variables were added in Phase 2.
+No new environment variables were added in Phase 3.
 
 `GOOGLE_SERVICE_ACCOUNT_JSON` is the base64-encoded complete Google service-account JSON. Share `TEAM_SHEET_ID` with that service-account email as **Editor**.
 
@@ -54,33 +63,31 @@ database/migrations/002_phase2_search.sql
 
 `002_phase2_search.sql` is re-runnable and adds the normalized server-side request-search RPC used by `/search`.
 
-For a fresh installation, `database/schema.sql` contains the current Phase 2 schema and helper functions.
+Phase 3 makes no database schema changes. For a fresh installation, `database/schema.sql` remains the current schema and helper functions from Phase 2.
 
 ## Local setup
 
 ```bash
 npm ci
 npx tsc --noEmit
-npm run test:phase2
+npm run test:phase3
 npm run build
 npm run dev
 ```
 
 Open `http://localhost:3000`. The app opens without login.
 
-## Phase 2 manual acceptance checks
+## Phase 3 manual acceptance checks
 
-1. Open **New Request**, type an Approved Site, and confirm the green/amber site-usage hint appears after the debounce.
-2. Check `https://www.example.com/path?q=1` and `example.com` in **Site Check** and confirm they are treated as the same host. Confirm `example.co` is not treated as `example.com`.
-3. If the same site has multiple rows in one project, confirm every matching row appears under **USED IN**.
-4. Search a client, site, anchor, assignee, status, or target URL. Confirm 2-character minimum, match highlighting, and `100+` capped messaging.
-5. Change status from a Search result and confirm the result card updates in place and the normal Phase 1 DB/project-site/Sheet/log flow is used.
-6. Run **Import from team sheet** twice. The second run should add 0 already-existing tuples and report them as skipped.
-7. Confirm blank gap rows in the team sheet are ignored and imported rows keep their actual Sheet row number in `team_row`.
-8. Download the CSV for a date with requests and confirm filename `requests_YYYY-MM-DD.csv` and exact columns: `Client, Sub-Project, Target URL, Anchor, Approved Site (Domain), Placement Page, Priority, Assign To, Deadline`.
-9. Pick a date with no requests and confirm the UI shows a friendly message instead of downloading an empty file.
+1. Open **Dashboard** and confirm the five KPI cards, latest 8 activity rows, last-7-days Live section, and per-project status table.
+2. If any request has `sync_state = failed`, click the Failed Sync card and retry one item; confirm the DB record remains intact even if Sheets is unavailable.
+3. Open **Projects** and confirm a 3-column desktop card grid with Requests / Live / Pending counts. Add/edit/disable still works.
+4. Open a project and confirm the Website / Opportunity / Anchor / DR / Traffic / Status / Note table remains intact and linked rows use the canonical status control.
+5. Open **My Requests**, choose a prior `Assign To` value, and confirm Assigned / Live / Pending / Overdue plus upcoming next-7-days and the full list.
+6. Mark an item Live or revert it inside My Requests and confirm the list/KPIs reload.
+7. Confirm an overdue non-Live deadline is red, a non-Live deadline due today/within 2 days is yellow, and Live rows do not show urgency background.
+8. Confirm the Dashboard Refresh live status control is visibly deferred rather than pretending to reconcile the Sheet; Phase 4 wires it.
 
 ## Deferred by the agreed phase plan
 
-Phase 3: full dashboard, project card grid/counts, My Requests, and deadline/status visuals.  
 Phase 4: webhook + installable Apps Script trigger, refresh/retry repair tooling, health check, diagnostics, and CSV/XLSX importer sheet-push update.
