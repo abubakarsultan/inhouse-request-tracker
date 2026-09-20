@@ -2,10 +2,12 @@
 import { useState, useTransition } from 'react';
 import { updateSiteStatus } from '@/services/sites';
 
-const OPTIONS = ['Pending', 'Sent', 'Live', 'Rejected', 'Removed'];
+import { STATUS_OPTIONS } from '@/lib/validators';
+
+const OPTIONS = STATUS_OPTIONS;
 
 export default function SiteStatusSelect({ id, projectId, status }: { id: string; projectId: string; status: string }) {
-  const [value, setValue] = useState(status || 'Pending');
+  const [value, setValue] = useState(status || 'Request shared');
   const [pending, startTransition] = useTransition();
 
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {

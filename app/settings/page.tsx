@@ -1,59 +1,39 @@
-import { getCurrentUser } from '@/lib/session';
-import { getAllUsers } from '@/services/users';
-import UserRowControls from '@/components/app/user-row-controls';
-import { Badge } from '@/components/ui/badge';
-
+// Section 3 decision: "Assign To" / "Shared With" are free text now — the
+// users table and all Settings user-management UI are removed. This page
+// becomes "Who are you?" + connection checks (full version is Phase 4,
+// section 7.4) — this is a lightweight placeholder so the page still works.
 export default async function Settings() {
-  const user = await getCurrentUser();
-
-  if (user.role !== 'admin') {
-    return (
-      <div>
-        <h1 className="mb-6 text-2xl font-bold text-slate-900">Settings</h1>
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
-          User management and integration settings are admin-only. Ask an admin if you need something changed here.
-        </div>
-      </div>
-    );
-  }
-
-  const users = await getAllUsers();
+  const checks = [
+    { label: 'Supabase configured', ok: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) },
+    { label: 'Google service account configured', ok: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) },
+    { label: 'Team sheet ID set', ok: Boolean(process.env.TEAM_SHEET_ID) },
+    { label: 'Webhook secret set', ok: Boolean(process.env.SHEET_WEBHOOK_SECRET) },
+  ];
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="mb-6 text-2xl font-bold text-slate-900">Settings</h1>
-        <h2 className="mb-3 text-sm font-semibold text-slate-500">Users</h2>
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-400">
-              <tr><th className="p-3">Name</th><th className="p-3">Email</th><th className="p-3">Role</th><th className="p-3">Status</th><th className="p-3">Manage</th></tr>
-            </thead>
-            <tbody>
-              {users.map((u: any) => (
-                <tr key={u.id} className="border-t border-slate-100">
-                  <td className="p-3 font-medium text-slate-800">{u.name || '—'}</td>
-                  <td className="p-3 text-slate-500">{u.email}</td>
-                  <td className="p-3"><Badge tone={u.role === 'admin' ? 'indigo' : 'slate'}>{u.role}</Badge></td>
-                  <td className="p-3"><Badge tone={u.active ? 'green' : 'red'}>{u.active ? 'Active' : 'Disabled'}</Badge></td>
-                  <td className="p-3">
-                    <UserRowControls id={u.id} role={u.role} active={u.active} isSelf={u.id === user.id} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <h2 className="mb-3 text-sm font-semibold text-slate-500">Connections</h2>
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100">
+          {checks.map((c) => (
+            <div key={c.label} className="flex items-center justify-between p-4 text-sm">
+              <span className="text-slate-700">{c.label}</span>
+              <span className={c.ok ? 'font-medium text-emerald-600' : 'font-medium text-red-500'}>{c.ok ? 'OK' : 'Not set'}</span>
+            </div>
+          ))}
         </div>
         <p className="mt-2 text-xs text-slate-400">
-          These are the people who can be picked in the "Assign To" dropdown when creating a request.
+          There is no login — everyone who opens this site can use it. Your display name (used on new requests and status
+          changes) is a browser-only "Who are you?" picker, not an account.
         </p>
       </div>
 
       <div>
         <h2 className="mb-3 text-sm font-semibold text-slate-500">Google Sheet sync</h2>
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 space-y-2">
-          <p>Per-project sync (spreadsheet ID, tab name, on/off) is configured from each project's edit dialog on the Projects page.</p>
-          <p>To finish setting it up for real, see the <b>Google Sheets sync</b> section of the README included with this codebase — it covers the service account, sharing the sheet, and the Apps Script snippet for instant sheet → app updates.</p>
+          <p>All projects share one team spreadsheet (TEAM_SHEET_ID). Per-project sync on/off and the tab name are set from the Projects page.</p>
+          <p>The Apps Script snippet for two-way sync (Phase 4) will be shown here once the installable trigger is wired up.</p>
         </div>
       </div>
     </div>

@@ -17,21 +17,25 @@ export async function getProjectSites(projectId: string) {
   return data;
 }
 
+/**
+ * Updates a project_sites row's status. If the row is linked to a request
+ * (request_id), this delegates to setRequestStatus (6.2) — the single
+ * place status is ever written — so the request, the sheet, and the log
+ * all stay in sync. A site with no linked request (e.g. imported directly,
+ * never turned into a request) just updates its own row.
+ */
 export async function updateSiteStatus(id: string, projectId: string, status: string) {
   await requireUser();
   const supabase = await createClient();
-  const { data: site, error } = await supabase
-    .from('project_sites')
-    .update({ status })
-    .eq('id', id)
-    .select('website')
-    .single();
+  const { data: site, error } = await supabase.from('project_sites').select('request_id').eq('id', id).single();
   if (error) throw error;
 
-  const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).single();
-  if (project) {
-    const { syncStatusToSheet } = await import('@/services/google-sheet-sync');
-    await syncStatusToSheet(project, site.website, status, undefined, id);
+  if (site.request_id) {
+    const { setRequestStatus } = await import('@/services/requests');
+    await setRequestStatus(site.request_id, status as any);
+  } else {
+    const { error: updErr } = await supabase.from('project_sites').update({ status }).eq('id', id);
+    if (updErr) throw updErr;
   }
   revalidatePath(`/projects`);
 }

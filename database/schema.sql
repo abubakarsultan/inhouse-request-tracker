@@ -1,5 +1,7 @@
 -- INHOUSE REQUEST — Rankviz internal outreach ops
--- Run this whole file once in the Supabase SQL editor (or via `supabase db push`).
+-- Fresh-DB schema (matches database/migrations/*.sql applied in order).
+-- Run this whole file once in the Supabase SQL editor (or `supabase db push`)
+-- for a brand new project. For an existing DB, run the migrations instead.
 
 create extension if not exists "pgcrypto";
 
@@ -7,20 +9,18 @@ do $$ begin
   create type user_role as enum ('admin','member');
 exception when duplicate_object then null; end $$;
 
-do $$ begin
-  create type request_status as enum ('Request Shared','Live','Removed');
-exception when duplicate_object then null; end $$;
-
-do $$ begin
-  create type request_priority as enum ('Low','Medium','High','Urgent');
-exception when duplicate_object then null; end $$;
+-- NOTE: request_status / request_priority enums are intentionally NOT
+-- created here. Phase 1 replaced both with `text` + CHECK constraints
+-- (see decisions in the master prompt, section 3) so status/priority
+-- values can never get stuck behind a forward-only enum transition again.
 
 -- ============================================================
--- USERS  (mirrors auth.users; row is created by the auth callback
--- the first time someone signs in with Google)
+-- USERS  — kept but UNUSED (no login in this app). Left in place only
+-- so nothing that references the table name breaks; no FK from requests
+-- points here any more (see 4.2 — assign_to is free text).
 -- ============================================================
 create table if not exists users(
-  id uuid primary key references auth.users(id) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
   email text unique not null,
   name text,
   avatar text,
@@ -30,7 +30,7 @@ create table if not exists users(
 );
 
 -- ============================================================
--- PROJECTS  (replaces the old NAME_MAP)
+-- PROJECTS  (replaces the old NAME_MAP — section 4.1)
 -- ============================================================
 create table if not exists projects(
   id uuid primary key default gen_random_uuid(),
@@ -38,42 +38,18 @@ create table if not exists projects(
   slug text unique not null,
   outreach_project_name text,
   guest_post_tab_name text,
-  google_sheet_id text,          -- the Guest Post Anchor spreadsheet ID for this project
+  google_sheet_id text,          -- unused now (TEAM_SHEET_ID env var is the single sheet); kept nullable
   sync_enabled boolean not null default false,
   active boolean not null default true,
-  created_by uuid references users(id),
+  created_by uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 create index if not exists projects_active_idx on projects(active);
 
 -- ============================================================
--- PROJECT_SITES  — the per-project opportunity/placement table shown
--- on /projects/[slug] (Website, Opportunity, Anchor, DR, Traffic,
--- Status, Note). This is what the Guest Post Anchor sheet mirrors and
--- what the CSV/XLSX importer writes into. Not explicitly named in the
--- original spec's table list, but required by the "Project page" and
--- "Import system" sections, so it is added here.
--- ============================================================
-create table if not exists project_sites(
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid not null references projects(id) on delete cascade,
-  website text not null,
-  opportunity text,
-  anchor text,
-  dr int,
-  traffic bigint,
-  status text default 'Pending',
-  note text,
-  sheet_row int,                 -- last known row number in the Guest Post Anchor sheet
-  created_by uuid references users(id),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-create index if not exists project_sites_project_idx on project_sites(project_id);
-
--- ============================================================
--- REQUESTS
+-- REQUESTS  (4.2) — DB is the source of truth; the team sheet is a mirror.
+-- (Created before PROJECT_SITES because project_sites.request_id points here.)
 -- ============================================================
 create table if not exists requests(
   id uuid primary key default gen_random_uuid(),
@@ -83,25 +59,62 @@ create table if not exists requests(
   anchor text not null,
   approved_site text not null,
   placement_page text,
-  priority request_priority default 'Medium',
-  assigned_to uuid references users(id),
-  status request_status not null default 'Request Shared',
-  deadline date,
   shared_with text,
-  created_by uuid references users(id),
+  priority text not null default 'Medium' check (priority in ('High','Medium','Low')),
+  assign_to text,
+  deadline date,
+  status text not null default 'Request shared' check (status in ('Request shared','Live')),
+  initial_status text,
+  live_date date,
+  team_tab text,
+  team_row int,
+  sync_state text not null default 'skipped' check (sync_state in ('synced','skipped','failed')),
+  sync_error text,
+  status_changed_by text,
+  status_changed_at timestamptz,
+  created_by uuid,
+  created_by_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 create index if not exists requests_project_idx on requests(project_id);
 create index if not exists requests_status_idx on requests(status);
+create index if not exists requests_approved_site_lower_idx on requests (lower(approved_site));
+create index if not exists requests_assign_to_idx on requests(assign_to);
+create index if not exists requests_created_at_idx on requests(created_at);
 
--- Status history (kept from the previous schema, referenced by services/requests.ts)
+-- ============================================================
+-- PROJECT_SITES — the per-project opportunity/placement table (4.3),
+-- mirrors each team-sheet tab (Website, Opportunity, Anchor, DR,
+-- Traffic, Status, Note).
+-- ============================================================
+create table if not exists project_sites(
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  request_id uuid references requests(id) on delete set null,
+  website text not null,
+  opportunity text,
+  anchor text,
+  dr int,
+  traffic bigint,
+  status text default 'Request shared',
+  note text,
+  sheet_row int,                 -- legacy, unused
+  team_row int,                  -- row in the team-sheet tab this mirrors
+  created_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists project_sites_project_idx on project_sites(project_id);
+create index if not exists project_sites_request_idx on project_sites(request_id);
+
+-- Status history — changed_by is free text now (no login/users FK).
 create table if not exists request_logs(
   id uuid primary key default gen_random_uuid(),
   request_id uuid references requests(id) on delete cascade,
   old_status text,
   new_status text,
-  changed_by uuid references users(id),
+  changed_by text,
   created_at timestamptz not null default now()
 );
 
@@ -127,10 +140,19 @@ create table if not exists imports(
   id uuid primary key default gen_random_uuid(),
   project_id uuid references projects(id),
   file_name text,
-  uploaded_by uuid references users(id),
+  uploaded_by uuid,
   rows_imported int not null default 0,
   errors jsonb,
   created_at timestamptz not null default now()
+);
+
+-- ============================================================
+-- SHEET_WRITE_LOCKS — mutex so two simultaneous saves never pick the
+-- same "lastRow + 2" in the same team-sheet tab (section 5).
+-- ============================================================
+create table if not exists sheet_write_locks(
+  tab_name text primary key,
+  locked_at timestamptz not null default now()
 );
 
 -- ============================================================
@@ -153,34 +175,12 @@ create trigger trg_project_sites_updated before update on project_sites
   for each row execute function set_updated_at();
 
 -- ============================================================
--- Enforce the status workflow AT THE DATABASE LEVEL so it can never
--- be bypassed, no matter which code path writes to the table:
---   Request Shared -> Live -> Removed   (forward only, no skipping)
--- ============================================================
-create or replace function enforce_request_status_transition() returns trigger as $$
-begin
-  if TG_OP = 'UPDATE' and new.status is distinct from old.status then
-    if old.status = 'Request Shared' and new.status = 'Live' then
-      -- ok
-    elsif old.status = 'Live' and new.status = 'Removed' then
-      -- ok
-    else
-      raise exception 'Invalid status transition: % -> %', old.status, new.status;
-    end if;
-  end if;
-  return new;
-end;
-$$ language plpgsql;
-
-drop trigger if exists trg_requests_status_guard on requests;
-create trigger trg_requests_status_guard before update on requests
-  for each row execute function enforce_request_status_transition();
-
--- ============================================================
--- ROW LEVEL SECURITY
--- Every table is only ever touched by users whose auth.uid() maps to
--- an active row in public.users with an @rankviz.com email (enforced
--- again here for defense-in-depth on top of the app-level check).
+-- ROW LEVEL SECURITY — left ENABLED with no policies for anon/authenticated,
+-- which means: nobody using the anon key can read or write anything. The
+-- app never uses the anon key (no login — see lib/session.ts); every DB
+-- call goes through the server-side service-role client in
+-- lib/supabase-admin.ts, which bypasses RLS entirely. This is defense in
+-- depth in case NEXT_PUBLIC_SUPABASE_ANON_KEY is ever exposed to the browser.
 -- ============================================================
 alter table users enable row level security;
 alter table projects enable row level security;
@@ -189,66 +189,33 @@ alter table requests enable row level security;
 alter table request_logs enable row level security;
 alter table sync_logs enable row level security;
 alter table imports enable row level security;
+alter table sheet_write_locks enable row level security;
 
-create or replace function is_active_rankviz_user() returns boolean as $$
-  select exists(
-    select 1 from users u
-    where u.id = auth.uid() and u.active = true and u.email like '%@rankviz.com'
-  );
-$$ language sql stable;
-
-create or replace function is_admin() returns boolean as $$
-  select exists(
-    select 1 from users u
-    where u.id = auth.uid() and u.active = true and u.role = 'admin'
-  );
-$$ language sql stable;
-
--- users: everyone can read the directory (needed for "Assign To" pickers),
--- only admins can change roles/active state. Inserts happen via the
--- service-role key from the auth callback, not from the browser.
-drop policy if exists users_select on users;
-create policy users_select on users for select using (is_active_rankviz_user());
-drop policy if exists users_update on users;
-create policy users_update on users for update using (is_admin()) with check (is_admin());
-
--- projects: any signed-in rankviz user can read; only admins write.
-drop policy if exists projects_select on projects;
-create policy projects_select on projects for select using (is_active_rankviz_user());
-drop policy if exists projects_write on projects;
-create policy projects_write on projects for all using (is_admin()) with check (is_admin());
-
--- project_sites: any signed-in user can read/insert/update (day-to-day
--- data entry + import); only admins can delete.
-drop policy if exists project_sites_select on project_sites;
-create policy project_sites_select on project_sites for select using (is_active_rankviz_user());
-drop policy if exists project_sites_write on project_sites;
-create policy project_sites_write on project_sites for insert with check (is_active_rankviz_user());
-drop policy if exists project_sites_update on project_sites;
-create policy project_sites_update on project_sites for update using (is_active_rankviz_user());
-drop policy if exists project_sites_delete on project_sites;
-create policy project_sites_delete on project_sites for delete using (is_admin());
-
--- requests: any signed-in user can read/create; update allowed to any
--- signed-in user (the forward-only trigger above protects status
--- integrity regardless of who issues the update).
-drop policy if exists requests_select on requests;
-create policy requests_select on requests for select using (is_active_rankviz_user());
-drop policy if exists requests_insert on requests;
-create policy requests_insert on requests for insert with check (is_active_rankviz_user());
-drop policy if exists requests_update on requests;
-create policy requests_update on requests for update using (is_active_rankviz_user());
-drop policy if exists requests_delete on requests;
-create policy requests_delete on requests for delete using (is_admin());
-
--- logs are read-only from the client; written by the server using the
--- service-role key (which bypasses RLS entirely).
-drop policy if exists request_logs_select on request_logs;
-create policy request_logs_select on request_logs for select using (is_active_rankviz_user());
-drop policy if exists sync_logs_select on sync_logs;
-create policy sync_logs_select on sync_logs for select using (is_active_rankviz_user());
-
-drop policy if exists imports_select on imports;
-create policy imports_select on imports for select using (is_active_rankviz_user());
-drop policy if exists imports_insert on imports;
-create policy imports_insert on imports for insert with check (is_active_rankviz_user());
+-- ============================================================
+-- SEED — the 19 projects from the sheet's NAME_MAP (section 4.1).
+-- ============================================================
+insert into projects (name, slug, outreach_project_name, guest_post_tab_name, sync_enabled, active)
+values
+  ('AIproductindex', 'aiproductindex', 'AIproductindex', 'Ai Product Index', true, true),
+  ('Youtube Dislike Viewer', 'youtube-dislike-viewer', 'Youtube Dislike Viewer', 'youtubedislikeviewer', true, true),
+  ('Randomsonggenerator', 'randomsonggenerator', 'Randomsonggenerator', 'randomsonggenerator', true, true),
+  ('Rsd Calculator', 'rsd-calculator', 'Rsd Calculator', 'rsdcalculator Links', true, true),
+  ('Minutemansecurityagency', 'minutemansecurityagency', 'Minutemansecurityagency', 'minutemansecurityagency', true, true),
+  ('Deckbuildersandiego', 'deckbuildersandiego', 'Deckbuildersandiego', 'deckbuildersandiego', true, true),
+  ('Deck Builder Seattle', 'deck-builder-seattle', 'Deck Builder Seattle', 'deckbuilderseattle.us', true, true),
+  ('Mltograms Converter', 'mltograms-converter', 'Mltograms Converter', 'mltogramsconverter', true, true),
+  ('Anonymousinstagramstoryviewer', 'anonymousinstagramstoryviewer', 'Anonymousinstagramstoryviewer', 'anonymousinstagramstoryviewer.com', true, true),
+  ('Impostergamewordgenerator', 'impostergamewordgenerator', 'Impostergamewordgenerator', 'impostergamewordgenerator', true, true),
+  ('Remainder Calculator', 'remainder-calculator', 'Remainder Calculator', 'remaindercalculator', true, true),
+  ('Pestcontrolflagstaff', 'pestcontrolflagstaff', 'Pestcontrolflagstaff', 'pestcontrolflagstaff', true, true),
+  ('Commercialplumbersacramento', 'commercialplumbersacramento', 'Commercialplumbersacramento', 'commercialplumbersacramento', true, true),
+  ('Phoneticspellinggenerator', 'phoneticspellinggenerator', 'Phoneticspellinggenerator', 'phoneticspellinggenerator', true, true),
+  ('Square Foot Calculator', 'square-foot-calculator', 'Square Foot Calculator', 'squarefootcalculator', true, true),
+  ('Villainnamegenerator', 'villainnamegenerator', 'Villainnamegenerator', 'villainnamegenerator', true, true),
+  ('Goatgestationcalculator', 'goatgestationcalculator', 'Goatgestationcalculator', 'goatgestationcalculator', true, true),
+  ('Russiannamegenerator', 'russiannamegenerator', 'Russiannamegenerator', 'russiannamegenerator', true, true),
+  ('Get Pro Links', 'get-pro-links', 'Get Pro Links', 'getprolinks', true, true)
+on conflict (slug) do update set
+  outreach_project_name = excluded.outreach_project_name,
+  guest_post_tab_name = excluded.guest_post_tab_name,
+  sync_enabled = excluded.sync_enabled;

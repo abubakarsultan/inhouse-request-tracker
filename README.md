@@ -1,24 +1,51 @@
 # INHOUSE REQUEST
 
-Rankviz's internal outreach request management SaaS — replaces the
-"Inhouse Request Tracker" and "Guest Post Anchor" Google Sheets.
+Rankviz's internal outreach request management site — replaces the
+"Inhouse Request Tracker" (Google Sheet + Apps Script). The database is
+the source of truth; the team's **Guest Post Anchor** Google Sheet is a
+mirror kept in sync both ways.
 
 Stack: Next.js (App Router) · TypeScript · Tailwind · Supabase (Postgres) · Vercel
 
-> **No login.** Opening the site opens the tool directly. There is no sign-in page, no session, no cookies. All database access happens on the server with the Supabase service-role key, so anyone who has the site URL can use it — keep the URL private.
+> **No login.** Opening the site opens the dashboard directly. No sign-in
+> page, no session, no cookies. Every DB call runs server-side with the
+> Supabase service-role key — keep the site URL private.
 
 ## 1. Supabase setup
 
-1. Create a Supabase project.
-2. Open the SQL editor and run the entire contents of `database/schema.sql`. This creates every table, the forward-only status-transition trigger, and Row Level Security policies.
-3. Grab your `Project URL` and `service_role` key from Settings → API. (The anon key is no longer used.)
+**New project:** open the SQL editor and run the entire contents of
+`database/schema.sql` once.
+
+**Existing project (upgrading from the pre-Phase-1 build):** run the
+files in `database/migrations/` **in order** instead — right now that's
+just `001_phase1.sql`. It is idempotent (safe to re-run) and:
+- drops the old 3-status enum + forward-only trigger, replaces `status`
+  with `text` + a 2-value CHECK (`Request shared` / `Live`)
+- drops the old 4-value priority enum, replaces with `text` + CHECK
+  (`High` / `Medium` / `Low`)
+- converts `requests.assigned_to` (uuid → users) into `requests.assign_to`
+  (free text), backfilling names from the old FK first
+- adds the sync-tracking columns (`team_tab`, `team_row`, `sync_state`,
+  `sync_error`, `live_date`, `initial_status`, `status_changed_by/at`,
+  `created_by_name`)
+- adds `sheet_write_locks` (mutex for concurrent sheet appends)
+- seeds/updates the 19 projects from the old `NAME_MAP`
+
+After running it, check `_migration_001_removed_status_rows` — it lists
+any request that used to be `Removed` and is now `Request shared` (see
+"Assumptions" below). Drop that table once you've reviewed it; it's not
+used by the app.
 
 ## 2. Environment variables
 
-Copy `.env.example` to `.env.local` (or set these in Vercel → Project → Settings → Environment Variables) and fill in:
+Copy `.env.example` to `.env.local` (or set in Vercel → Project →
+Settings → Environment Variables):
 
 - `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- `GOOGLE_SERVICE_ACCOUNT_JSON` / `SHEET_WEBHOOK_SECRET` — only needed for the Google Sheet sync, see below. The app runs fine without them; sync is simply skipped and logged.
+- `GOOGLE_SERVICE_ACCOUNT_JSON`, `TEAM_SHEET_ID`, `SHEET_WEBHOOK_SECRET` —
+  needed for the Google Sheet sync (see below). The app runs fine without
+  them: every request is still saved, `sync_state` is just `'skipped'` or
+  `'failed'` and it's all logged in `sync_logs`.
 
 ## 3. Run it
 
@@ -29,63 +56,83 @@ npm run dev
 
 Open http://localhost:3000 — it goes straight to the dashboard.
 
-## 4. Google Sheet sync (two-way)
+To verify a production build: `npx tsc --noEmit && npm run build`.
 
-**App → Sheet:** when a request's status changes, or a project site's
-status changes, the app looks up the matching row (by Website) in the
-project's Guest Post Anchor tab and updates column F (Status). This
-needs a Google service account:
+## 4. Google Sheet sync (two-way) — Phase 1 scope
 
+**App → Sheet** (section 5 of the master prompt):
 1. Google Cloud Console → create a service account → generate a JSON key.
-2. Share the Guest Post Anchor spreadsheet with the service account's `client_email` (Editor access).
-3. Base64-encode the key file and set it as `GOOGLE_SERVICE_ACCOUNT_JSON`.
-4. On the project's edit dialog (Projects page), fill in the spreadsheet ID (from its URL) and the exact tab name, and turn sync on.
+2. Share the **Guest Post Anchor** spreadsheet with the service account's
+   `client_email` (Editor access).
+3. Base64-encode the key file (`base64 -i key.json | tr -d '\n'`) and set
+   it as `GOOGLE_SERVICE_ACCOUNT_JSON`. Set `TEAM_SHEET_ID` to the
+   spreadsheet's ID (from its URL) — **one sheet for every project now**,
+   there is no more per-project spreadsheet ID.
+4. On each project (Projects page → edit), fill in the exact tab name
+   (`guest_post_tab_name`) and toggle sync on. A project with sync off,
+   or whose tab doesn't exist in the sheet yet, is skipped — never an
+   error, never auto-created.
 
-**Sheet → App:** paste this into the spreadsheet's **Extensions → Apps
-Script**, replacing `YOUR_APP_URL`, `YOUR_PROJECT_ID` and
-`YOUR_WEBHOOK_SECRET` (the project ID is visible in the project's edit
-dialog / database row; the secret is whatever you set `SHEET_WEBHOOK_SECRET`
-to):
+New requests are appended at **lastRow + 2** in that tab (one blank row
+gap — intentional, matches the old sheet's behaviour), serialized through
+a DB-backed lock (`sheet_write_locks`) so two people saving at the same
+moment can't collide on the same row. Status changes re-verify that the
+stored row still matches (website + anchor) before writing column F, and
+search the tab to self-heal if it doesn't.
 
-```javascript
-function onEdit(e) {
-  var sheet = e.range.getSheet();
-  if (e.range.getColumn() !== 6) return; // column F = Status
-  var row = e.range.getRow();
-  if (row === 1) return;
-  var website = sheet.getRange(row, 1).getValue();
-  var status = e.range.getValue();
+**Sheet → App** (section 8) — the installable-trigger Apps Script and the
+`POST /api/sheet-webhook` receiver are the Phase 4 deliverable. The route
+already exists and expects `{ tab, row, website, anchor, status }` with
+header `x-sheet-webhook-secret`, but nothing calls it yet until the Apps
+Script trigger is added in Phase 4.
 
-  UrlFetchApp.fetch('YOUR_APP_URL/api/sheet-webhook', {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { 'x-sheet-webhook-secret': 'YOUR_WEBHOOK_SECRET' },
-    payload: JSON.stringify({
-      projectId: 'YOUR_PROJECT_ID',
-      website: website,
-      status: status,
-      sheetName: sheet.getName(),
-      sheetRow: row,
-    }),
-  });
-}
-```
+## Modules delivered in Phase 1
 
-This fires on every edit to the sheet and keeps `project_sites` (and
-`sync_logs`) in the app up to date instantly — no polling needed.
+- **Create Request** (`/requests/new`) — the full write order from
+  section 6.1: insert `requests` → insert/link `project_sites` → push to
+  the team sheet → show the same three outcomes the old sheet did
+  (✅ synced / ⚪ no tab, saved here only / ❌ failed, retry later). The
+  duplicate rule (approved site + anchor, normalized, across all clients)
+  warns with **Save anyway** / **Cancel**.
+- **setRequestStatus`** (`services/requests.ts`) — the *only* place status
+  is ever written. `Mark Live` / `Revert` on the Requests list calls it;
+  it updates the request, the linked `project_sites` row, `request_logs`,
+  and the verified team-sheet cell, and is idempotent (same status twice
+  is a no-op that still returns ok).
+- **"Who are you?"** — a browser-localStorage name picker (not auth),
+  supplies `created_by_name` / `changed_by` and pre-fills Assign To /
+  Shared With autocomplete from previously used values.
+- **Dashboard** — Total / Live / Pending / Failed Sync / This Month, all
+  live counts in Asia/Karachi time; a Failed Sync count > 0 links to the
+  list of failing requests.
+- **Projects** — the 19 seeded projects; add/edit/disable still works.
 
-## Modules
+## Not yet built (later phases, per the master prompt's build plan)
 
-- **Auth** — none. The login screen, middleware and seed route were removed.
-- **Projects** — CRUD (admin-only write), search, enable/disable, and the Outreach OS ↔ Guest Post Anchor tab-name mapping the old NAME_MAP used to hold.
-- **Project detail (`/projects/[slug]`)** — the Website / Opportunity / Anchor / DR / Traffic / Status / Note table for that project (`project_sites`), fed by the importer and kept in sync with its Guest Post Anchor tab.
-- **Requests** — full create form with the required-field validation from the spec; status can only move `Request Shared → Live → Removed`, enforced in the UI, in the server action, *and* by a Postgres trigger so it can never be bypassed. Every change is written to `request_logs`.
-- **Import** — CSV/XLSX upload into a project's `project_sites`, validated against the required header row before anything is written; logged to `imports`.
-- **Settings** — admin-only user directory (promote/demote, activate/deactivate).
-- **Dashboard** — live counts pulled from the database (no hardcoded numbers).
+- Phase 2: inline "already used" hint while typing Approved Site, the
+  Site Check page, Search, Download Today CSV (Outreach OS format),
+  Import from team sheet.
+- Phase 3: full dashboard (recent activity, became-live-in-7-days,
+  per-project breakdown, Refresh button), Projects card grid, My
+  Requests, deadline/status visual polish.
+- Phase 4: the sheet webhook's Apps Script installable trigger, Retry
+  Sync button in the UI (the `retrySync` server action already exists),
+  Health Check page, Settings diagnostics page, CSV/XLSX importer status
+  vocabulary fix.
 
-## Notes / assumptions made while completing the spec
+## Assumptions made in Phase 1 (flagged per hard rule #9)
 
-- The spec's table list didn't include a table for the per-project Website/Opportunity/Anchor/DR/Traffic/Status/Note data shown on `/projects/[slug]` and produced by the importer — that's `project_sites` in `database/schema.sql`.
-- `projects.google_sheet_id` and `projects.active`, and `users.active`, were added to support "disable project" / "manage users" / "which spreadsheet to sync to", which the spec required functionally but didn't list as fields.
-- Role-based UI: admins see Add/Edit/Disable on Projects and the Users table in Settings; members see everything else (Requests, Import, project detail) since the spec scopes "Member" to creating requests, viewing projects, and updating allowed fields.
+- **`Removed` → `Request shared`.** The old 3-status enum had `Removed`;
+  the new spec only has two statuses. Any existing row that was `Removed`
+  is now `Request shared` (per the master prompt's explicit instruction).
+  The migration keeps a list of which rows this touched in
+  `_migration_001_removed_status_rows` for a one-time review.
+- **`Urgent` priority → `High`.** The spec removes `Urgent` but doesn't
+  say what existing `Urgent` rows should become; `High` is the closest
+  equivalent. Flagging this in case a different mapping is wanted.
+- **`assigned_to` (uuid → users) dropped in favor of `assign_to` (text)**,
+  backfilled once from the user's name/email before the column is
+  dropped, per the "no login, no users table dependency" decision.
+- **CSV/XLSX importer (`services/sites.ts`) still writes whatever status
+  string is in the file** (e.g. `Pending`) rather than the two-status
+  vocabulary — that fix is explicitly Phase 4, section 7.3.

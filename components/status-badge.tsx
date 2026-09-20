@@ -1,9 +1,10 @@
 import { Badge } from '@/components/ui/badge';
 
-const TONES: Record<string, 'blue' | 'green' | 'red' | 'slate'> = {
-  'Request Shared': 'blue',
+// Section 6.9 — Live green, Request shared amber, Failed sync red.
+const TONES: Record<string, 'blue' | 'green' | 'red' | 'amber' | 'slate'> = {
+  'Request shared': 'amber',
   Live: 'green',
-  Removed: 'red',
+  'Failed sync': 'red',
 };
 
 export default function StatusBadge({ status }: { status: string }) {

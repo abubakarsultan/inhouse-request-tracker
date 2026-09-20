@@ -27,7 +27,6 @@ export default function ProjectFormDialog({ project }: { project?: Project }) {
       name: String(form.get('name') ?? ''),
       outreach_project_name: String(form.get('outreach_project_name') ?? '') || null,
       guest_post_tab_name: String(form.get('guest_post_tab_name') ?? '') || null,
-      google_sheet_id: String(form.get('google_sheet_id') ?? '') || null,
       sync_enabled: form.get('sync_enabled') === 'on',
     };
     try {
@@ -69,10 +68,9 @@ export default function ProjectFormDialog({ project }: { project?: Project }) {
             <Label htmlFor="guest_post_tab_name">Guest Post Anchor tab name</Label>
             <Input id="guest_post_tab_name" name="guest_post_tab_name" defaultValue={project?.guest_post_tab_name ?? ''} placeholder="e.g. AI Product Index Website" />
           </div>
-          <div>
-            <Label htmlFor="google_sheet_id">Guest Post Anchor spreadsheet ID</Label>
-            <Input id="google_sheet_id" name="google_sheet_id" defaultValue={project?.google_sheet_id ?? ''} placeholder="from the sheet's URL" />
-          </div>
+          <p className="text-xs text-slate-400">
+            All projects share one team spreadsheet (set via the TEAM_SHEET_ID env var) — no per-project sheet ID needed.
+          </p>
           <label className="flex items-center gap-2 pt-1 text-sm text-slate-600">
             <input type="checkbox" name="sync_enabled" defaultChecked={project?.sync_enabled} className="h-4 w-4 rounded border-slate-300" />
             Enable two-way Google Sheet sync for this project

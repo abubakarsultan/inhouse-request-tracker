@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { getRequests } from '@/services/requests';
 import { getProjects } from '@/services/projects';
 import StatusControl from '@/components/app/status-control';
+import { STATUS_OPTIONS } from '@/lib/validators';
 import { Plus } from 'lucide-react';
 
 export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string }> }) {
@@ -27,7 +28,7 @@ export default async function Requests({ searchParams }: { searchParams: Promise
         </select>
         <select name="status" defaultValue={status ?? ''} className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm">
           <option value="">All statuses</option>
-          {['Request Shared', 'Live', 'Removed'].map((s) => <option key={s} value={s}>{s}</option>)}
+          {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <button className="rounded-lg border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50">Filter</button>
       </form>
@@ -40,8 +41,9 @@ export default async function Requests({ searchParams }: { searchParams: Promise
               <th className="p-4">Approved Site</th>
               <th className="p-4">Anchor</th>
               <th className="p-4">Priority</th>
-              <th className="p-4">Assigned To</th>
+              <th className="p-4">Assign To</th>
               <th className="p-4">Deadline</th>
+              <th className="p-4">Sync</th>
               <th className="p-4">Status</th>
             </tr>
           </thead>
@@ -54,13 +56,18 @@ export default async function Requests({ searchParams }: { searchParams: Promise
                 <td className="p-4 text-slate-500">{r.approved_site}</td>
                 <td className="p-4 text-slate-500">{r.anchor}</td>
                 <td className="p-4 text-slate-500">{r.priority}</td>
-                <td className="p-4 text-slate-500">{r.assignee?.name ?? r.assignee?.email ?? 'Unassigned'}</td>
+                <td className="p-4 text-slate-500">{r.assign_to || 'Unassigned'}</td>
                 <td className="p-4 text-slate-500">{r.deadline ?? '—'}</td>
+                <td className="p-4 text-xs">
+                  {r.sync_state === 'synced' && <span className="text-emerald-600">Synced</span>}
+                  {r.sync_state === 'skipped' && <span className="text-slate-400">No tab</span>}
+                  {r.sync_state === 'failed' && <span className="text-red-600" title={r.sync_error}>Failed</span>}
+                </td>
                 <td className="p-4"><StatusControl id={r.id} status={r.status} /></td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={7} className="p-8 text-center text-slate-400">No requests match these filters.</td></tr>
+              <tr><td colSpan={8} className="p-8 text-center text-slate-400">No requests match these filters.</td></tr>
             )}
           </tbody>
         </table>

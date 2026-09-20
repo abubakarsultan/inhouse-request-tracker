@@ -1,130 +1,130 @@
 'use server';
-import { google } from 'googleapis';
 import { adminClient } from '@/lib/supabase-admin';
-
-// ── Real Google Sheets push (app -> sheet) ───────────────────────────
-// Requires a service account with edit access to the target spreadsheet.
-// Set GOOGLE_SERVICE_ACCOUNT_JSON to the *base64-encoded* contents of the
-// service account's JSON key file, and share the Guest Post Anchor sheet
-// with that service account's client_email.
-function credentialsConfigured() {
-  return Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-}
-
-function getSheetsClient() {
-  const raw = Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_JSON!, 'base64').toString('utf8');
-  const credentials = JSON.parse(raw);
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-  return google.sheets({ version: 'v4', auth });
-}
+import { credentialsConfigured, tabExists, appendRowWithGap, verifyRow, updateStatusCell } from '@/lib/sheets';
 
 type SyncableProject = {
   id: string;
   guest_post_tab_name: string | null;
-  google_sheet_id: string | null;
   sync_enabled: boolean;
 };
 
-// Pushes a single "Status" cell update to the Guest Post Anchor sheet for
-// the row that matches `website` in column A of the project's tab. Called
-// whenever a project_site's or request's status changes.
-export async function syncStatusToSheet(project: SyncableProject, website: string, status: string, requestId?: string, projectSiteId?: string) {
-  if (!project.sync_enabled || !project.guest_post_tab_name || !project.google_sheet_id) {
-    return { skipped: true, reason: 'sync not configured for this project' };
+type PushResult =
+  | { outcome: 'synced'; teamTab: string; teamRow: number }
+  | { outcome: 'skipped'; reason: string }
+  | { outcome: 'failed'; reason: string };
+
+/**
+ * Pushes a brand-new request row to the team sheet at lastRow+2
+ * (section 5 / 6.1, step 3). Columns match the project tab layout:
+ * Website, Opportunity, Anchor, DR, Traffic, Status, Note(=assign_to).
+ */
+export async function pushNewRequestToSheet(
+  project: SyncableProject,
+  row: { approvedSite: string; placementPage: string | null; anchor: string; status: string; assignTo: string | null }
+): Promise<PushResult> {
+  if (!project.sync_enabled || !project.guest_post_tab_name) {
+    return { outcome: 'skipped', reason: 'This client has no tab in the team sheet — saved here only.' };
   }
   if (!credentialsConfigured()) {
-    await adminClient.from('sync_logs').insert({
-      request_id: requestId ?? null,
-      project_site_id: projectSiteId ?? null,
-      direction: 'to_sheet',
-      sheet_name: project.guest_post_tab_name,
-      status: 'skipped',
-      detail: 'GOOGLE_SERVICE_ACCOUNT_JSON is not set',
-    });
-    return { skipped: true, reason: 'no service account configured' };
+    return { outcome: 'failed', reason: 'Google Sheets is not configured (GOOGLE_SERVICE_ACCOUNT_JSON / TEAM_SHEET_ID missing).' };
   }
 
+  const tab = project.guest_post_tab_name;
   try {
-    const sheets = getSheetsClient();
-    const tab = project.guest_post_tab_name;
-    const range = `${tab}!A2:G`;
-    const { data } = await sheets.spreadsheets.values.get({ spreadsheetId: project.google_sheet_id, range });
-    const rows = data.values ?? [];
-    const rowIndex = rows.findIndex((r) => (r[0] ?? '').trim().toLowerCase() === website.trim().toLowerCase());
-    if (rowIndex === -1) {
-      await adminClient.from('sync_logs').insert({
-        request_id: requestId ?? null,
-        project_site_id: projectSiteId ?? null,
-        direction: 'to_sheet',
-        sheet_name: tab,
-        status: 'error',
-        detail: `Website "${website}" not found in sheet`,
-      });
-      return { error: 'row not found' };
+    const exists = await tabExists(tab);
+    if (!exists) {
+      // A project whose tab does not exist in the team sheet -> skipped, never auto-created (section 5).
+      return { outcome: 'skipped', reason: `The team sheet has no "${tab}" tab yet — saved here only.` };
     }
-    const sheetRow = rowIndex + 2; // header is row 1
-    // Column F = Status, per the Website/Opportunity/Anchor/DR/Traffic/Status/Note layout.
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: project.google_sheet_id,
-      range: `${tab}!F${sheetRow}`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [[status]] },
-    });
-    await adminClient.from('sync_logs').insert({
-      request_id: requestId ?? null,
-      project_site_id: projectSiteId ?? null,
-      direction: 'to_sheet',
-      sheet_name: tab,
-      sheet_row: sheetRow,
-      status: 'success',
-    });
-    return { success: true, sheetRow };
+
+    const { row: teamRow } = await appendRowWithGap(tab, [
+      row.approvedSite,
+      row.placementPage ?? '',
+      row.anchor,
+      '',
+      '',
+      row.status,
+      row.assignTo ?? '',
+    ]);
+    return { outcome: 'synced', teamTab: tab, teamRow };
   } catch (err: any) {
-    await adminClient.from('sync_logs').insert({
-      request_id: requestId ?? null,
-      project_site_id: projectSiteId ?? null,
-      direction: 'to_sheet',
-      sheet_name: project.guest_post_tab_name,
-      status: 'error',
-      detail: String(err?.message ?? err),
-    });
-    return { error: String(err?.message ?? err) };
+    return { outcome: 'failed', reason: String(err?.message ?? err) };
   }
 }
 
-// ── Sheet -> app (webhook receiver) ──────────────────────────────────
-// See app/api/sheet-webhook/route.ts and the Apps Script snippet in the
-// README: when someone edits the Status column in the Guest Post Anchor
-// sheet, the sheet POSTs here and we mirror the change back into
-// project_sites (and log it), completing the two-way sync.
-export async function applyStatusFromSheet(projectId: string, website: string, status: string, sheetName: string, sheetRow: number) {
-  const { data: site } = await adminClient
-    .from('project_sites')
+type StatusPushResult = { ok: boolean; reason?: string; correctedRow?: number };
+
+/**
+ * Pushes column F (Status) of a request's team-sheet row, verifying the
+ * stored row still matches (website + anchor) before writing, and
+ * searching the tab to self-heal if it doesn't (section 5 / 6.2 step 5).
+ * Best-effort: failures here never block the DB status change.
+ */
+export async function pushStatusToSheet(
+  teamTab: string | null,
+  teamRow: number | null,
+  approvedSite: string,
+  anchor: string,
+  newStatus: string
+): Promise<StatusPushResult> {
+  if (!teamTab || !teamRow) {
+    return { ok: true }; // skipped — same as the save-time skip rule, not a failure
+  }
+  if (!credentialsConfigured()) {
+    return { ok: false, reason: 'Google Sheets is not configured.' };
+  }
+  try {
+    const verified = await verifyRow(teamTab, teamRow, approvedSite, anchor);
+    if (verified === null) {
+      return { ok: false, reason: `Could not find a row in "${teamTab}" matching this site + anchor (it may have been moved or deleted).` };
+    }
+    await updateStatusCell(teamTab, verified, newStatus);
+    return { ok: true, correctedRow: verified !== teamRow ? verified : undefined };
+  } catch (err: any) {
+    return { ok: false, reason: String(err?.message ?? err) };
+  }
+}
+
+// ── Sheet -> app (webhook receiver, section 8) ──────────────────────────
+// Someone edits column F directly in the team sheet; the installable
+// trigger POSTs here. We update via the same status logic, WITHOUT
+// pushing back to the sheet (avoids a ping-pong loop).
+export async function applyStatusFromSheetWebhook(tab: string, row: number, website: string, anchor: string, status: string) {
+  const { setRequestStatus } = await import('@/services/requests');
+
+  const { data: match } = await adminClient
+    .from('requests')
     .select('id')
-    .eq('project_id', projectId)
-    .ilike('website', website)
+    .eq('team_tab', tab)
+    .ilike('approved_site', website)
+    .ilike('anchor', anchor)
     .maybeSingle();
 
-  if (!site) {
+  let requestId = match?.id as string | undefined;
+
+  if (!requestId) {
+    // fallback: team_tab + team_row
+    const { data: byRow } = await adminClient.from('requests').select('id').eq('team_tab', tab).eq('team_row', row).maybeSingle();
+    requestId = byRow?.id;
+  }
+
+  if (!requestId) {
     await adminClient.from('sync_logs').insert({
       direction: 'from_sheet',
-      sheet_name: sheetName,
-      sheet_row: sheetRow,
+      sheet_name: tab,
+      sheet_row: row,
       status: 'error',
-      detail: `No project_sites row for website "${website}"`,
+      detail: `No request found for tab "${tab}" website "${website}" anchor "${anchor}"`,
     });
     return { error: 'not found' };
   }
 
-  await adminClient.from('project_sites').update({ status, sheet_row: sheetRow }).eq('id', site.id);
+  await setRequestStatus(requestId, status as any, 'team sheet', { skipSheetPush: true });
   await adminClient.from('sync_logs').insert({
-    project_site_id: site.id,
+    request_id: requestId,
     direction: 'from_sheet',
-    sheet_name: sheetName,
-    sheet_row: sheetRow,
+    sheet_name: tab,
+    sheet_row: row,
     status: 'success',
   });
   return { success: true };
