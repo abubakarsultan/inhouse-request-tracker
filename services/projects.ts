@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase-server';
 import { projectSchema, type ProjectInput } from '@/lib/validators';
 import { slugify } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
+import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
 
 export async function getProjects(search?: string, activeOnly = false) {
   const supabase = await createClient();
@@ -17,6 +18,7 @@ export async function getProjects(search?: string, activeOnly = false) {
 
 
 export async function getProjectsWithCounts(search?: string) {
+  await requireAdminForAction();
   const supabase = await createClient();
   const projects = await getProjects(search);
   const rows: Array<{ project_id: string; status: string }> = [];
@@ -43,10 +45,12 @@ export async function getProjectsWithCounts(search?: string) {
 }
 
 export async function getActiveProjects() {
+  await requireActiveUserForAction();
   return getProjects(undefined, true);
 }
 
 export async function getProjectBySlug(slug: string) {
+  await requireAdminForAction();
   const supabase = await createClient();
   const { data, error } = await supabase.from('projects').select('*').eq('slug', slug).single();
   if (error) throw error;
@@ -54,6 +58,7 @@ export async function getProjectBySlug(slug: string) {
 }
 
 export async function createProject(input: ProjectInput) {
+  await requireAdminForAction();
   const parsed = projectSchema.parse(input);
   const supabase = await createClient();
 
@@ -80,6 +85,7 @@ export async function createProject(input: ProjectInput) {
 }
 
 export async function updateProject(id: string, input: ProjectInput) {
+  await requireAdminForAction();
   const parsed = projectSchema.parse(input);
   const supabase = await createClient();
   const { error } = await supabase.from('projects').update({
@@ -95,6 +101,7 @@ export async function updateProject(id: string, input: ProjectInput) {
 }
 
 export async function toggleProjectActive(id: string, active: boolean) {
+  await requireAdminForAction();
   const supabase = await createClient();
   const { error } = await supabase.from('projects').update({ active }).eq('id', id);
   if (error) throw error;

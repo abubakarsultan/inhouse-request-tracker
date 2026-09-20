@@ -1,8 +1,8 @@
 import { adminClient } from '@/lib/supabase-admin';
 
-// There is no login in this app, so there is no per-user session to read.
-// Every server action / page gets the same service-role client instead.
-// (Kept as an async `createClient()` so the service files didn't need to change.)
+// Business data remains server-only and uses the service-role client. User
+// identity is verified separately through Supabase Auth before protected
+// server actions/pages reach this data client.
 export async function createClient() {
   return adminClient;
 }

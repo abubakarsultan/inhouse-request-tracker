@@ -6,8 +6,10 @@ import { SITE_IMPORT_HEADERS } from '@/lib/validators';
 import { revalidatePath } from 'next/cache';
 import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
 import { appendProjectSiteToTeamSheet, type ProjectSiteSheetRecord } from '@/services/google-sheet-sync';
+import { requireAdminForAction } from '@/lib/auth';
 
 export async function getProjectSites(projectId: string) {
+  await requireAdminForAction();
   const supabase = await createClient();
   const { data, error } = await supabase
     .from('project_sites')
@@ -37,6 +39,7 @@ function parseOptionalInteger(value: unknown, label: string, rowNumber: number, 
 }
 
 export async function importSitesFromFile(formData: FormData): Promise<ImportResult> {
+  const admin = await requireAdminForAction();
   const supabase = await createClient();
 
   const projectId = String(formData.get('project_id') ?? '');
@@ -61,7 +64,7 @@ export async function importSitesFromFile(formData: FormData): Promise<ImportRes
   const result = emptyResult();
   if (rows.length === 0) {
     result.errors.push('The file has no data rows.');
-    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: null, rows_imported: 0, errors: result.errors });
+    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: admin.id, rows_imported: 0, errors: result.errors });
     return result;
   }
 
@@ -69,7 +72,7 @@ export async function importSitesFromFile(formData: FormData): Promise<ImportRes
   const missing = SITE_IMPORT_HEADERS.filter((header) => !headerKeys.includes(header));
   if (missing.length) {
     result.errors.push(`Missing required column(s): ${missing.join(', ')}`);
-    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: null, rows_imported: 0, errors: result.errors });
+    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: admin.id, rows_imported: 0, errors: result.errors });
     return result;
   }
 
@@ -96,6 +99,8 @@ export async function importSitesFromFile(formData: FormData): Promise<ImportRes
       status,
       note: String(row.Note ?? '').trim() || null,
       team_row: null,
+      created_by_user_id: admin.id,
+      created_by_email: admin.email,
     }];
   });
 
@@ -125,7 +130,7 @@ export async function importSitesFromFile(formData: FormData): Promise<ImportRes
   await supabase.from('imports').insert({
     project_id: projectId,
     file_name: fileName,
-    uploaded_by: null,
+    uploaded_by: admin.id,
     rows_imported: result.rowsImported,
     errors: result.errors.length ? result.errors : null,
   });
@@ -137,6 +142,7 @@ export async function importSitesFromFile(formData: FormData): Promise<ImportRes
 }
 
 export async function getRecentImports() {
+  await requireAdminForAction();
   const supabase = await createClient();
   const { data, error } = await supabase
     .from('imports')
@@ -166,6 +172,7 @@ function parseSheetMetric(value: string | number | null) {
 }
 
 export async function importFromTeamSheet(): Promise<TeamSheetImportReport> {
+  await requireAdminForAction();
   const { readTeamSheetProjectRows } = await import('@/services/google-sheet-sync');
   const supabase = await createClient();
   const { data: projects, error: projectsError } = await supabase
@@ -186,6 +193,9 @@ export async function importFromTeamSheet(): Promise<TeamSheetImportReport> {
   }
 
   const known = new Set(existing.map((row: any) => importTupleKey(String(row.project_id), String(row.website ?? ''), String(row.anchor ?? ''))));
+  const { data: mappedUsers, error: usersError } = await supabase.from('users').select('id,sheet_name').not('sheet_name', 'is', null);
+  if (usersError) throw new Error(`Could not load team mappings: ${usersError.message}`);
+  const ownerByName = new Map((mappedUsers ?? []).map((user: any) => [String(user.sheet_name ?? '').trim().toLowerCase(), String(user.id)]));
   const report: TeamSheetImportReport = { rowsRead: 0, added: 0, skipped: 0, errors: [], projects: [] };
 
   for (const project of projects ?? []) {
@@ -236,6 +246,8 @@ export async function importFromTeamSheet(): Promise<TeamSheetImportReport> {
         status: row.status === 'Live' ? 'Live' : 'Request shared',
         note: row.note || null,
         team_row: row.teamRow,
+        owner_user_id: ownerByName.get(String(row.note ?? '').trim().toLowerCase()) ?? null,
+        created_by_email: row.createdByEmail || null,
       });
     }
 

@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input';
 import StatusBadge from '@/components/status-badge';
 import { searchDatabase, type SearchRequestRow } from '@/services/search';
 import { setRequestStatus } from '@/services/requests';
-import { getBrowserIdentityName } from '@/lib/identity';
 import { normalizeSearchText } from '@/lib/domain';
 
 type SearchResult = { count: number; capped: boolean; rows: SearchRequestRow[] };
@@ -42,7 +41,7 @@ function SearchStatus({ row, query }: { row: SearchRequestRow; query: string }) 
     setMessage('');
     startTransition(async () => {
       try {
-        const result = await setRequestStatus(row.id, next, getBrowserIdentityName() || 'unknown');
+        const result = await setRequestStatus(row.id, next);
         setStatus(next);
         setSyncState(result.teamSheet.state ?? syncState);
         setMessage(result.ok ? 'Saved ✓' : 'Saved with warnings');
@@ -111,7 +110,7 @@ export default function SearchPanel() {
       {error && <div className="mb-3 rounded-xl bg-[#fce8e6] p-3 text-sm text-[#c5221f]">{error}</div>}
       <div className="space-y-2">
         {result.rows.map((row) => (
-          <article key={row.id} className="rounded-xl border border-[var(--border)] bg-white p-4">
+          <article key={row.id} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <p className="font-semibold text-[var(--text)]"><Highlight text={row.approved_site} query={query} /></p>
@@ -125,7 +124,7 @@ export default function SearchPanel() {
             <Link href={`/projects/${row.project_slug}`} className="mt-2 inline-block text-xs font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Open project →</Link>
           </article>
         ))}
-        {!pending && query.trim().length >= 2 && !error && result.rows.length === 0 && <p className="rounded-xl border border-[var(--border)] bg-white p-6 text-center text-sm text-[var(--muted)]">No matches.</p>}
+        {!pending && query.trim().length >= 2 && !error && result.rows.length === 0 && <p className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 text-center text-sm text-[var(--muted)]">No matches.</p>}
       </div>
     </div>
   );

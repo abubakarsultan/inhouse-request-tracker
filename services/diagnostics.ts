@@ -2,15 +2,17 @@
 
 import { adminClient } from '@/lib/supabase-admin';
 import { checkTeamSheetConnection } from '@/services/google-sheet-sync';
+import { requireAdminForAction } from '@/lib/auth';
 
 export type DiagnosticItem = {
-  key: 'supabase' | 'serviceAccount' | 'teamSheet' | 'webhookSecret';
+  key: 'supabase' | 'auth' | 'adminEmails' | 'serviceAccount' | 'teamSheet' | 'webhookSecret';
   label: string;
   ok: boolean;
   detail: string;
 };
 
 export async function getConnectionDiagnostics(): Promise<DiagnosticItem[]> {
+  await requireAdminForAction();
   const items: DiagnosticItem[] = [];
 
   try {
@@ -20,6 +22,13 @@ export async function getConnectionDiagnostics(): Promise<DiagnosticItem[]> {
   } catch (error) {
     items.push({ key: 'supabase', label: 'Supabase', ok: false, detail: error instanceof Error ? error.message : String(error) });
   }
+
+
+  const authOk = Boolean(process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim());
+  items.push({ key: 'auth', label: 'Google login client', ok: authOk, detail: authOk ? 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is configured for Supabase Auth.' : 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is not configured.' });
+
+  const adminEmails = String(process.env.ADMIN_EMAILS ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  items.push({ key: 'adminEmails', label: 'Bootstrap admins', ok: adminEmails.length > 0, detail: adminEmails.length ? `${adminEmails.length} ADMIN_EMAILS entr${adminEmails.length === 1 ? 'y is' : 'ies are'} configured.` : 'ADMIN_EMAILS is empty. The first Rankviz user can bootstrap as admin, but set this before team rollout.' });
 
   const serviceAccountConfigured = Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim());
   let serviceAccountDetail = serviceAccountConfigured ? 'Base64 service-account JSON is configured.' : 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.';

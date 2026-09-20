@@ -3,7 +3,6 @@
 import { useState, useTransition } from 'react';
 import { setRequestStatus } from '@/services/requests';
 import StatusBadge from '@/components/status-badge';
-import { getBrowserIdentityName } from '@/lib/identity';
 
 export default function StatusControl({ id, status, syncState, onChanged }: { id: string; status: string; syncState?: string | null; onChanged?: (status: string) => void }) {
   const [current, setCurrent] = useState(status);
@@ -16,7 +15,7 @@ export default function StatusControl({ id, status, syncState, onChanged }: { id
     setMessage(null);
     startTransition(async () => {
       try {
-        const result = await setRequestStatus(id, next, getBrowserIdentityName() || 'unknown');
+        const result = await setRequestStatus(id, next);
         setCurrent(next);
         setCurrentSync(result.teamSheet.state ?? currentSync);
         setMessage(result.ok ? 'Saved ✓' : 'Saved with warnings');
@@ -35,7 +34,7 @@ export default function StatusControl({ id, status, syncState, onChanged }: { id
         type="button"
         onClick={changeStatus}
         disabled={pending}
-        className="rounded-md border border-[var(--border)] bg-white px-2 py-1 text-xs font-medium text-[var(--muted)] hover:bg-[var(--canvas)] disabled:opacity-50"
+        className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs font-medium text-[var(--muted)] hover:bg-[var(--canvas)] disabled:opacity-50"
       >
         {pending ? 'Saving…' : current === 'Live' ? '↩ Revert' : '✓ Mark Live'}
       </button>

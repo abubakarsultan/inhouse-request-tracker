@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase-server';
 import { extractHost } from '@/lib/domain';
+import { requireActiveUserForAction } from '@/lib/auth';
 
 export type SiteCheckMatch = {
   projectId: string;
@@ -37,6 +38,7 @@ export type SiteCheckResult =
     };
 
 export async function scanSiteAcrossProjects(rawInput: string): Promise<SiteCheckResult> {
+  await requireActiveUserForAction();
   const host = extractHost(rawInput);
   if (!host) return { ok: false, reason: 'Enter a valid website or domain.' };
 
@@ -76,7 +78,7 @@ export async function scanSiteAcrossProjects(rawInput: string): Promise<SiteChec
 
   const used: SiteCheckMatch[] = [];
   const usedProjectIds = new Set<string>();
-  const projectMap = new Map((projects ?? []).map((project: any) => [String(project.id), project]));
+  const projectMap = new Map<string, any>((projects ?? []).map((project: any) => [String(project.id), project]));
 
   for (const site of matchingSites as any[]) {
     const project = projectMap.get(String(site.project_id));

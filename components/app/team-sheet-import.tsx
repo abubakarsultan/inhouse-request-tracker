@@ -25,7 +25,7 @@ export default function TeamSheetImport() {
   }
 
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
       <h2 className="text-base font-semibold text-[var(--text)]">Import from team sheet</h2>
       <p className="mt-1 text-sm text-[var(--muted)]">Reads A2:G from every mapped project tab. Safe to run repeatedly; existing project + website + anchor rows are skipped.</p>
       <Button type="button" className="mt-4" onClick={run} disabled={pending}>{pending ? 'Importing…' : 'Run team-sheet import'}</Button>

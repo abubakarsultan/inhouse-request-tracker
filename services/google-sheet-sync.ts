@@ -1,10 +1,11 @@
-'use server';
+import 'server-only';
 
 import { randomUUID } from 'node:crypto';
 import { google, type sheets_v4 } from 'googleapis';
 import { adminClient } from '@/lib/supabase-admin';
 import { normalizeForDuplicate } from '@/lib/validators';
 import { revalidatePath } from 'next/cache';
+import { requireAdminForAction } from '@/lib/auth';
 
 type SyncableProject = {
   id: string;
@@ -22,6 +23,7 @@ export type RequestSheetRecord = {
   status: string;
   team_tab: string | null;
   team_row: number | null;
+  created_by_email?: string | null;
 };
 
 export type ProjectSiteSheetRecord = {
@@ -35,6 +37,7 @@ export type ProjectSiteSheetRecord = {
   status: string;
   note: string | null;
   team_row: number | null;
+  created_by_email?: string | null;
 };
 
 export type SheetSyncResult = {
@@ -134,6 +137,24 @@ function rowMatches(row: unknown[] | undefined, website: string, anchor: string)
     normalizeForDuplicate(String(row[0] ?? '')) === normalizeForDuplicate(website) &&
     normalizeForDuplicate(String(row[2] ?? '')) === normalizeForDuplicate(anchor)
   );
+}
+
+async function ensureCreatedByEmailHeader(sheets: sheets_v4.Sheets, spreadsheetId: string, tab: string) {
+  const response = await withGoogleRetry(() =>
+    sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!H1` })
+  ) as { data: { values?: unknown[][] } };
+  const current = String((response.data.values ?? [])[0]?.[0] ?? '').trim();
+  if (current && current !== 'Created By Email') {
+    throw new Error(`Column H in tab "${tab}" is already in use (header: "${current}"). Expected "Created By Email".`);
+  }
+  if (!current) {
+    await withGoogleRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${quoteTab(tab)}!H1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [['Created By Email']] },
+    }));
+  }
 }
 
 async function logSync(entry: {
@@ -245,10 +266,11 @@ export async function appendRequestToTeamSheet(
       return result;
     }
 
+    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
     await acquireAppendLock(lockKey, ownerToken);
     try {
       let allRows = await withGoogleRetry(() =>
-        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:G` })
+        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
       ) as { data: { values?: unknown[][] } };
       let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
 
@@ -257,7 +279,7 @@ export async function appendRequestToTeamSheet(
       let freeTargetConfirmed = false;
       for (let check = 0; check < 10; check += 1) {
         const target = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:G${targetRow}` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}` })
         ) as { data: { values?: unknown[][] } };
         const occupied = rowHasContent((target.data.values ?? [])[0]);
         if (!occupied) {
@@ -265,7 +287,7 @@ export async function appendRequestToTeamSheet(
           break;
         }
         allRows = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:G` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
         ) as { data: { values?: unknown[][] } };
         targetRow = Math.max(targetRow + 1, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
       }
@@ -274,7 +296,7 @@ export async function appendRequestToTeamSheet(
       await withGoogleRetry(() =>
         sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${quoteTab(tab)}!A${targetRow}:G${targetRow}`,
+          range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}`,
           valueInputOption: 'RAW',
           requestBody: {
             values: [[
@@ -285,6 +307,7 @@ export async function appendRequestToTeamSheet(
               '',
               request.status,
               request.assign_to ?? '',
+              request.created_by_email ?? '',
             ]],
           },
         })
@@ -428,23 +451,24 @@ export async function appendProjectSiteToTeamSheet(
       return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
     }
 
+    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
     await acquireAppendLock(lockKey, ownerToken);
     try {
       const allRows = await withGoogleRetry(() =>
-        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:G` })
+        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
       ) as { data: { values?: unknown[][] } };
       let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
       let freeTargetConfirmed = false;
       for (let check = 0; check < 10; check += 1) {
         const target = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:G${targetRow}` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}` })
         ) as { data: { values?: unknown[][] } };
         if (!rowHasContent((target.data.values ?? [])[0])) {
           freeTargetConfirmed = true;
           break;
         }
         const reread = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:G` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
         ) as { data: { values?: unknown[][] } };
         targetRow = Math.max(targetRow + 1, lastNonEmptyRow((reread.data.values ?? []) as unknown[][]) + 2);
       }
@@ -453,7 +477,7 @@ export async function appendProjectSiteToTeamSheet(
       await withGoogleRetry(() =>
         sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${quoteTab(tab)}!A${targetRow}:G${targetRow}`,
+          range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}`,
           valueInputOption: 'RAW',
           requestBody: { values: [[
             site.website,
@@ -463,6 +487,7 @@ export async function appendProjectSiteToTeamSheet(
             site.traffic ?? '',
             site.status,
             site.note ?? '',
+            site.created_by_email ?? '',
           ]] },
         })
       );
@@ -559,8 +584,8 @@ export async function applyStatusFromSheet(payload: {
 
   const requestId = String(match.request_id);
   const { data: site } = await adminClient.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
-  const { setRequestStatus } = await import('@/services/requests');
-  const result = await setRequestStatus(requestId, payload.status, 'team sheet', {
+  const { setRequestStatusCore } = await import('@/services/request-status-core');
+  const result = await setRequestStatusCore(requestId, payload.status, 'team sheet', {
     pushToSheet: false,
     sheetRow: payload.row,
   });
@@ -600,6 +625,7 @@ export type RefreshSheetStatusReport = {
 };
 
 export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatusReport> {
+  await requireAdminForAction();
   const report: RefreshSheetStatusReport = {
     checked: 0,
     updated: 0,
@@ -665,8 +691,8 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
         continue;
       }
 
-      const { setRequestStatus } = await import('@/services/requests');
-      const statusResult = await setRequestStatus(request.id, sheetStatus, 'team sheet refresh', { pushToSheet: false, sheetRow: verifiedRow });
+      const { setRequestStatusCore } = await import('@/services/request-status-core');
+      const statusResult = await setRequestStatusCore(request.id, sheetStatus, 'team sheet refresh', { pushToSheet: false, sheetRow: verifiedRow });
       await adminClient.from('requests').update({ team_tab: tab, team_row: verifiedRow, sync_state: 'synced', sync_error: null }).eq('id', request.id);
       if (request.status === sheetStatus) report.unchanged += 1;
       else report.updated += 1;
@@ -723,6 +749,7 @@ export type TeamSheetProjectRow = {
   traffic: string | number | null;
   status: string;
   note: string;
+  createdByEmail: string;
 };
 
 export type TeamSheetReadResult =
@@ -752,7 +779,7 @@ export async function readTeamSheetProjectRows(project: {
     if (!titles.has(tab)) return { state: 'skipped', tab, rows: [], reason: 'Mapped tab does not exist in the team sheet.' };
 
     const response = await withGoogleRetry(() =>
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:G` })
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:H` })
     ) as { data: { values?: unknown[][] } };
 
     const rows: TeamSheetProjectRow[] = [];
@@ -768,6 +795,7 @@ export async function readTeamSheetProjectRows(project: {
         traffic: row[4] == null || String(row[4]).trim() === '' ? null : String(row[4]).trim(),
         status: String(row[5] ?? '').trim(),
         note: String(row[6] ?? '').trim(),
+        createdByEmail: String(row[7] ?? '').trim(),
       });
     }
     return { state: 'ok', tab, rows };

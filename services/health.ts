@@ -4,6 +4,7 @@ import { adminClient } from '@/lib/supabase-admin';
 import { readTeamSheetProjectRows, verifyRequestTeamRow, type TeamSheetReadResult } from '@/services/google-sheet-sync';
 import { revalidatePath } from 'next/cache';
 import { normalizeForDuplicate } from '@/lib/validators';
+import { requireAdminForAction } from '@/lib/auth';
 
 export type HealthProblem = {
   requestId: string;
@@ -23,6 +24,7 @@ export type HealthCheckResult = {
 };
 
 export async function runHealthCheck(): Promise<HealthCheckResult> {
+  await requireAdminForAction();
   const checkedAt = new Date().toISOString();
   const requests: any[] = [];
   for (let from = 0; ; from += 500) {
@@ -98,6 +100,7 @@ export async function runHealthCheck(): Promise<HealthCheckResult> {
 }
 
 export async function relinkHealthRequest(requestId: string) {
+  await requireAdminForAction();
   const { data: request, error } = await adminClient
     .from('requests')
     .select('id,approved_site,anchor,team_tab,team_row,project_sites(id)')

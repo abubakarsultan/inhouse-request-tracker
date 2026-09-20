@@ -5,6 +5,8 @@ import { requestSchema, isRequestStatus, looksLikeHttpUrl, type RequestInput } f
 import { karachiDateString, karachiDateOffsetString, karachiMonthBounds } from '@/lib/date';
 import { appendRequestToTeamSheet, syncRequestStatusToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { revalidatePath } from 'next/cache';
+import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
+import { setRequestStatusCore, type SetStatusResult } from '@/services/request-status-core';
 
 type DuplicateInfo = { date: string; client: string };
 type CreateSyncState = 'synced' | 'skipped' | 'failed';
@@ -45,6 +47,7 @@ async function findDuplicate(approvedSite: string, anchor: string): Promise<Dupl
 }
 
 export async function getRequests(filters?: { status?: string; project_id?: string }) {
+  await requireAdminForAction();
   const supabase = await createClient();
   let query = supabase
     .from('requests')
@@ -58,9 +61,14 @@ export async function getRequests(filters?: { status?: string; project_id?: stri
 }
 
 export async function getAutocompleteOptions() {
+  await requireActiveUserForAction();
   const supabase = await createClient();
-  const { data, error } = await supabase.from('requests').select('assign_to,shared_with').limit(5000);
+  const [{ data, error }, { data: teamNames, error: teamNamesError }] = await Promise.all([
+    supabase.from('requests').select('assign_to,shared_with').limit(5000),
+    supabase.from('team_names').select('name').eq('active', true).order('name'),
+  ]);
   if (error) throw error;
+  if (teamNamesError) throw teamNamesError;
 
   const distinct = (key: 'assign_to' | 'shared_with') => {
     const seen = new Map<string, string>();
@@ -73,10 +81,14 @@ export async function getAutocompleteOptions() {
     return [...seen.values()].sort((a, b) => a.localeCompare(b));
   };
 
-  return { assignTo: distinct('assign_to'), sharedWith: distinct('shared_with') };
+  const assignTo = new Map<string, string>();
+  for (const value of distinct('assign_to')) assignTo.set(value.toLowerCase(), value);
+  for (const row of teamNames ?? []) { const value = String(row.name ?? '').trim(); if (value) assignTo.set(value.toLowerCase(), value); }
+  return { assignTo: [...assignTo.values()].sort((a, b) => a.localeCompare(b)), sharedWith: distinct('shared_with') };
 }
 
 export async function createRequest(input: RequestInput, forceDuplicate = false): Promise<CreateRequestResult> {
+  const profile = await requireActiveUserForAction();
   const parsed = requestSchema.parse(input);
   const supabase = await createClient();
 
@@ -93,6 +105,13 @@ export async function createRequest(input: RequestInput, forceDuplicate = false)
   if (projectError || !project) throw new Error(projectError?.message ?? 'Project not found');
   if (project.active === false) throw new Error('This project is disabled.');
 
+  const assignTo = profile.role === 'member' ? profile.sheet_name : (cleanOptional(parsed.assign_to) || profile.sheet_name);
+  let assignedUserId: string | null = profile.role === 'member' ? profile.id : null;
+  if (profile.role === 'admin' && assignTo) {
+    const { data: assigned } = await supabase.from('users').select('id').ilike('sheet_name', assignTo).eq('account_status', 'active').maybeSingle();
+    assignedUserId = assigned?.id ? String(assigned.id) : null;
+  }
+
   const status = parsed.status;
   const liveDate = status === 'Live' ? karachiDateString() : null;
   const requestPayload = {
@@ -104,14 +123,17 @@ export async function createRequest(input: RequestInput, forceDuplicate = false)
     placement_page: cleanOptional(parsed.placement_page),
     shared_with: cleanOptional(parsed.shared_with),
     priority: parsed.priority,
-    assign_to: cleanOptional(parsed.assign_to),
+    assign_to: assignTo,
     deadline: cleanOptional(parsed.deadline),
     status,
     initial_status: status,
     live_date: liveDate,
     sync_state: 'skipped',
     sync_error: null,
-    created_by_name: cleanOptional(parsed.created_by_name),
+    created_by_name: profile.sheet_name || profile.google_name || profile.email,
+    assigned_user_id: assignedUserId,
+    created_by_user_id: profile.id,
+    created_by_email: profile.email,
   };
 
   // DB is the source of truth: this insert always happens before any sheet call.
@@ -133,6 +155,9 @@ export async function createRequest(input: RequestInput, forceDuplicate = false)
       status: request.status,
       note: request.assign_to,
       team_row: null,
+      owner_user_id: assignedUserId,
+      created_by_user_id: profile.id,
+      created_by_email: profile.email,
     })
     .select('id')
     .single();
@@ -158,6 +183,7 @@ export async function createRequest(input: RequestInput, forceDuplicate = false)
     status: request.status,
     team_tab: request.team_tab,
     team_row: request.team_row,
+    created_by_email: profile.email,
   };
   const sync = await appendRequestToTeamSheet(project, sheetRecord, projectSite.id);
 
@@ -192,6 +218,7 @@ function makeCreateSummary(projectName: string, request: any, targetUrl: string)
 }
 
 export async function retryRequestSync(requestId: string) {
+  const profile = await requireActiveUserForAction();
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
@@ -199,6 +226,10 @@ export async function retryRequestSync(requestId: string) {
     .eq('id', requestId)
     .single();
   if (error || !request) throw new Error(error?.message ?? 'Request not found');
+  if (profile.role !== 'admin') {
+    const assignedByText = profile.sheet_name && String(request.assign_to ?? '').trim().toLowerCase() === profile.sheet_name.trim().toLowerCase();
+    if (String(request.assigned_user_id ?? '') !== profile.id && String(request.created_by_user_id ?? '') !== profile.id && !assignedByText) throw new Error('You can only retry sync for your own request.');
+  }
 
   const { data: site } = await supabase.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
   const project = request.projects as any;
@@ -219,127 +250,23 @@ export async function retryRequestSync(requestId: string) {
   return { state: sync.state, text: sync.text };
 }
 
-type StatusStep = { ok: boolean; skipped?: boolean; noOp?: boolean; reason?: string };
-export type SetStatusResult = {
-  ok: boolean;
-  database: StatusStep;
-  projectSite: StatusStep;
-  teamSheet: StatusStep & { state?: CreateSyncState; text?: string };
-};
-
-export async function setRequestStatus(
-  requestId: string,
-  newStatus: string,
-  changedBy: string,
-  options?: { pushToSheet?: boolean; sheetRow?: number }
-): Promise<SetStatusResult> {
-  if (!isRequestStatus(newStatus)) throw new Error(`Invalid status: ${newStatus}`);
+export async function setRequestStatus(requestId: string, newStatus: string): Promise<SetStatusResult> {
+  const profile = await requireActiveUserForAction();
   const supabase = await createClient();
-
-  const { data: current, error: fetchError } = await supabase
-    .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
-    .eq('id', requestId)
-    .single();
-  if (fetchError || !current) throw new Error(fetchError?.message ?? 'Request not found');
-
-  const project = current.projects as any;
-  const { data: linkedSite } = await supabase
-    .from('project_sites')
-    .select('id,team_row')
-    .eq('request_id', requestId)
-    .maybeSingle();
-
-  if (current.status === newStatus) {
-    const requestNoOpUpdate: Record<string, unknown> = {};
-    if (options?.sheetRow && options.sheetRow !== current.team_row) requestNoOpUpdate.team_row = options.sheetRow;
-    if (options?.pushToSheet === false) {
-      requestNoOpUpdate.sync_state = 'synced';
-      requestNoOpUpdate.sync_error = null;
-    }
-    if (Object.keys(requestNoOpUpdate).length) await supabase.from('requests').update(requestNoOpUpdate).eq('id', requestId);
-    if (linkedSite?.id) {
-      const siteNoOpUpdate: Record<string, unknown> = { status: newStatus };
-      if (options?.sheetRow) siteNoOpUpdate.team_row = options.sheetRow;
-      await supabase.from('project_sites').update(siteNoOpUpdate).eq('id', linkedSite.id);
-    }
-    return {
-      ok: true,
-      database: { ok: true, noOp: true },
-      projectSite: { ok: true, noOp: true, skipped: !linkedSite },
-      teamSheet: { ok: true, noOp: true, skipped: options?.pushToSheet === false, state: options?.pushToSheet === false ? 'synced' : undefined },
-    };
+  if (profile.role !== 'admin') {
+    const { data: request, error } = await supabase
+      .from('requests')
+      .select('assigned_user_id,assign_to,created_by_user_id')
+      .eq('id', requestId)
+      .single();
+    if (error || !request) throw new Error(error?.message ?? 'Request not found');
+    const assignedByText = profile.sheet_name && String(request.assign_to ?? '').trim().toLowerCase() === profile.sheet_name.trim().toLowerCase();
+    const allowed = String(request.assigned_user_id ?? '') === profile.id || String(request.created_by_user_id ?? '') === profile.id || assignedByText;
+    if (!allowed) throw new Error('You can only change status for requests assigned to you.');
   }
-
-  const changedByClean = changedBy.trim() || 'unknown';
-  const changedAt = new Date().toISOString();
-  const requestUpdate: Record<string, unknown> = {
-    status: newStatus,
-    status_changed_by: changedByClean,
-    status_changed_at: changedAt,
-  };
-  if (newStatus === 'Live' && !current.live_date) requestUpdate.live_date = karachiDateString();
-  if (options?.sheetRow) requestUpdate.team_row = options.sheetRow;
-
-  const { error: dbError } = await supabase.from('requests').update(requestUpdate).eq('id', requestId);
-  if (dbError) throw new Error(dbError.message);
-  const database: StatusStep = { ok: true };
-
-  let projectSite: StatusStep = { ok: true, skipped: true, reason: 'No linked project_sites row' };
-  if (linkedSite?.id) {
-    const siteUpdate: Record<string, unknown> = { status: newStatus };
-    if (options?.sheetRow) siteUpdate.team_row = options.sheetRow;
-    const { error: siteError } = await supabase.from('project_sites').update(siteUpdate).eq('id', linkedSite.id);
-    projectSite = siteError ? { ok: false, reason: siteError.message } : { ok: true };
-  }
-
-  const { error: logError } = await supabase.from('request_logs').insert({
-    request_id: requestId,
-    old_status: current.status,
-    new_status: newStatus,
-    changed_by: changedByClean,
-  });
-  if (logError && projectSite.ok) projectSite = { ok: false, reason: `Status changed, but audit log failed: ${logError.message}` };
-
-  let teamSheet: SetStatusResult['teamSheet'];
-  if (options?.pushToSheet === false) {
-    await supabase.from('requests').update({ sync_state: 'synced', sync_error: null }).eq('id', requestId);
-    teamSheet = { ok: true, skipped: true, state: 'synced', text: 'Sheet-originated change; push-back intentionally skipped.' };
-  } else {
-    const record: RequestSheetRecord = {
-      id: current.id,
-      project_id: current.project_id,
-      approved_site: current.approved_site,
-      placement_page: current.placement_page,
-      anchor: current.anchor,
-      assign_to: current.assign_to,
-      status: newStatus,
-      team_tab: current.team_tab,
-      team_row: current.team_row,
-    };
-    const sync = await syncRequestStatusToTeamSheet(project, record, linkedSite?.id ?? null);
-    teamSheet = {
-      ok: sync.state !== 'failed',
-      skipped: sync.state === 'skipped',
-      state: sync.state,
-      text: sync.text,
-      reason: sync.error,
-    };
-
-    const syncStateUpdate: Record<string, unknown> = {
-      sync_state: sync.state,
-      sync_error: sync.state === 'failed' ? sync.error ?? sync.text : null,
-    };
-    if (sync.tab) syncStateUpdate.team_tab = sync.tab;
-    if (sync.row) syncStateUpdate.team_row = sync.row;
-    await supabase.from('requests').update(syncStateUpdate).eq('id', requestId);
-    if (sync.row && linkedSite?.id) await supabase.from('project_sites').update({ team_row: sync.row }).eq('id', linkedSite.id);
-  }
-
-  revalidatePhase1Paths(project?.slug);
-  return { ok: database.ok && projectSite.ok && teamSheet.ok, database, projectSite, teamSheet };
+  const changedBy = `${profile.sheet_name || profile.google_name || 'Rankviz user'} <${profile.email}>`;
+  return setRequestStatusCore(requestId, newStatus, changedBy);
 }
-
 
 export type DashboardActivityRow = {
   id: string;
@@ -411,6 +338,7 @@ async function loadAllRequestStatuses(supabase: Awaited<ReturnType<typeof create
 }
 
 export async function getDashboardOverview() {
+  await requireAdminForAction();
   const supabase = await createClient();
   const month = karachiMonthBounds();
   const liveSince = karachiDateOffsetString(-6);
@@ -501,8 +429,9 @@ function escapeLikePattern(value: string) {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
-export async function getMyRequests(name: string): Promise<MyRequestsResult> {
-  const clean = name.trim();
+export async function getMyRequests(name: string = ''): Promise<MyRequestsResult> {
+  const profile = await requireActiveUserForAction();
+  const clean = (profile.role === 'admin' ? (name.trim() || profile.sheet_name || '') : (profile.sheet_name || '')).trim();
   const today = karachiDateString();
   if (!clean) {
     return { name: '', today, kpis: { assigned: 0, live: 0, pending: 0, overdue: 0 }, upcoming: [], requests: [] };
@@ -541,6 +470,7 @@ export async function getMyRequests(name: string): Promise<MyRequestsResult> {
 }
 
 export async function getDashboardStats() {
+  await requireAdminForAction();
   const supabase = await createClient();
   const month = karachiMonthBounds();
   const [{ count: total }, { count: live }, { count: pending }, { count: failedSync }, { count: thisMonth }] = await Promise.all([

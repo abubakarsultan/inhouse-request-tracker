@@ -3,8 +3,19 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { RefreshCw } from 'lucide-react';
-import { refreshStatusesFromTeamSheet, type RefreshSheetStatusReport } from '@/services/google-sheet-sync';
+import { refreshTeamSheetStatuses } from '@/services/sheet-actions';
 import { formatKarachiDateTime } from '@/lib/date';
+
+type RefreshSheetStatusReport = {
+  checked: number;
+  updated: number;
+  repairedRows: number;
+  unchanged: number;
+  invalidStatuses: number;
+  failed: number;
+  errors: string[];
+  refreshedAt: string;
+};
 
 export default function RefreshLiveStatusButton({
   lastRefresh,
@@ -20,7 +31,7 @@ export default function RefreshLiveStatusButton({
     setError(null);
     startTransition(async () => {
       try {
-        const result = await refreshStatusesFromTeamSheet();
+        const result = await refreshTeamSheetStatuses();
         setReport(result);
         router.refresh();
       } catch (caught) {
@@ -37,7 +48,7 @@ export default function RefreshLiveStatusButton({
 
   return (
     <div className="text-right">
-      <button type="button" onClick={run} disabled={pending} className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm font-medium text-[var(--text)] hover:bg-[var(--canvas)] disabled:opacity-50">
+      <button type="button" onClick={run} disabled={pending} className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--text)] hover:bg-[var(--canvas)] disabled:opacity-50">
         <RefreshCw size={15} className={pending ? 'animate-spin' : ''} /> {pending ? 'Refreshing…' : 'Refresh live status'}
       </button>
       <p className="mt-1 text-[11px] text-[var(--muted)]">{label}</p>

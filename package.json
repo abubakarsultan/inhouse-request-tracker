@@ -9,7 +9,8 @@
     "test:csv": "node --experimental-strip-types --test tests/outreach-csv.test.mjs",
     "test:phase2": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:phase3": "node --experimental-strip-types --test tests/*.test.mjs",
-    "test:phase4": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test:phase4": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:auth": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "next": "latest",

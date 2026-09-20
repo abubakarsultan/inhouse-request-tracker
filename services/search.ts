@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase-server';
 import { normalizeSearchText } from '@/lib/domain';
+import { requireActiveUserForAction } from '@/lib/auth';
 
 export type SearchRequestRow = {
   id: string;
@@ -29,8 +30,13 @@ export async function searchDatabase(query: string): Promise<SearchDatabaseResul
   const clean = String(query ?? '').trim();
   if (normalizeSearchText(clean).length < 2) return { ok: true, count: 0, capped: false, rows: [] };
 
+  const profile = await requireActiveUserForAction();
   const supabase = await createClient();
-  const { data, error } = await supabase.rpc('search_requests', { p_query: clean, p_limit: 101 });
+  const rpc = profile.role === 'admin' ? 'search_requests' : 'search_requests_for_user';
+  const args = profile.role === 'admin'
+    ? { p_query: clean, p_limit: 101 }
+    : { p_query: clean, p_user_id: profile.id, p_sheet_name: profile.sheet_name || '', p_limit: 101 };
+  const { data, error } = await supabase.rpc(rpc, args);
   if (error) throw new Error(`Search failed: ${error.message}`);
 
   const rows = (data ?? []) as SearchRequestRow[];

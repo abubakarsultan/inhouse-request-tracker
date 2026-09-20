@@ -1,125 +1,171 @@
 # INHOUSE REQUEST
 
-Final Phase 4 of the no-login Rankviz outreach request app. Supabase is the source of truth and the **Guest Post Anchor** Google Sheet is a server-side mirror with two-way status sync.
+Rankviz internal outreach request app. Supabase/Postgres is the source of truth; the **Guest Post Anchor** Google Sheet is a server-side mirror. The current build adds Rankviz-only Google login, personal workspaces, admin approval, creator-email auditing, and responsive light/dark UI on top of the completed Phase 1–4 request/sync system.
 
-## Current behavior
+## Access model
 
-### Core request flow
+- Sign-in is **Continue with Google** only.
+- Only `@rankviz.com` accounts are accepted by the app; migration `004_auth_team_rollout.sql` also provides a Supabase **Before User Created** hook for a database-level Google + domain restriction.
+- First login asks the member to choose the exact Guest Post Anchor name used in the team sheet.
+- Members remain **Pending** until an admin approves the mapping.
+- Admins are bootstrapped from comma-separated `ADMIN_EMAILS`. If that variable is empty and there is no active admin yet, the first Rankviz user can bootstrap as admin as an emergency fallback.
+- Active members see a personal dashboard and only their own status actions. Admins see the global dashboard, Projects, Requests, Search, Import, Health, Team, and Settings.
 
-- No login, auth middleware, or Supabase Auth.
-- All database access is server-side with `SUPABASE_SERVICE_ROLE_KEY`.
-- Request statuses are exactly `Request shared` and `Live`; revert is allowed and `live_date` is never cleared.
-- Priorities are exactly `High`, `Medium`, and `Low`.
-- `Assign To` and `Shared With` are free text with autocomplete.
-- Browser-only **Who are you?** supplies audit attribution; it is not authentication.
-- Create request is DB first: `requests` -> linked `project_sites` -> team-sheet mirror.
-- Team-sheet appends intentionally use `lastRow + 2` and are serialized with the DB lease lock.
-- Stored Sheet rows are verified by normalized Website + Anchor before status writes; moved/sorted rows are searched and repaired.
+### Seeded Guest Post Anchor names
 
-### Form, search, checks, imports, exports
+- M.ATIF
+- Wasif
+- Atif latif
+- Sohail Ahmad
+- Rizwan
+- Abubakar
+- Zunnorain Ali
 
-- Approved Site inline usage hint is debounced and never blocks save.
-- Site Check uses exact normalized host matching and reads the app database, not Google Sheets.
-- Search is normalized server-side, debounced, capped at 100 displayed results, and uses the canonical status action.
-- Repeatable **Import from team sheet** reads mapped tabs A2:G and creates missing unlinked `project_sites` rows only.
-- CSV/XLSX project-site import accepts `Website, Opportunity, Anchor, DR, Traffic, Status, Note`, normalizes status to the two-status vocabulary, and can optionally push imported rows to the team sheet. Sheet push is **off by default** and database inserts happen first.
-- Outreach OS export uses the exact 9-column format, UTF-8 BOM, CRLF, trailing CRLF, and Asia/Karachi date selection.
+The migration also discovers distinct existing assignee names from `requests.assign_to` and imported `project_sites.note`, so a full-team rollout can surface historical names automatically. Admins can add or disable future names from **Team** without a code change.
 
-### Views
+## Member workflow
 
-- Dashboard: Total Requests, Live Links, Pending, Failed Sync, This Month, recent activity, last-7-days Live activity, per-project breakdown, failed-sync retry, and live Sheet reconciliation.
-- Projects: responsive cards plus project detail `project_sites` table.
-- My Requests: Assigned / Live / Pending / Overdue, next-7-days deadlines, and canonical Live/Revert controls.
-- Health Check: read-only linkage scan for request <-> `project_sites` <-> team-sheet row, with explicit one-row **Re-link** repair.
-- Settings: browser identity, Supabase/Sheets/webhook diagnostics, and a ready-to-copy installable Apps Script trigger snippet with the current site URL filled in.
+1. User signs in with their `@rankviz.com` Google account.
+2. On first login, they choose their exact Guest Post Anchor name.
+3. The account waits for admin approval.
+4. Admin approves it from **Team**; the app links historical `requests.assign_to` and imported `project_sites.note` rows that match that exact name (case-insensitive).
+5. The member gets a personal dashboard with Assigned / Live / Pending / Overdue, next-7-days deadlines, linked requests, imported sheet history, and per-project counts.
+6. A member-created request is automatically assigned to that member's approved sheet name.
 
-## Team sheet -> site status sync
+## Admin workspace
 
-`POST /api/sheet-webhook` expects header:
+The **Team** page provides:
+
+- pending-registration approve/reject;
+- selected sheet name plus historical-match count before approval;
+- member/admin role management;
+- enable/disable access;
+- reset name mapping;
+- read-only **View as user** workspace preview;
+- team workload counts;
+- selectable Guest Post Anchor name management;
+- unmatched historical sheet names, with an option to add them as selectable names.
+
+Admin/global tools from the existing app remain available: Projects, Requests, Search, Import, Health, sync diagnostics, team-sheet import, failed-sync retry, and live-status reconciliation.
+
+## User profile and UI
+
+- Top-right profile menu shows name, email, role, status, Profile, and Logout.
+- Light/dark toggle is in the top bar and is remembered in browser localStorage.
+- Desktop layout uses the available monitor width; laptop breakpoints reduce grid columns; mobile uses a horizontally scrollable bottom navigation.
+- The page itself avoids horizontal overflow; wide data tables scroll inside their own cards.
+
+## Google Sheet creator email (Option A)
+
+The technical Sheets API still uses the Google service account for server-side writes. For human audit attribution, every new site-created request writes the signed-in user's real Google email into **column H**:
 
 ```text
-x-sheet-webhook-secret: <SHEET_WEBHOOK_SECRET>
+A Website | B Opportunity | C Anchor | D DR | E Traffic | F Status | G Note / Assign To | H Created By Email
 ```
 
-and JSON body:
+The app creates `H1 = Created By Email` the first time it needs to write to a tab if H1 is blank. If column H is already being used for another header, sync fails clearly rather than overwriting it.
 
-```json
-{
-  "tab": "getprolinks",
-  "row": 12,
-  "website": "example.com",
-  "anchor": "example anchor",
-  "status": "Live"
-}
-```
+This is intentionally **Option A**: Google version history may still show the service account as the API writer, while column H permanently records the actual Rankviz user who created the request.
 
-Lookup order is normalized `team_tab + website + anchor`, then `team_tab + team_row` as fallback. Incoming changes call the same `setRequestStatus()` function with Sheet push disabled, preventing ping-pong loops. `changed_by` is `team sheet` for webhook changes.
+## Existing request and sync behavior
 
-The team-sheet Apps Script must use an **installable edit trigger**. A standalone source is included at:
-
-```text
-apps-script/SheetStatusWebhook.gs
-```
-
-The Settings page renders the same snippet with the current site URL filled in. Replace the secret placeholder, paste it into the team sheet Apps Script project, then run `installTrigger()` once and authorize it. The handler is `onSheetEdit`, not a simple `onEdit`, so `UrlFetchApp` is permitted.
-
-## Dashboard refresh and repair
-
-**Refresh live status** reads Sheet column F for requests that have stored `team_tab/team_row`. Each row is verified by Website + Anchor; if sorting/insertion moved it, the matching row is found and the stored row is repaired. Valid Sheet differences are reconciled through `setRequestStatus()`. Invalid statuses or missing rows become visible failed-sync diagnostics rather than overwriting request status.
-
-**Retry sync** updates an already-linked verified row when `team_row` exists. It only appends a new row when no Sheet row has ever been stored, avoiding duplicate rows after a status-sync failure.
+- Request creation stays DB-first: `requests` -> linked `project_sites` -> team-sheet mirror.
+- Sheet appends intentionally use `lastRow + 2`.
+- Statuses are exactly `Request shared` and `Live`; revert is allowed and first `live_date` is retained.
+- Team-sheet status edits use the installable `onSheetEdit` webhook and do not ping-pong back to Sheets.
+- Stored sheet rows are verified by Website + Anchor before status updates.
+- Failed Sheets writes never lose the database request.
+- Site Check uses exact normalized host matching.
+- Outreach OS CSV remains the exact 9-column format.
 
 ## Environment variables
 
-Copy `.env.example` to `.env.local` and set exactly:
-
 ```env
 NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+ADMIN_EMAILS=
 GOOGLE_SERVICE_ACCOUNT_JSON=
 TEAM_SHEET_ID=
 SHEET_WEBHOOK_SECRET=
 ```
 
-`GOOGLE_SERVICE_ACCOUNT_JSON` is the base64-encoded complete Google service-account JSON. Share `TEAM_SHEET_ID` with that service-account email as **Editor**.
+Notes:
 
-No additional Phase 4 environment variables were added.
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` is the browser-safe Supabase key beginning with `sb_publishable_`.
+- `SUPABASE_SERVICE_ROLE_KEY` is the server-only `sb_secret_...` / service-role secret already used by the app. Never expose it to the browser.
+- `ADMIN_EMAILS` is a comma-separated list of exact Rankviz Google addresses, for example `person1@rankviz.com,person2@rankviz.com`.
+- Existing Google Sheet variables remain unchanged.
 
-## Database
+## Database upgrade
 
-For an existing installation, run migrations in order:
+The current production installation already has Phases 1–4. Run only:
 
 ```text
-database/migrations/001_phase1_core.sql
-database/migrations/002_phase2_search.sql
-database/migrations/003_phase4_sync.sql
+database/migrations/004_auth_team_rollout.sql
 ```
 
-`003_phase4_sync.sql` is re-runnable. It adds Sheet lookup/repair indexes and the normalized `find_request_from_sheet(...)` RPC used by the webhook.
+Do **not** re-run `schema.sql` on the populated production database. `004_auth_team_rollout.sql` is idempotent and adds:
 
-For a fresh installation, use the current `database/schema.sql`.
+- team/user onboarding fields;
+- user ownership and creator-email columns;
+- `team_names`;
+- history-linking RPC;
+- member-search RPC;
+- Rankviz/Google Before User Created hook function;
+- indexes/triggers/grants.
 
-## Local setup and final verification
+For a completely fresh database, the current `database/schema.sql` already contains the full canonical schema through this rollout.
+
+## Google OAuth / Supabase Auth setup
+
+### Google Cloud
+
+Use the existing **inhouse request tracker** Google Cloud project.
+
+1. Configure the Google Auth application. For a Rankviz Workspace-owned project, use **Internal** audience if available.
+2. Create an OAuth Client ID with application type **Web application**.
+3. Authorized JavaScript origin: your production Vercel origin, e.g. `https://inhouse-request-tracker.vercel.app`.
+4. Authorized redirect URI: use the exact Supabase Google-provider callback URL shown in **Supabase -> Authentication -> Providers -> Google**. It has the form `https://<project-ref>.supabase.co/auth/v1/callback`.
+5. Copy the OAuth Client ID and Client Secret.
+
+### Supabase
+
+1. **Authentication -> Providers -> Google**: enable Google and paste the Google OAuth Client ID + Secret.
+2. **Authentication -> URL Configuration**:
+   - Site URL: production Vercel origin.
+   - Redirect URL: `https://YOUR-VERCEL-DOMAIN/auth/callback`.
+3. **Authentication -> Hooks -> Before User Created**: select `public.hook_restrict_rankviz_signup` created by migration 004. This rejects non-Google signups and non-`@rankviz.com` addresses before an Auth user is created.
+4. Copy the Supabase **Publishable key** into Vercel as `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+
+Google OAuth Client Secret belongs in the Supabase Google-provider settings, **not** in Vercel.
+
+## Existing Google Sheet setup
+
+Keep the existing service account, `TEAM_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `SHEET_WEBHOOK_SECRET`, and installed `onSheetEdit` trigger. No new service-account key is needed for login. Google login and the Sheets service account are separate systems.
+
+## Production rollout order
+
+1. Run `004_auth_team_rollout.sql` in Supabase SQL Editor.
+2. Configure Google OAuth in Google Cloud.
+3. Enable/configure Google provider in Supabase Auth.
+4. Configure Supabase Site URL + `/auth/callback` redirect.
+5. Enable `public.hook_restrict_rankviz_signup` under Before User Created hooks.
+6. Add Vercel `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` and `ADMIN_EMAILS`.
+7. Redeploy Vercel.
+8. Sign in first with an email listed in `ADMIN_EMAILS`, select the correct Guest Post Anchor name, and confirm the admin dashboard opens.
+9. Have one member sign in, choose their name, and confirm they land on Pending.
+10. Admin -> Team -> approve that member and confirm historical rows are linked.
+11. Create a test request as that member and confirm Sheet columns G/H contain the exact sheet name and member email.
+12. Test member status Live/Revert, logout/login, dark theme, admin View-as-user, and mobile/laptop layout.
+
+## Verification commands
 
 ```bash
 npm ci
 npx tsc --noEmit
-npm run test:phase4
+npm run test:auth
 npm run build
-npm run dev
 ```
 
-Open `http://localhost:3000`. The app opens directly without login.
-
-## Final production acceptance checks
-
-1. Run migrations `001`, `002`, `003` in order and configure all five environment variables.
-2. Open **Settings** and confirm Supabase, service account, team sheet, and webhook secret all show OK.
-3. Create a Request shared request and confirm DB + linked `project_sites` + team-sheet A:G at `lastRow + 2`.
-4. Mark it Live in the site and confirm DB, `project_sites`, request log, `live_date`, and Sheet F update. Revert it and confirm `live_date` remains set.
-5. Edit Sheet F directly and confirm the site changes through `/api/sheet-webhook` without writing back to the Sheet.
-6. Insert/sort Sheet rows, run **Refresh live status**, and confirm stored row repair plus status reconciliation.
-7. Break Sheet credentials temporarily and confirm the DB change survives with `sync_state = failed`; restore credentials and use **Retry sync** without creating a duplicate Sheet row.
-8. Run **Health Check** and verify clean rows show no problem; deliberately move one row and confirm Re-link repairs only the stored row pointer.
-9. Import a small CSV/XLSX once with Sheet push off and once with it on; confirm both use only `Request shared` / `Live`.
-10. Run `npx tsc --noEmit`, `npm run test:phase4`, and `npm run build` in the deployment environment before release.
+The test suite includes the original Phase 2–4 domain/deadline/CSV/webhook tests plus Rankviz-domain/admin-email and auth-rollout structure checks.

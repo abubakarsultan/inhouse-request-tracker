@@ -6,7 +6,6 @@ import { Select } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { createRequest, retryRequestSync, type CreateRequestResult } from '@/services/requests';
-import { getBrowserIdentityName } from '@/lib/identity';
 import { REQUEST_PRIORITIES, REQUEST_STATUSES, looksLikeHttpUrl } from '@/lib/validators';
 
 type Project = { id: string; name: string };
@@ -15,9 +14,10 @@ type Props = {
   projects: Project[];
   assignToSuggestions: string[];
   sharedWithSuggestions: string[];
+  currentUser: { role: 'admin' | 'member'; sheetName: string; email: string };
 };
 
-export default function RequestForm({ projects, assignToSuggestions, sharedWithSuggestions }: Props) {
+export default function RequestForm({ projects, assignToSuggestions, sharedWithSuggestions, currentUser }: Props) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<{ date: string; client: string } | null>(null);
@@ -69,7 +69,7 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
         assign_to: String(data.get('assign_to') ?? '') || null,
         deadline: String(data.get('deadline') ?? '') || null,
         status: String(data.get('status') ?? 'Request shared') as any,
-        created_by_name: getBrowserIdentityName() || null,
+        created_by_name: currentUser.sheetName || null,
       }, forceDuplicate);
 
       if (!response.saved) {
@@ -114,7 +114,7 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
   }
 
   return (
-    <form onSubmit={onSubmit} className="max-w-3xl space-y-4 rounded-2xl border border-[var(--border)] bg-white p-6 shadow-sm">
+    <form onSubmit={onSubmit} className="max-w-3xl space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
       {duplicate && (
         <div className="rounded-xl border border-[#f0c36d] bg-[#fef7e0] p-4 text-sm text-[#6b4b00]">
           <p className="font-semibold">Duplicate warning</p>
@@ -179,8 +179,17 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
         </div>
         <div>
           <Label htmlFor="assign_to">Assign To</Label>
-          <Input id="assign_to" name="assign_to" list="assign-to-options" placeholder="team member" />
-          <datalist id="assign-to-options">{assignToSuggestions.map((value) => <option key={value} value={value} />)}</datalist>
+          {currentUser.role === 'member' ? (
+            <>
+              <Input id="assign_to" name="assign_to" value={currentUser.sheetName} readOnly />
+              <p className="mt-1 text-xs text-[var(--muted)]">Members are automatically assigned to their approved Guest Post Anchor name.</p>
+            </>
+          ) : (
+            <>
+              <Input id="assign_to" name="assign_to" list="assign-to-options" defaultValue={currentUser.sheetName} placeholder="team member" />
+              <datalist id="assign-to-options">{assignToSuggestions.map((value) => <option key={value} value={value} />)}</datalist>
+            </>
+          )}
         </div>
         <div>
           <Label htmlFor="priority">Priority</Label>

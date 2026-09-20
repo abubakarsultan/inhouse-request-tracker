@@ -23,3 +23,22 @@ body {
 }
 
 ::selection { background: var(--brand-soft); }
+
+html[data-theme='dark'] {
+  --brand: #8ab4f8;
+  --brand-dark: #aecbfa;
+  --brand-soft: #233a5b;
+  --canvas: #111315;
+  --card: #1b1f23;
+  --border: #343a40;
+  --text: #f1f3f4;
+  --muted: #aeb4bb;
+  --green: #81c995;
+  --amber: #fdd663;
+  --red: #f28b82;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { min-width: 0; overflow-x: hidden; }
+img, svg { max-width: 100%; }

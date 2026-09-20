@@ -63,7 +63,7 @@ export default function SiteCheckPanel() {
             <h2 className="mb-2 text-xs font-bold tracking-wide text-[#188038]">✅ USED IN</h2>
             <div className="space-y-2">
               {(result.used ?? []).map((row, index) => (
-                <div key={`${row.projectId}-${row.anchor}-${index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-white p-3">
+                <div key={`${row.projectId}-${row.anchor}-${index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--card)] p-3">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Link href={`/projects/${row.projectSlug}`} className="font-semibold text-[var(--text)] hover:text-[var(--brand)]">{row.project}</Link>
@@ -74,7 +74,7 @@ export default function SiteCheckPanel() {
                   <StatusBadge status={row.status} />
                 </div>
               ))}
-              {(result.used ?? []).length === 0 && <p className="rounded-xl border border-[var(--border)] bg-white p-4 text-sm text-[var(--muted)]">Not used in any project yet.</p>}
+              {(result.used ?? []).length === 0 && <p className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 text-sm text-[var(--muted)]">Not used in any project yet.</p>}
             </div>
           </section>
 
@@ -82,7 +82,7 @@ export default function SiteCheckPanel() {
             <h2 className="mb-2 text-xs font-bold tracking-wide text-[#c5221f]">❌ NOT USED IN</h2>
             <div className="grid gap-2 sm:grid-cols-2">
               {(result.notUsed ?? []).map((row) => (
-                <div key={row.projectId} className="flex items-center justify-between rounded-xl border border-[var(--border)] bg-white p-3">
+                <div key={row.projectId} className="flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--card)] p-3">
                   <Link href={`/projects/${row.projectSlug}`} className="font-medium text-[var(--text)] hover:text-[var(--brand)]">{row.project}</Link>
                   {row.trackerOnly && <span className="rounded-full bg-[var(--canvas)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted)]">Tracker only</span>}
                 </div>

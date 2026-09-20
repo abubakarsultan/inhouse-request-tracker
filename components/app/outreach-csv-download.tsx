@@ -38,7 +38,7 @@ export default function OutreachCsvDownload({ defaultDate }: { defaultDate: stri
   }
 
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
       <h2 className="text-base font-semibold text-[var(--text)]">Download Today CSV</h2>
       <p className="mt-1 text-sm text-[var(--muted)]">Exports requests created on the selected Karachi date in the exact 9-column bulk-add format.</p>
       <div className="mt-4 flex max-w-md flex-wrap items-end gap-2">

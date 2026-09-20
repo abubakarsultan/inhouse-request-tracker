@@ -32,7 +32,7 @@ export default function ImportForm({ projects }: { projects: { id: string; name:
   }
 
   return (
-    <form onSubmit={onSubmit} className="max-w-xl space-y-4 rounded-2xl border border-[var(--border)] bg-white p-6 shadow-sm">
+    <form onSubmit={onSubmit} className="max-w-xl space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
       <div>
         <Label htmlFor="project_id">Project *</Label>
         <Select id="project_id" name="project_id" required defaultValue="">

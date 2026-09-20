@@ -24,7 +24,7 @@ export default function RetrySyncButton({ requestId }: { requestId: string }) {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <button type="button" onClick={retry} disabled={pending} className="rounded-md border border-[#f4b7b2] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#c5221f] hover:bg-[#fce8e6] disabled:opacity-50">
+      <button type="button" onClick={retry} disabled={pending} className="rounded-md border border-[#f4b7b2] bg-[var(--card)] px-2.5 py-1.5 text-xs font-semibold text-[#c5221f] hover:bg-[#fce8e6] disabled:opacity-50">
         {pending ? 'Retrying…' : 'Retry sync'}
       </button>
       {message && <span className={`text-xs ${message === 'Synced ✓' ? 'text-[#188038]' : 'text-[#c5221f]'}`}>{message}</span>}

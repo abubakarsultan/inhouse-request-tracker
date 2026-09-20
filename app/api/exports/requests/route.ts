@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase-server';
 import { karachiDateString } from '@/lib/date';
 import { buildOutreachCsv, type OutreachCsvRow } from '@/lib/outreach-csv';
+import { requireAdminForAction } from '@/lib/auth';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -13,6 +14,7 @@ function dateBounds(date: string) {
 }
 
 export async function GET(request: NextRequest) {
+  try { await requireAdminForAction(); } catch { return NextResponse.json({ ok: false, message: 'Admin sign-in required.' }, { status: 401 }); }
   const date = request.nextUrl.searchParams.get('date') || karachiDateString();
   if (!DATE_RE.test(date)) return NextResponse.json({ ok: false, message: 'Choose a valid date.' }, { status: 400 });
   const bounds = dateBounds(date);
