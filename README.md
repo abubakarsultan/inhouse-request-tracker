@@ -3,22 +3,21 @@
 Rankviz's internal outreach request management SaaS — replaces the
 "Inhouse Request Tracker" and "Guest Post Anchor" Google Sheets.
 
-Stack: Next.js (App Router) · TypeScript · Tailwind · Supabase (Postgres + Auth) · Vercel
+Stack: Next.js (App Router) · TypeScript · Tailwind · Supabase (Postgres) · Vercel
+
+> **No login.** Opening the site opens the tool directly. There is no sign-in page, no session, no cookies. All database access happens on the server with the Supabase service-role key, so anyone who has the site URL can use it — keep the URL private.
 
 ## 1. Supabase setup
 
 1. Create a Supabase project.
 2. Open the SQL editor and run the entire contents of `database/schema.sql`. This creates every table, the forward-only status-transition trigger, and Row Level Security policies.
-3. Go to **Authentication → Providers → Google** and enable it with your Google OAuth Client ID/Secret (create these in Google Cloud Console → Credentials → OAuth Client ID → Web application, with the redirect URI Supabase shows you). Google OAuth credentials live in the Supabase dashboard, not in this app's env vars.
-4. Grab your `Project URL`, `anon public` key, and `service_role` key from Settings → API.
+3. Grab your `Project URL` and `service_role` key from Settings → API. (The anon key is no longer used.)
 
 ## 2. Environment variables
 
 Copy `.env.example` to `.env.local` (or set these in Vercel → Project → Settings → Environment Variables) and fill in:
 
-- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
-- `ADMIN_EMAIL` — the single email allowed to sign in (`abubakarsultan@rankviz.com`). No other account can use this app, even if one exists in Supabase.
-- `ADMIN_PASSWORD` / `SETUP_SECRET` — only used once, to create/reset that one account via `POST /api/admin/seed`. Remove both from the environment (or delete the route) after running it.
+- `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 - `GOOGLE_SERVICE_ACCOUNT_JSON` / `SHEET_WEBHOOK_SECRET` — only needed for the Google Sheet sync, see below. The app runs fine without them; sync is simply skipped and logged.
 
 ## 3. Run it
@@ -28,7 +27,7 @@ npm install
 npm run dev
 ```
 
-Sign in with a Google account on the `@rankviz.com` domain — any other domain, or a deactivated account, is rejected at the callback.
+Open http://localhost:3000 — it goes straight to the dashboard.
 
 ## 4. Google Sheet sync (two-way)
 
@@ -77,7 +76,7 @@ This fires on every edit to the sheet and keeps `project_sites` (and
 
 ## Modules
 
-- **Auth** — email + password sign-in for a single account (`ADMIN_EMAIL`) only; no Google sign-in, no sign-up, no other accounts are recognized.
+- **Auth** — none. The login screen, middleware and seed route were removed.
 - **Projects** — CRUD (admin-only write), search, enable/disable, and the Outreach OS ↔ Guest Post Anchor tab-name mapping the old NAME_MAP used to hold.
 - **Project detail (`/projects/[slug]`)** — the Website / Opportunity / Anchor / DR / Traffic / Status / Note table for that project (`project_sites`), fed by the importer and kept in sync with its Guest Post Anchor tab.
 - **Requests** — full create form with the required-field validation from the spec; status can only move `Request Shared → Live → Removed`, enforced in the UI, in the server action, *and* by a Postgres trigger so it can never be bypassed. Every change is written to `request_logs`.

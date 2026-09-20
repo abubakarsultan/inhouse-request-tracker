@@ -9,7 +9,7 @@ import { RefreshCw } from 'lucide-react';
 export default async function Projects({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams;
   const [projects, user] = await Promise.all([getProjects(q), getCurrentUser()]);
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user.role === 'admin';
 
   return (
     <div>

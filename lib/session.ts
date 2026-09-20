@@ -1,53 +1,31 @@
-import { createClient } from '@/lib/supabase-server';
-import { redirect } from 'next/navigation';
+// LOGIN REMOVED. There is no sign-in, no cookies, no redirect to /login.
+// Everyone who opens the site is treated as the admin. These helpers are
+// kept (and stay async) only so the rest of the code didn't have to change.
 
 export type CurrentUser = {
-  id: string;
+  id: string | null; // null: there is no auth user, so created_by / changed_by are stored empty
   email: string;
   name: string | null;
   avatar: string | null;
   role: 'admin' | 'member';
 };
 
-// This app has exactly one allowed account. Even if another row somehow
-// exists in public.users, it is treated as signed-out here.
-const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abubakarsultan@rankviz.com').toLowerCase().trim();
+const APP_USER: CurrentUser = {
+  id: null,
+  email: (process.env.ADMIN_EMAIL || 'abubakarsultan@rankviz.com').toLowerCase().trim(),
+  name: 'Abubakar Sultan',
+  avatar: null,
+  role: 'admin',
+};
 
-// Reads the signed-in auth user + their public.users profile row (role,
-// active flag, name, avatar). Returns null if nobody is signed in, if their
-// profile has been deactivated, or if it isn't the single allowed admin email.
-export async function getCurrentUser(): Promise<CurrentUser | null> {
-  const supabase = await createClient();
-  const { data: auth } = await supabase.auth.getUser();
-  if (!auth.user) return null;
-
-  const { data: profile } = await supabase
-    .from('users')
-    .select('id,email,name,avatar,role,active')
-    .eq('id', auth.user.id)
-    .single();
-
-  if (!profile || !profile.active) return null;
-  if (profile.email.toLowerCase().trim() !== ADMIN_EMAIL) return null;
-  return {
-    id: profile.id,
-    email: profile.email,
-    name: profile.name,
-    avatar: profile.avatar,
-    role: profile.role,
-  };
+export async function getCurrentUser(): Promise<CurrentUser> {
+  return APP_USER;
 }
 
-// Use at the top of a server component/page that must be signed in.
 export async function requireUser(): Promise<CurrentUser> {
-  const user = await getCurrentUser();
-  if (!user) redirect('/login');
-  return user;
+  return APP_USER;
 }
 
-// Use at the top of admin-only pages and server actions.
 export async function requireAdmin(): Promise<CurrentUser> {
-  const user = await requireUser();
-  if (user.role !== 'admin') redirect('/dashboard?error=forbidden');
-  return user;
+  return APP_USER;
 }

@@ -5,7 +5,6 @@ import { Badge } from '@/components/ui/badge';
 
 export default async function Settings() {
   const user = await getCurrentUser();
-  if (!user) return null;
 
   if (user.role !== 'admin') {
     return (
@@ -46,7 +45,7 @@ export default async function Settings() {
           </table>
         </div>
         <p className="mt-2 text-xs text-slate-400">
-          New users appear automatically the first time they sign in with their @rankviz.com Google account.
+          These are the people who can be picked in the "Assign To" dropdown when creating a request.
         </p>
       </div>
 

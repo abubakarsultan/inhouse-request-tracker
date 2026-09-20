@@ -11,7 +11,7 @@ const links = [
   ['Settings', '/settings', Settings],
 ] as const;
 
-export default function Sidebar({ role }: { role: 'admin' | 'member' }) {
+export default function Sidebar() {
   const pathname = usePathname();
   return (
     <aside className="fixed left-0 top-0 hidden h-screen w-64 border-r border-slate-200 bg-white p-5 lg:block">
@@ -37,9 +37,6 @@ export default function Sidebar({ role }: { role: 'admin' | 'member' }) {
           </Link>
         );
       })}
-      {role === 'admin' && (
-        <p className="mt-6 px-3 text-[11px] font-medium uppercase tracking-wide text-slate-300">Signed in as admin</p>
-      )}
     </aside>
   );
 }

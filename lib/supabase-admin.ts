@@ -1,12 +1,31 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-// Service-role client — bypasses RLS. Server-side only, never import this
-// into a client component or expose it to the browser.
-export const adminClient = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { autoRefreshToken: false, persistSession: false } }
-);
+// Service-role client. Server-side only — never import this into a client
+// component. It bypasses Row Level Security, which is what lets the app
+// work with NO login: every database call is made here on the server, and
+// the browser never talks to Supabase directly.
+//
+// Built lazily on first use so that merely importing this file can never
+// fail a build when env vars aren't resolved yet.
+let _client: SupabaseClient | null = null;
 
-// The single account allowed to use this app.
-export const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abubakarsultan@rankviz.com').toLowerCase().trim();
+function getClient(): SupabaseClient {
+  if (_client) return _client;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      'Supabase is not configured: set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your environment (Vercel → Settings → Environment Variables).'
+    );
+  }
+  _client = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+  return _client;
+}
+
+export const adminClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const client = getClient();
+    const value = Reflect.get(client, prop, client);
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
+});
