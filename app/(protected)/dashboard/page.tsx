@@ -3,16 +3,18 @@ import { getDashboardOverview } from '@/services/requests';
 import StatusBadge from '@/components/status-badge';
 import RetrySyncButton from '@/components/app/retry-sync-button';
 import { formatKarachiDateTime } from '@/lib/date';
-import { Link2, Clock, AlertTriangle, LayoutGrid, CalendarDays, Activity, CheckCircle2, BarChart3 } from 'lucide-react';
+import { Link2, Clock, AlertTriangle, LayoutGrid, CalendarDays, Activity, CheckCircle2, BarChart3, XCircle, ShieldCheck } from 'lucide-react';
 import RefreshLiveStatusButton from '@/components/app/refresh-live-status-button';
 import { requireActiveProfile } from '@/lib/auth';
 import { getMemberWorkspace } from '@/services/member-workspace';
 import MemberWorkspaceView from '@/components/app/member-workspace-view';
+import { getAdminTeamAttention } from '@/services/team';
 
 const CARDS = [
   { key: 'total', label: 'Total Requests', icon: LayoutGrid },
   { key: 'live', label: 'Live Links', icon: Link2 },
   { key: 'pending', label: 'Pending', icon: Clock },
+  { key: 'rejected', label: 'Rejected', icon: XCircle },
   { key: 'failedSync', label: 'Failed Sync', icon: AlertTriangle },
   { key: 'thisMonth', label: 'This Month', icon: CalendarDays },
 ] as const;
@@ -28,24 +30,30 @@ export default async function Dashboard() {
       </div>
     );
   }
-  const data = await getDashboardOverview();
+  const [data, teamAttention] = await Promise.all([getDashboardOverview(), getAdminTeamAttention()]);
   const { stats } = data;
 
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text)]">Dashboard</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">Live request, deadline, project, and sync overview.</p>
+          <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-[#e8f0fe] px-2.5 py-1 text-xs font-bold text-[#174ea6]"><ShieldCheck size={13} /> ADMIN</div><h1 className="text-2xl font-bold text-[var(--text)]">Admin Dashboard</h1>
+          <p className="mt-1 text-sm text-[var(--muted)]">Company-wide request, team, project, and sync overview.</p>
         </div>
         <RefreshLiveStatusButton lastRefresh={data.lastRefresh} />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="mb-6 grid gap-3 sm:grid-cols-3">
+        <Link href="/team" className={`rounded-xl border p-4 transition hover:-translate-y-0.5 ${teamAttention.pendingApprovals ? 'border-[#f0c36d] bg-[#fef7e0]' : 'border-[var(--border)] bg-[var(--card)]'}`}><p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Pending approvals</p><p className={`mt-1 text-2xl font-bold ${teamAttention.pendingApprovals ? 'text-[#b06000]' : ''}`}>{teamAttention.pendingApprovals}</p><p className="mt-1 text-xs text-[var(--muted)]">Open Team & Approvals</p></Link>
+        <Link href="/team" className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 transition hover:-translate-y-0.5"><p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Active team accounts</p><p className="mt-1 text-2xl font-bold">{teamAttention.activeMembers}</p><p className="mt-1 text-xs text-[var(--muted)]">Approved Google users</p></Link>
+        <Link href="/team" className={`rounded-xl border p-4 transition hover:-translate-y-0.5 ${teamAttention.invalidAssignments ? 'border-[#f4b7b2] bg-[#fce8e6]' : 'border-[var(--border)] bg-[var(--card)]'}`}><p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Invalid assignments</p><p className={`mt-1 text-2xl font-bold ${teamAttention.invalidAssignments ? 'text-[#c5221f]' : ''}`}>{teamAttention.invalidAssignments}</p><p className="mt-1 truncate text-xs text-[var(--muted)]" title={teamAttention.invalidLabels.join(', ')}>{teamAttention.invalidLabels.length ? teamAttention.invalidLabels.join(', ') : 'No invalid person labels'}</p></Link>
+      </section>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         {CARDS.map(({ key, label, icon: Icon }) => {
           const content = (
             <>
-              <Icon size={18} className={key === 'live' ? 'text-[#188038]' : key === 'failedSync' ? 'text-[#c5221f]' : key === 'pending' ? 'text-[#b06000]' : 'text-[var(--brand)]'} />
+              <Icon size={18} className={key === 'live' ? 'text-[#188038]' : key === 'failedSync' || key === 'rejected' ? 'text-[#c5221f]' : key === 'pending' ? 'text-[#b06000]' : 'text-[var(--brand)]'} />
               <p className="mt-3 text-3xl font-bold text-[var(--text)]">{stats[key]}</p>
               <p className="text-sm text-[var(--muted)]">{label}</p>
             </>
@@ -79,14 +87,14 @@ export default async function Dashboard() {
         </section>
       )}
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+      <div className="mt-6 grid gap-6 2xl:grid-cols-2">
         <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)]">
           <div className="flex items-center gap-2 border-b border-[var(--border)] p-4">
             <Activity size={17} className="text-[var(--brand)]" />
             <div><h2 className="font-semibold text-[var(--text)]">Recent activity</h2><p className="text-xs text-[var(--muted)]">Latest 8 requests.</p></div>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[680px] text-sm">
+            <table className="w-full min-w-[600px] text-sm">
               <thead className="bg-[var(--canvas)] text-left text-xs uppercase tracking-wide text-[var(--muted)]"><tr><th className="p-3">Date</th><th className="p-3">Client</th><th className="p-3">Website</th><th className="p-3">Owner</th><th className="p-3">Status</th></tr></thead>
               <tbody>
                 {data.recent.map((row) => (
@@ -136,7 +144,7 @@ export default async function Dashboard() {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[650px] text-sm">
-            <thead className="bg-[var(--canvas)] text-left text-xs uppercase tracking-wide text-[var(--muted)]"><tr><th className="p-3">Project</th><th className="p-3 text-right">Requests</th><th className="p-3 text-right">Live</th><th className="p-3 text-right">Pending</th></tr></thead>
+            <thead className="bg-[var(--canvas)] text-left text-xs uppercase tracking-wide text-[var(--muted)]"><tr><th className="p-3">Project</th><th className="p-3 text-right">Requests</th><th className="p-3 text-right">Live</th><th className="p-3 text-right">Pending</th><th className="p-3 text-right">Rejected</th></tr></thead>
             <tbody>
               {data.breakdown.map((row) => (
                 <tr key={row.id} className="border-t border-[var(--border)]/70">
@@ -144,6 +152,7 @@ export default async function Dashboard() {
                   <td className="p-3 text-right font-semibold text-[var(--text)]">{row.total}</td>
                   <td className="p-3 text-right font-semibold text-[#188038]">{row.live}</td>
                   <td className="p-3 text-right font-semibold text-[#b06000]">{row.pending}</td>
+                  <td className="p-3 text-right font-semibold text-[#c5221f]">{row.rejected}</td>
                 </tr>
               ))}
             </tbody>

@@ -24,6 +24,7 @@ export async function GET(request: NextRequest) {
   const { data, error } = await supabase
     .from('requests')
     .select('sub_project,target_url,anchor,approved_site,placement_page,priority,assign_to,deadline,projects(outreach_project_name,name)')
+    .is('deleted_at', null)
     .gte('created_at', bounds.start)
     .lt('created_at', bounds.end)
     .order('created_at', { ascending: true });

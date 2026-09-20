@@ -12,7 +12,7 @@ export default async function HealthPage() {
   } catch (caught) {
     return (
       <div className="space-y-4">
-        <div><h1 className="text-2xl font-bold text-[var(--text)]">Health Check</h1><p className="mt-1 text-sm text-[var(--muted)]">Read-only request-to-sheet linkage scan.</p></div>
+        <div><h1 className="text-2xl font-bold text-[var(--text)]">Health Check</h1><p className="mt-1 text-sm text-[var(--muted)]">Read-only linkage and project-domain uniqueness scan.</p></div>
         <div className="rounded-2xl border border-[#f4b7b2] bg-[var(--card)] p-5 text-sm text-[#c5221f]">{caught instanceof Error ? caught.message : 'Health check failed.'}</div>
       </div>
     );
@@ -22,7 +22,7 @@ export default async function HealthPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-[var(--text)]">Health Check</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">Scans stored team rows and project-site linkage. Nothing is auto-fixed.</p>
+        <p className="mt-1 text-sm text-[var(--muted)]">Scans request/project-site linkage, verified team-sheet rows, and historical same-project/domain duplicates. Nothing is auto-fixed.</p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -34,7 +34,7 @@ export default async function HealthPage() {
       <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)]">
         <div className="border-b border-[var(--border)] p-4"><h2 className="font-semibold text-[var(--text)]">Problems</h2><p className="text-xs text-[var(--muted)]">Re-link only repairs stored team row numbers after verifying website + anchor.</p></div>
         {result.problems.length === 0 ? (
-          <p className="p-6 text-sm text-[#188038]">No linkage problems found.</p>
+          <p className="p-6 text-sm text-[#188038]">No linkage or project-domain problems found.</p>
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {result.problems.map((problem, index) => (

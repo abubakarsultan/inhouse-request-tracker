@@ -21,7 +21,7 @@ export type SiteCheckProject = {
 };
 
 function canonicalStatus(value: string | null | undefined) {
-  return value === 'Live' ? 'Live' : 'Request shared';
+  return value === 'Live' ? 'Live' : value === 'Rejected' ? 'Rejected' : 'Request shared';
 }
 
 export type SiteCheckResult =
@@ -36,6 +36,32 @@ export type SiteCheckResult =
       matchCount: number;
       notUsedCount: number;
     };
+
+
+export type ProjectSiteUsageResult =
+  | { ok: false; reason: string }
+  | { ok: true; projectId: string; host: string; used: boolean; matches: Array<{ status: string; anchor: string; assignTo: string | null; source: string }> };
+
+export async function checkSiteInProject(projectId: string, rawInput: string, excludeRequestId?: string | null): Promise<ProjectSiteUsageResult> {
+  await requireActiveUserForAction();
+  const host = extractHost(rawInput);
+  if (!host) return { ok: false, reason: 'Enter a valid website or domain.' };
+  if (!projectId) return { ok: false, reason: 'Select a project first.' };
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc('find_project_domain_usage', {
+    p_project_id: projectId,
+    p_approved_site: rawInput,
+    p_exclude_request_id: excludeRequestId ?? null,
+  });
+  if (error) throw new Error(`Could not check project usage: ${error.message}`);
+  const matches = (data ?? []).map((row: any) => ({
+    status: String(row.status ?? 'Request shared'),
+    anchor: String(row.anchor ?? ''),
+    assignTo: row.assign_to ? String(row.assign_to) : null,
+    source: String(row.source ?? ''),
+  }));
+  return { ok: true, projectId, host, used: matches.length > 0, matches };
+}
 
 export async function scanSiteAcrossProjects(rawInput: string): Promise<SiteCheckResult> {
   await requireActiveUserForAction();
@@ -54,6 +80,7 @@ export async function scanSiteAcrossProjects(rawInput: string): Promise<SiteChec
     const { data: page, error: sitesError } = await supabase
       .from('project_sites')
       .select('id,project_id,request_id,website,anchor,status')
+      .is('archived_at', null)
       .range(from, from + 999);
     if (sitesError) throw new Error(`Could not scan project sites: ${sitesError.message}`);
     sites.push(...(page ?? []));

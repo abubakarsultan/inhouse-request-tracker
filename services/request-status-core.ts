@@ -28,6 +28,7 @@ export async function setRequestStatusCore(
     .from('requests')
     .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
     .eq('id', requestId)
+    .is('deleted_at', null)
     .single();
   if (fetchError || !current) throw new Error(fetchError?.message ?? 'Request not found');
 

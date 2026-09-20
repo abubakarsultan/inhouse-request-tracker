@@ -13,6 +13,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
   const sites = await getProjectSites(project.id);
   const liveCount = sites.filter((site: any) => site.status === 'Live').length;
   const pendingCount = sites.filter((site: any) => site.status === 'Request shared').length;
+  const rejectedCount = sites.filter((site: any) => site.status === 'Rejected').length;
 
   return (
     <div>
@@ -29,10 +30,11 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
         </div>
       </div>
 
-      <div className="mb-5 grid gap-3 sm:grid-cols-3">
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-2xl font-bold">{sites.length}</p><p className="text-xs text-[var(--muted)]">Project rows</p></div>
         <div className="rounded-xl border border-[#c9e7d0] bg-[#e6f4ea] p-4"><p className="text-2xl font-bold text-[#188038]">{liveCount}</p><p className="text-xs text-[#188038]">Live</p></div>
         <div className="rounded-xl border border-[#f3dfad] bg-[#fef7e0] p-4"><p className="text-2xl font-bold text-[#b06000]">{pendingCount}</p><p className="text-xs text-[#b06000]">Request shared</p></div>
+        <div className="rounded-xl border border-[#f5b5b1] bg-[#fce8e6] p-4"><p className="text-2xl font-bold text-[#c5221f]">{rejectedCount}</p><p className="text-xs text-[#c5221f]">Rejected</p></div>
       </div>
 
       <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
@@ -51,7 +53,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
                 <td className="p-4 text-[var(--muted)]">{site.dr ?? '—'}</td>
                 <td className="p-4 text-[var(--muted)]">{site.traffic ?? '—'}</td>
                 <td className="p-4">
-                  {site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} /><p className="mt-1 text-[10px] text-[var(--muted)]">Imported / unlinked row</p></div>}
+                  {site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} /><p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p></div>}
                 </td>
                 <td className="max-w-xs truncate p-4 text-[var(--muted)]" title={site.note}>{site.note || '—'}</td>
               </tr>

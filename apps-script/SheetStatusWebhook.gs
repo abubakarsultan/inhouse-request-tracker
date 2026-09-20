@@ -42,7 +42,7 @@ function onSheetEdit(e) {
     const anchor = String(row[2] || '').trim();
     const status = String(row[5] || '').trim();
     if (!website || !anchor) return;
-    if (status !== 'Request shared' && status !== 'Live') return;
+    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected') return;
 
     const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
       method: 'post',

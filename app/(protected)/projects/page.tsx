@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { getProjectsWithCounts } from '@/services/projects';
 import ProjectFormDialog from '@/components/app/project-form-dialog';
 import ProjectToggleActive from '@/components/app/project-toggle-active';
-import { ArrowRight, Database, Link2, Clock } from 'lucide-react';
+import { ArrowRight, Database, Link2, Clock, XCircle } from 'lucide-react';
 import { requireAdminProfile } from '@/lib/auth';
 
 export default async function Projects({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
@@ -35,10 +35,11 @@ export default async function Projects({ searchParams }: { searchParams: Promise
               <div className="flex shrink-0 items-center gap-1"><ProjectFormDialog project={project} /><ProjectToggleActive id={project.id} active={project.active} /></div>
             </div>
 
-            <div className="mt-5 grid grid-cols-3 gap-2">
+            <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div className="rounded-xl bg-[var(--canvas)] p-3"><Database size={15} className="text-[var(--brand)]" /><p className="mt-2 text-2xl font-bold">{project.counts.requests}</p><p className="text-[11px] text-[var(--muted)]">Requests</p></div>
               <div className="rounded-xl bg-[#e6f4ea] p-3"><Link2 size={15} className="text-[#188038]" /><p className="mt-2 text-2xl font-bold text-[#188038]">{project.counts.live}</p><p className="text-[11px] text-[#188038]">Live</p></div>
               <div className="rounded-xl bg-[#fef7e0] p-3"><Clock size={15} className="text-[#b06000]" /><p className="mt-2 text-2xl font-bold text-[#b06000]">{project.counts.pending}</p><p className="text-[11px] text-[#b06000]">Pending</p></div>
+              <div className="rounded-xl bg-[#fce8e6] p-3"><XCircle size={15} className="text-[#c5221f]" /><p className="mt-2 text-2xl font-bold text-[#c5221f]">{project.counts.rejected}</p><p className="text-[11px] text-[#c5221f]">Rejected</p></div>
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2 text-xs">

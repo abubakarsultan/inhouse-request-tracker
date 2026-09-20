@@ -10,7 +10,8 @@
     "test:phase2": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:phase3": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:phase4": "node --experimental-strip-types --test tests/*.test.mjs",
-    "test:auth": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test:auth": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:final": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "next": "latest",

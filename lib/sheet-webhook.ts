@@ -1,7 +1,7 @@
-type RequestStatus = 'Request shared' | 'Live';
+type RequestStatus = 'Request shared' | 'Live' | 'Rejected';
 
 function isRequestStatus(value: string): value is RequestStatus {
-  return value === 'Request shared' || value === 'Live';
+  return value === 'Request shared' || value === 'Live' || value === 'Rejected';
 }
 
 export type SheetWebhookPayload = {
@@ -27,7 +27,7 @@ export function parseSheetWebhookPayload(input: unknown):
   if (!Number.isInteger(row) || row < 2) return { ok: false, error: 'row must be an integer >= 2.' };
   if (!website) return { ok: false, error: 'website is required.' };
   if (!anchor) return { ok: false, error: 'anchor is required.' };
-  if (!isRequestStatus(status)) return { ok: false, error: 'status must be "Request shared" or "Live".' };
+  if (!isRequestStatus(status)) return { ok: false, error: 'status must be "Request shared", "Live", or "Rejected".' };
 
   return { ok: true, value: { tab, row, website, anchor, status } };
 }
@@ -35,6 +35,7 @@ export function parseSheetWebhookPayload(input: unknown):
 export function normalizeImportedSiteStatus(value: unknown): RequestStatus {
   const cleaned = String(value ?? '').trim().toLowerCase();
   if (cleaned === 'live') return 'Live';
+  if (cleaned === 'rejected' || cleaned === 'reject') return 'Rejected';
   return 'Request shared';
 }
 
@@ -79,7 +80,7 @@ function onSheetEdit(e) {
     const anchor = String(row[2] || '').trim();
     const status = String(row[5] || '').trim();
     if (!website || !anchor) return;
-    if (status !== 'Request shared' && status !== 'Live') return;
+    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected') return;
 
     const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
       method: 'post',

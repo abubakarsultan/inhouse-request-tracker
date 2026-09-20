@@ -13,7 +13,7 @@ export type SearchRequestRow = {
   approved_site: string;
   anchor: string;
   assign_to: string | null;
-  status: 'Request shared' | 'Live';
+  status: 'Request shared' | 'Live' | 'Rejected';
   target_url: string;
   created_at: string;
   sync_state: string | null;

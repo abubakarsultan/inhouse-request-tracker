@@ -44,7 +44,7 @@ export default function ImportForm({ projects }: { projects: { id: string; name:
         <Label htmlFor="file">CSV / XLSX file *</Label>
         <input id="file" name="file" type="file" accept=".csv,.xlsx,.xls" required className="block w-full text-sm text-[var(--muted)] file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--canvas)] file:px-3 file:py-2 file:text-sm file:font-medium file:text-[var(--text)] hover:file:bg-[var(--brand-soft)]" />
         <p className="mt-1.5 text-xs text-[var(--muted)]">Required columns: {SITE_IMPORT_HEADERS.join(', ')}</p>
-        <p className="mt-1 text-xs text-[var(--muted)]">Status is normalized to exactly <strong>Request shared</strong> or <strong>Live</strong>.</p>
+        <p className="mt-1 text-xs text-[var(--muted)]">Status is normalized to exactly <strong>Request shared</strong>, <strong>Live</strong>, or <strong>Rejected</strong>.</p>
       </div>
       <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--canvas)] p-3 text-sm text-[var(--text)]">
         <input type="checkbox" name="push_to_team_sheet" className="mt-0.5 h-4 w-4" />

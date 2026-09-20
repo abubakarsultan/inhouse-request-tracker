@@ -424,6 +424,90 @@ export async function syncRequestStatusToTeamSheet(
   }
 }
 
+
+export async function syncRequestFullRowToTeamSheet(
+  project: SyncableProject,
+  original: RequestSheetRecord,
+  updated: RequestSheetRecord,
+  projectSiteId?: string | null
+): Promise<SheetSyncResult> {
+  const preflight = syncPreflight(project, original.team_tab || updated.team_tab);
+  if (preflight.state !== 'ok') return preflight;
+  const { tab, spreadsheetId } = preflight;
+  try {
+    const sheets = getSheetsClient();
+    const titles = await getTabTitles(sheets, spreadsheetId);
+    if (!titles.has(tab)) {
+      await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
+      return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
+    }
+    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, original.team_row, original.approved_site, original.anchor);
+    if (!verified) {
+      const reason = `Could not find a row in "${tab}" matching the original website "${original.approved_site}" and anchor "${original.anchor}".`;
+      await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
+      return { state: 'failed', text: `❌ Team sheet sync failed: ${reason}`, tab, error: reason };
+    }
+    const existingResponse = await withGoogleRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+    })) as { data: { values?: unknown[][] } };
+    const existingRow = (existingResponse.data.values ?? [])[0] ?? [];
+    await withGoogleRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[
+        updated.approved_site,
+        updated.placement_page ?? '',
+        updated.anchor,
+        existingRow[3] ?? '',
+        existingRow[4] ?? '',
+        updated.status,
+        updated.assign_to ?? '',
+        updated.created_by_email ?? existingRow[7] ?? '',
+      ]] },
+    }));
+    await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: verified.repaired ? 'Full row updated after stored-row repair' : 'Full row updated' });
+    return { state: 'synced', text: `✅ Team sheet row ${verified.row} updated in "${tab}".`, tab, row: verified.row, repairedRow: verified.repaired };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
+    return { state: 'failed', text: `❌ Team sheet sync failed: ${reason}`, tab, error: reason };
+  }
+}
+
+export async function clearRequestFromTeamSheet(
+  project: SyncableProject,
+  request: RequestSheetRecord,
+  projectSiteId?: string | null
+): Promise<SheetSyncResult> {
+  const preflight = syncPreflight(project, request.team_tab);
+  if (preflight.state !== 'ok') return preflight;
+  const { tab, spreadsheetId } = preflight;
+  try {
+    const sheets = getSheetsClient();
+    const titles = await getTabTitles(sheets, spreadsheetId);
+    if (!titles.has(tab)) return { state: 'skipped', text: '⚪ Mapped team tab does not exist; archived in app only.', tab };
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    if (!verified) {
+      const reason = `Could not find the linked team-sheet row for ${request.approved_site} + ${request.anchor}.`;
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
+      return { state: 'failed', text: `❌ Archived in app, but Sheet row could not be cleared: ${reason}`, tab, error: reason };
+    }
+    await withGoogleRetry(() => sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+    }));
+    await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: 'Archived request row cleared from team sheet' });
+    return { state: 'synced', text: `✅ Archived and cleared team sheet row ${verified.row} in "${tab}".`, tab, row: verified.row };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
+    return { state: 'failed', text: `❌ Archived in app, but team-sheet cleanup failed: ${reason}`, tab, error: reason };
+  }
+}
+
 export async function appendProjectSiteToTeamSheet(
   project: SyncableProject,
   site: ProjectSiteSheetRecord
@@ -562,7 +646,7 @@ export async function applyStatusFromSheet(payload: {
   row: number;
   website: string;
   anchor: string;
-  status: 'Request shared' | 'Live';
+  status: 'Request shared' | 'Live' | 'Rejected';
 }) {
   const { data, error } = await adminClient.rpc('find_request_from_sheet', {
     p_tab: payload.tab,
@@ -642,6 +726,7 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
     const { data, error } = await adminClient
       .from('requests')
       .select('id,approved_site,anchor,status,team_tab,team_row,project_sites(id)')
+      .is('deleted_at', null)
       .not('team_tab', 'is', null)
       .not('team_row', 'is', null)
       .range(from, from + 999);
@@ -682,7 +767,7 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
       const repaired = verifiedRow !== Number(request.team_row);
       if (repaired) report.repairedRows += 1;
 
-      if (sheetStatus !== 'Request shared' && sheetStatus !== 'Live') {
+      if (sheetStatus !== 'Request shared' && sheetStatus !== 'Live' && sheetStatus !== 'Rejected') {
         report.invalidStatuses += 1;
         report.errors.push(`${tab} row ${verifiedRow}: invalid status "${sheetStatus || '(blank)'}".`);
         await adminClient.from('requests').update({ team_row: verifiedRow, sync_state: 'failed', sync_error: `Invalid team-sheet status: ${sheetStatus || '(blank)'}` }).eq('id', request.id);

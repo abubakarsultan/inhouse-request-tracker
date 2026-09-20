@@ -47,7 +47,7 @@ export function formatKarachiDateTime(value: string | Date | null | undefined) {
 export type DeadlineTone = 'overdue' | 'soon' | 'normal';
 
 export function deadlineTone(deadline: string | null | undefined, status: string, today = karachiDateString()): DeadlineTone {
-  if (!deadline || status === 'Live') return 'normal';
+  if (!deadline || status !== 'Request shared') return 'normal';
   const clean = String(deadline).slice(0, 10);
   if (clean < today) return 'overdue';
   const soonEnd = (() => {

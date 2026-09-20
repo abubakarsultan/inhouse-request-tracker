@@ -36,7 +36,7 @@ export default function OnboardingNameSelector({ names }: { names: TeamNameOptio
           const active = selected === item.id;
           return <button key={item.id} type="button" disabled={unavailable} onClick={() => setSelected(item.id)} title={unavailable ? 'Already linked to another account' : item.name} className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${active ? 'ring-2 ring-[var(--brand)] ring-offset-2 ring-offset-[var(--card)]' : ''} ${unavailable ? 'cursor-not-allowed opacity-35' : 'hover:-translate-y-0.5'}`} style={{ background: item.badge_bg, color: item.badge_text }}>{item.name}</button>;
         })}
-        {filtered.length === 0 && <p className="p-3 text-sm text-[var(--muted)]">No matching name. Ask an admin to add it.</p>}
+        {filtered.length === 0 && <p className="p-3 text-sm text-[var(--muted)]">No matching approved name. Contact an admin if your team mapping is incorrect.</p>}
       </div>
       <p className="mt-3 text-xs leading-5 text-[var(--muted)]">Choose the name exactly as it appears in Guest Post Anchor. A member account is sent to admin approval before any private work data is shown.</p>
       {error && <p className="mt-3 rounded-lg bg-[#fce8e6] p-3 text-sm text-[#c5221f]">{error}</p>}

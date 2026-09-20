@@ -3,16 +3,15 @@
 import { createClient } from '@/lib/supabase-server';
 import { requestSchema, isRequestStatus, looksLikeHttpUrl, type RequestInput } from '@/lib/validators';
 import { karachiDateString, karachiDateOffsetString, karachiMonthBounds } from '@/lib/date';
-import { appendRequestToTeamSheet, syncRequestStatusToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
+import { appendRequestToTeamSheet, syncRequestStatusToTeamSheet, syncRequestFullRowToTeamSheet, clearRequestFromTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { revalidatePath } from 'next/cache';
 import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
 import { setRequestStatusCore, type SetStatusResult } from '@/services/request-status-core';
 
-type DuplicateInfo = { date: string; client: string };
+export type ProjectDomainUsage = { requestId: string | null; projectSiteId: string | null; approvedSite: string; anchor: string; status: string; assignTo: string | null; createdAt: string; source: string };
 type CreateSyncState = 'synced' | 'skipped' | 'failed';
 
 export type CreateRequestResult =
-  | { saved: false; duplicate: DuplicateInfo }
   | {
       saved: true;
       sync: { state: CreateSyncState; text: string };
@@ -21,7 +20,7 @@ export type CreateRequestResult =
         client: string;
         site: string;
         anchor: string;
-        requestStatus: 'Request shared' | 'Live';
+        requestStatus: 'Request shared' | 'Live' | 'Rejected';
         targetUrlWarning: string | null;
       };
     };
@@ -31,19 +30,33 @@ function cleanOptional(value: string | null | undefined) {
   return clean || null;
 }
 
-async function findDuplicate(approvedSite: string, anchor: string): Promise<DuplicateInfo | null> {
+export async function getProjectDomainUsage(projectId: string, approvedSite: string, excludeRequestId?: string | null): Promise<ProjectDomainUsage[]> {
+  await requireActiveUserForAction();
   const supabase = await createClient();
-  const { data, error } = await supabase.rpc('find_request_duplicate', {
+  const { data, error } = await supabase.rpc('find_project_domain_usage', {
+    p_project_id: projectId,
     p_approved_site: approvedSite,
-    p_anchor: anchor,
+    p_exclude_request_id: excludeRequestId ?? null,
   });
-  if (error) throw new Error(`Duplicate check failed: ${error.message}`);
-  const first = Array.isArray(data) ? data[0] : null;
-  if (!first) return null;
-  return {
-    date: first.created_at ? karachiDateString(new Date(String(first.created_at))) : '',
-    client: String(first.project_name ?? ''),
-  };
+  if (error) throw new Error(`Project domain check failed: ${error.message}`);
+  return (data ?? []).map((row: any) => ({
+    requestId: row.request_id ? String(row.request_id) : null,
+    projectSiteId: row.project_site_id ? String(row.project_site_id) : null,
+    approvedSite: String(row.approved_site ?? ''),
+    anchor: String(row.anchor ?? ''),
+    status: String(row.status ?? 'Request shared'),
+    assignTo: row.assign_to ? String(row.assign_to) : null,
+    createdAt: String(row.created_at ?? ''),
+    source: String(row.source ?? ''),
+  }));
+}
+
+async function assertProjectDomainAvailable(projectId: string, approvedSite: string, excludeRequestId?: string | null) {
+  const usage = await getProjectDomainUsage(projectId, approvedSite, excludeRequestId);
+  if (usage.length) {
+    const first = usage[0];
+    throw new Error(`This website is already used in this project${first.assignTo ? ` by ${first.assignTo}` : ''} (${first.status}). Each project can use a website only once.`);
+  }
 }
 
 export async function getRequests(filters?: { status?: string; project_id?: string }) {
@@ -52,6 +65,7 @@ export async function getRequests(filters?: { status?: string; project_id?: stri
   let query = supabase
     .from('requests')
     .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name)')
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (filters?.status) query = query.eq('status', filters.status);
   if (filters?.project_id) query = query.eq('project_id', filters.project_id);
@@ -63,39 +77,42 @@ export async function getRequests(filters?: { status?: string; project_id?: stri
 export async function getAutocompleteOptions() {
   await requireActiveUserForAction();
   const supabase = await createClient();
-  const [{ data, error }, { data: teamNames, error: teamNamesError }] = await Promise.all([
-    supabase.from('requests').select('assign_to,shared_with').limit(5000),
+  const [{ data: rows, error }, { data: teamNames, error: teamNamesError }] = await Promise.all([
+    supabase.from('requests').select('shared_with').is('deleted_at', null).limit(5000),
     supabase.from('team_names').select('name').eq('active', true).order('name'),
   ]);
   if (error) throw error;
   if (teamNamesError) throw teamNamesError;
-
-  const distinct = (key: 'assign_to' | 'shared_with') => {
-    const seen = new Map<string, string>();
-    for (const row of data ?? []) {
-      const value = String(row[key] ?? '').trim();
-      if (!value) continue;
-      const normalized = value.toLowerCase();
-      if (!seen.has(normalized)) seen.set(normalized, value);
-    }
-    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  const shared = new Map<string, string>();
+  for (const row of rows ?? []) {
+    const value = String(row.shared_with ?? '').trim();
+    if (value && !shared.has(value.toLowerCase())) shared.set(value.toLowerCase(), value);
+  }
+  return {
+    assignTo: (teamNames ?? []).map((row: any) => String(row.name)).filter(Boolean),
+    sharedWith: [...shared.values()].sort((a, b) => a.localeCompare(b)),
   };
-
-  const assignTo = new Map<string, string>();
-  for (const value of distinct('assign_to')) assignTo.set(value.toLowerCase(), value);
-  for (const row of teamNames ?? []) { const value = String(row.name ?? '').trim(); if (value) assignTo.set(value.toLowerCase(), value); }
-  return { assignTo: [...assignTo.values()].sort((a, b) => a.localeCompare(b)), sharedWith: distinct('shared_with') };
 }
 
-export async function createRequest(input: RequestInput, forceDuplicate = false): Promise<CreateRequestResult> {
+async function resolveAssignee(profile: Awaited<ReturnType<typeof requireActiveUserForAction>>, requested: string | null) {
+  const supabase = await createClient();
+  const assignTo = profile.role === 'member' ? profile.sheet_name : (cleanOptional(requested) || profile.sheet_name);
+  if (!assignTo) return { assignTo: null, assignedUserId: null };
+  const { data: allowedName, error: nameError } = await supabase.from('team_names').select('name').eq('active', true).ilike('name', assignTo).maybeSingle();
+  if (nameError) throw new Error(nameError.message);
+  if (!allowedName) throw new Error('Assign To must be one of the seven approved Guest Post Anchor team names.');
+  const canonical = String(allowedName.name);
+  const { data: assigned, error: userError } = await supabase.from('users').select('id').ilike('sheet_name', canonical).eq('account_status', 'active').maybeSingle();
+  if (userError) throw new Error(userError.message);
+  return { assignTo: canonical, assignedUserId: assigned?.id ? String(assigned.id) : null };
+}
+
+export async function createRequest(input: RequestInput): Promise<CreateRequestResult> {
   const profile = await requireActiveUserForAction();
   const parsed = requestSchema.parse(input);
   const supabase = await createClient();
 
-  if (!forceDuplicate) {
-    const duplicate = await findDuplicate(parsed.approved_site, parsed.anchor);
-    if (duplicate) return { saved: false, duplicate };
-  }
+  if (!parsed.target_url.trim()) throw new Error('Target URL is required.');
 
   const { data: project, error: projectError } = await supabase
     .from('projects')
@@ -104,13 +121,9 @@ export async function createRequest(input: RequestInput, forceDuplicate = false)
     .single();
   if (projectError || !project) throw new Error(projectError?.message ?? 'Project not found');
   if (project.active === false) throw new Error('This project is disabled.');
+  await assertProjectDomainAvailable(parsed.project_id, parsed.approved_site);
 
-  const assignTo = profile.role === 'member' ? profile.sheet_name : (cleanOptional(parsed.assign_to) || profile.sheet_name);
-  let assignedUserId: string | null = profile.role === 'member' ? profile.id : null;
-  if (profile.role === 'admin' && assignTo) {
-    const { data: assigned } = await supabase.from('users').select('id').ilike('sheet_name', assignTo).eq('account_status', 'active').maybeSingle();
-    assignedUserId = assigned?.id ? String(assigned.id) : null;
-  }
+  const { assignTo, assignedUserId } = await resolveAssignee(profile, parsed.assign_to ?? null);
 
   const status = parsed.status;
   const liveDate = status === 'Live' ? karachiDateString() : null;
@@ -134,6 +147,7 @@ export async function createRequest(input: RequestInput, forceDuplicate = false)
     assigned_user_id: assignedUserId,
     created_by_user_id: profile.id,
     created_by_email: profile.email,
+    source: 'app',
   };
 
   // DB is the source of truth: this insert always happens before any sheet call.
@@ -158,6 +172,7 @@ export async function createRequest(input: RequestInput, forceDuplicate = false)
       owner_user_id: assignedUserId,
       created_by_user_id: profile.id,
       created_by_email: profile.email,
+      source: 'app',
     })
     .select('id')
     .single();
@@ -210,7 +225,7 @@ function makeCreateSummary(projectName: string, request: any, targetUrl: string)
     client: projectName,
     site: String(request.approved_site),
     anchor: String(request.anchor),
-    requestStatus: request.status as 'Request shared' | 'Live',
+    requestStatus: request.status as 'Request shared' | 'Live' | 'Rejected',
     targetUrlWarning: looksLikeHttpUrl(targetUrl)
       ? null
       : 'Target URL does not look like a complete http/https URL, but it was saved as entered.',
@@ -224,18 +239,54 @@ export async function retryRequestSync(requestId: string) {
     .from('requests')
     .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
     .eq('id', requestId)
+    .is('deleted_at', null)
     .single();
   if (error || !request) throw new Error(error?.message ?? 'Request not found');
   if (profile.role !== 'admin') {
     const assignedByText = profile.sheet_name && String(request.assign_to ?? '').trim().toLowerCase() === profile.sheet_name.trim().toLowerCase();
-    if (String(request.assigned_user_id ?? '') !== profile.id && String(request.created_by_user_id ?? '') !== profile.id && !assignedByText) throw new Error('You can only retry sync for your own request.');
+    if (String(request.assigned_user_id ?? '') !== profile.id && !assignedByText) throw new Error('You can only retry sync for requests assigned to you.');
   }
 
-  const { data: site } = await supabase.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
-  const project = request.projects as any;
-  const sync = request.team_row
-    ? await syncRequestStatusToTeamSheet(project, request as RequestSheetRecord, site?.id ?? null)
-    : await appendRequestToTeamSheet(project, request as RequestSheetRecord, site?.id ?? null);
+  const { data: site } = await supabase.from('project_sites').select('id').eq('request_id', requestId).is('archived_at', null).maybeSingle();
+  const project = Array.isArray(request.projects) ? request.projects[0] : request.projects;
+  const currentRecord: RequestSheetRecord = {
+    id: String(request.id), project_id: String(request.project_id), approved_site: String(request.approved_site),
+    placement_page: request.placement_page ? String(request.placement_page) : null,
+    anchor: String(request.anchor ?? ''), assign_to: request.assign_to ? String(request.assign_to) : null,
+    status: String(request.status), team_tab: request.team_tab ? String(request.team_tab) : null,
+    team_row: request.team_row == null ? null : Number(request.team_row),
+    created_by_email: request.created_by_email ? String(request.created_by_email) : null,
+  };
+
+  let sync = request.team_row
+    ? await syncRequestStatusToTeamSheet(project as any, currentRecord, site?.id ?? null)
+    : await appendRequestToTeamSheet(project as any, currentRecord, site?.id ?? null);
+
+  // If an edit changed website/anchor but the full-row Sheet update failed, a
+  // status-only retry cannot verify the old Sheet identity. Recover the last
+  // pre-edit identity from the audit log and retry the full A:H row update.
+  if (request.team_row && sync.state === 'failed') {
+    const { data: editLog } = await supabase
+      .from('request_change_logs')
+      .select('before_data')
+      .eq('request_id', requestId)
+      .eq('action', 'edit')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const before = editLog?.before_data as Record<string, unknown> | null | undefined;
+    if (before?.approved_site && before?.anchor) {
+      const originalRecord: RequestSheetRecord = {
+        ...currentRecord,
+        approved_site: String(before.approved_site),
+        anchor: String(before.anchor),
+        placement_page: before.placement_page == null ? null : String(before.placement_page),
+        assign_to: before.assign_to == null ? null : String(before.assign_to),
+        status: before.status == null ? currentRecord.status : String(before.status),
+      };
+      sync = await syncRequestFullRowToTeamSheet(project as any, originalRecord, currentRecord, site?.id ?? null);
+    }
+  }
 
   const update: Record<string, unknown> = {
     sync_state: sync.state,
@@ -256,16 +307,167 @@ export async function setRequestStatus(requestId: string, newStatus: string): Pr
   if (profile.role !== 'admin') {
     const { data: request, error } = await supabase
       .from('requests')
-      .select('assigned_user_id,assign_to,created_by_user_id')
+      .select('assigned_user_id,assign_to')
       .eq('id', requestId)
+      .is('deleted_at', null)
       .single();
     if (error || !request) throw new Error(error?.message ?? 'Request not found');
     const assignedByText = profile.sheet_name && String(request.assign_to ?? '').trim().toLowerCase() === profile.sheet_name.trim().toLowerCase();
-    const allowed = String(request.assigned_user_id ?? '') === profile.id || String(request.created_by_user_id ?? '') === profile.id || assignedByText;
+    const allowed = String(request.assigned_user_id ?? '') === profile.id || assignedByText;
     if (!allowed) throw new Error('You can only change status for requests assigned to you.');
   }
   const changedBy = `${profile.sheet_name || profile.google_name || 'Rankviz user'} <${profile.email}>`;
   return setRequestStatusCore(requestId, newStatus, changedBy);
+}
+
+
+function requestOwnedByProfile(profile: Awaited<ReturnType<typeof requireActiveUserForAction>>, request: any) {
+  if (profile.role === 'admin') return true;
+  const byId = String(request.assigned_user_id ?? '') === profile.id;
+  const byName = Boolean(profile.sheet_name) && String(request.assign_to ?? '').trim().toLowerCase() === String(profile.sheet_name).trim().toLowerCase();
+  return byId || byName;
+}
+
+export async function getRequestForEdit(requestId: string) {
+  const profile = await requireActiveUserForAction();
+  const supabase = await createClient();
+  const { data: request, error } = await supabase
+    .from('requests')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .eq('id', requestId)
+    .is('deleted_at', null)
+    .single();
+  if (error || !request) throw new Error(error?.message ?? 'Request not found.');
+  if (!requestOwnedByProfile(profile, request)) throw new Error('You can only edit requests assigned to you.');
+  return request;
+}
+
+export async function updateRequest(requestId: string, input: RequestInput) {
+  const profile = await requireActiveUserForAction();
+  const parsed = requestSchema.parse(input);
+  const supabase = await createClient();
+  const { data: current, error } = await supabase
+    .from('requests')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .eq('id', requestId)
+    .is('deleted_at', null)
+    .single();
+  if (error || !current) throw new Error(error?.message ?? 'Request not found.');
+  if (!requestOwnedByProfile(profile, current)) throw new Error('You can only edit requests assigned to you.');
+  if (String(parsed.project_id) !== String(current.project_id)) throw new Error('Project cannot be changed after a request is created. Archive it and create a new request under the correct project.');
+
+  await assertProjectDomainAvailable(current.project_id, parsed.approved_site, requestId);
+  const { assignTo, assignedUserId } = await resolveAssignee(profile, parsed.assign_to ?? null);
+  const changedBy = `${profile.sheet_name || profile.google_name || 'Rankviz user'} <${profile.email}>`;
+  const project = Array.isArray(current.projects) ? current.projects[0] : current.projects;
+  const { data: site, error: siteError } = await supabase.from('project_sites').select('*').eq('request_id', requestId).maybeSingle();
+  if (siteError) throw new Error(siteError.message);
+
+  const originalSheetRecord: RequestSheetRecord = {
+    id: String(current.id), project_id: String(current.project_id), approved_site: String(current.approved_site),
+    placement_page: current.placement_page ? String(current.placement_page) : null, anchor: String(current.anchor),
+    assign_to: current.assign_to ? String(current.assign_to) : null, status: String(current.status),
+    team_tab: current.team_tab ? String(current.team_tab) : null, team_row: current.team_row ? Number(current.team_row) : null,
+    created_by_email: current.created_by_email ? String(current.created_by_email) : null,
+  };
+
+  const beforeData = {
+    sub_project: current.sub_project, target_url: current.target_url, anchor: current.anchor, approved_site: current.approved_site,
+    placement_page: current.placement_page, shared_with: current.shared_with, priority: current.priority, assign_to: current.assign_to,
+    deadline: current.deadline, status: current.status,
+  };
+
+  const { error: updateError } = await supabase.from('requests').update({
+    sub_project: cleanOptional(parsed.sub_project),
+    target_url: parsed.target_url.trim(),
+    anchor: parsed.anchor.trim(),
+    approved_site: parsed.approved_site.trim(),
+    placement_page: cleanOptional(parsed.placement_page),
+    shared_with: cleanOptional(parsed.shared_with),
+    priority: parsed.priority,
+    assign_to: assignTo,
+    assigned_user_id: assignedUserId,
+    deadline: cleanOptional(parsed.deadline),
+  }).eq('id', requestId);
+  if (updateError) throw new Error(updateError.message);
+
+  if (site?.id) {
+    const { error: psError } = await supabase.from('project_sites').update({
+      website: parsed.approved_site.trim(),
+      opportunity: cleanOptional(parsed.placement_page),
+      anchor: parsed.anchor.trim(),
+      note: assignTo,
+      owner_user_id: assignedUserId,
+    }).eq('id', site.id);
+    if (psError) throw new Error(`Request saved, but linked project row failed: ${psError.message}`);
+  }
+
+  if (String(current.status) !== parsed.status) {
+    await setRequestStatusCore(requestId, parsed.status, changedBy, { pushToSheet: false, sheetRow: current.team_row ? Number(current.team_row) : undefined });
+  }
+
+  const updatedSheetRecord: RequestSheetRecord = {
+    id: String(current.id), project_id: String(current.project_id), approved_site: parsed.approved_site.trim(),
+    placement_page: cleanOptional(parsed.placement_page), anchor: parsed.anchor.trim(), assign_to: assignTo,
+    status: parsed.status, team_tab: current.team_tab ? String(current.team_tab) : null,
+    team_row: current.team_row ? Number(current.team_row) : null,
+    created_by_email: current.created_by_email ? String(current.created_by_email) : profile.email,
+  };
+  const sync = current.team_row
+    ? await syncRequestFullRowToTeamSheet(project as any, originalSheetRecord, updatedSheetRecord, site?.id ?? null)
+    : await appendRequestToTeamSheet(project as any, updatedSheetRecord, site?.id ?? null);
+
+  const syncUpdate: Record<string, unknown> = { sync_state: sync.state, sync_error: sync.state === 'failed' ? sync.error ?? sync.text : null };
+  if (sync.tab) syncUpdate.team_tab = sync.tab;
+  if (sync.row) syncUpdate.team_row = sync.row;
+  await supabase.from('requests').update(syncUpdate).eq('id', requestId);
+  if (site?.id && sync.row) await supabase.from('project_sites').update({ team_row: sync.row }).eq('id', site.id);
+
+  await supabase.from('request_change_logs').insert({
+    request_id: requestId,
+    action: 'edit',
+    changed_by: changedBy,
+    before_data: beforeData,
+    after_data: { ...beforeData, sub_project: cleanOptional(parsed.sub_project), target_url: parsed.target_url.trim(), anchor: parsed.anchor.trim(), approved_site: parsed.approved_site.trim(), placement_page: cleanOptional(parsed.placement_page), shared_with: cleanOptional(parsed.shared_with), priority: parsed.priority, assign_to: assignTo, deadline: cleanOptional(parsed.deadline), status: parsed.status },
+  });
+
+  revalidatePhase1Paths(project?.slug);
+  revalidatePath(`/requests/${requestId}/edit`);
+  return { ok: sync.state !== 'failed', sync };
+}
+
+export async function archiveRequest(requestId: string) {
+  const profile = await requireActiveUserForAction();
+  const supabase = await createClient();
+  const { data: current, error } = await supabase
+    .from('requests')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .eq('id', requestId)
+    .is('deleted_at', null)
+    .single();
+  if (error || !current) throw new Error(error?.message ?? 'Request not found.');
+  if (!requestOwnedByProfile(profile, current)) throw new Error('You can only delete requests assigned to you.');
+  const project = Array.isArray(current.projects) ? current.projects[0] : current.projects;
+  const { data: site } = await supabase.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
+  const changedBy = `${profile.sheet_name || profile.google_name || 'Rankviz user'} <${profile.email}>`;
+  const deletedAt = new Date().toISOString();
+
+  const { error: archiveError } = await supabase.from('requests').update({ deleted_at: deletedAt, deleted_by: profile.id, deleted_by_email: profile.email }).eq('id', requestId);
+  if (archiveError) throw new Error(archiveError.message);
+  if (site?.id) await supabase.from('project_sites').update({ archived_at: deletedAt }).eq('id', site.id);
+  await supabase.from('request_change_logs').insert({ request_id: requestId, action: 'archive', changed_by: changedBy, before_data: { status: current.status, approved_site: current.approved_site, anchor: current.anchor }, after_data: { deleted_at: deletedAt } });
+
+  const record: RequestSheetRecord = {
+    id: String(current.id), project_id: String(current.project_id), approved_site: String(current.approved_site),
+    placement_page: current.placement_page ? String(current.placement_page) : null, anchor: String(current.anchor),
+    assign_to: current.assign_to ? String(current.assign_to) : null, status: String(current.status),
+    team_tab: current.team_tab ? String(current.team_tab) : null, team_row: current.team_row ? Number(current.team_row) : null,
+    created_by_email: current.created_by_email ? String(current.created_by_email) : null,
+  };
+  const sync = current.team_row ? await clearRequestFromTeamSheet(project as any, record, site?.id ?? null) : { state: 'skipped' as const, text: 'Archived in app; no team-sheet row was linked.' };
+  await supabase.from('requests').update({ sync_state: sync.state, sync_error: sync.state === 'failed' ? sync.error ?? sync.text : null }).eq('id', requestId);
+  revalidatePhase1Paths(project?.slug);
+  return { ok: sync.state !== 'failed', sync };
 }
 
 export type DashboardActivityRow = {
@@ -287,6 +489,7 @@ export type ProjectBreakdownRow = {
   total: number;
   live: number;
   pending: number;
+  rejected: number;
 };
 
 function normalizeProjectSummary(value: unknown): { name: string; slug: string } | null {
@@ -329,7 +532,7 @@ function normalizeDashboardActivityRows(rows: Array<{
 async function loadAllRequestStatuses(supabase: Awaited<ReturnType<typeof createClient>>) {
   const rows: Array<{ project_id: string; status: string }> = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from('requests').select('project_id,status').range(from, from + 999);
+    const { data, error } = await supabase.from('requests').select('project_id,status').is('deleted_at', null).range(from, from + 999);
     if (error) throw error;
     rows.push(...((data ?? []) as Array<{ project_id: string; status: string }>));
     if ((data ?? []).length < 1000) break;
@@ -347,6 +550,7 @@ export async function getDashboardOverview() {
     { count: total },
     { count: live },
     { count: pending },
+    { count: rejected },
     { count: failedSync },
     { count: thisMonth },
     recentResult,
@@ -356,14 +560,15 @@ export async function getDashboardOverview() {
     requestStatuses,
     refreshResult,
   ] = await Promise.all([
-    supabase.from('requests').select('*', { count: 'exact', head: true }),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('status', 'Live'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('status', 'Request shared'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('sync_state', 'failed'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).gte('created_at', month.start).lt('created_at', month.end),
-    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').order('created_at', { ascending: false }).limit(8),
-    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').gte('live_date', liveSince).order('live_date', { ascending: false }).limit(50),
-    supabase.from('requests').select('id,approved_site,anchor,sync_error,updated_at,projects(name,slug)').eq('sync_state', 'failed').order('updated_at', { ascending: false }).limit(50),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Live'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Request shared'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Rejected'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('sync_state', 'failed'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).gte('created_at', month.start).lt('created_at', month.end),
+    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').is('deleted_at', null).order('created_at', { ascending: false }).limit(8),
+    supabase.from('requests').select('id,created_at,approved_site,assign_to,status,live_date,sync_state,sync_error,projects(name,slug)').is('deleted_at', null).gte('live_date', liveSince).order('live_date', { ascending: false }).limit(50),
+    supabase.from('requests').select('id,approved_site,anchor,sync_error,updated_at,projects(name,slug)').is('deleted_at', null).eq('sync_state', 'failed').order('updated_at', { ascending: false }).limit(50),
     supabase.from('projects').select('id,name,slug').order('name'),
     loadAllRequestStatuses(supabase),
     supabase.from('sync_logs').select('created_at,detail').eq('direction', 'from_sheet').eq('sheet_name', '__refresh__').order('created_at', { ascending: false }).limit(1).maybeSingle(),
@@ -386,17 +591,18 @@ export async function getDashboardOverview() {
     };
   }
 
-  const counts = new Map<string, { total: number; live: number; pending: number }>();
+  const counts = new Map<string, { total: number; live: number; pending: number; rejected: number }>();
   for (const row of requestStatuses) {
-    const item = counts.get(row.project_id) ?? { total: 0, live: 0, pending: 0 };
+    const item = counts.get(row.project_id) ?? { total: 0, live: 0, pending: 0, rejected: 0 };
     item.total += 1;
     if (row.status === 'Live') item.live += 1;
     if (row.status === 'Request shared') item.pending += 1;
+    if (row.status === 'Rejected') item.rejected += 1;
     counts.set(row.project_id, item);
   }
 
   const breakdown: ProjectBreakdownRow[] = (projectsResult.data ?? []).map((project: any) => {
-    const item = counts.get(String(project.id)) ?? { total: 0, live: 0, pending: 0 };
+    const item = counts.get(String(project.id)) ?? { total: 0, live: 0, pending: 0, rejected: 0 };
     return { id: String(project.id), name: String(project.name), slug: String(project.slug), ...item };
   });
 
@@ -405,6 +611,7 @@ export async function getDashboardOverview() {
       total: total ?? 0,
       live: live ?? 0,
       pending: pending ?? 0,
+      rejected: rejected ?? 0,
       failedSync: failedSync ?? 0,
       thisMonth: thisMonth ?? 0,
     },
@@ -420,7 +627,7 @@ export async function getDashboardOverview() {
 export type MyRequestsResult = {
   name: string;
   today: string;
-  kpis: { assigned: number; live: number; pending: number; overdue: number };
+  kpis: { assigned: number; live: number; pending: number; rejected: number; overdue: number };
   upcoming: any[];
   requests: any[];
 };
@@ -434,7 +641,7 @@ export async function getMyRequests(name: string = ''): Promise<MyRequestsResult
   const clean = (profile.role === 'admin' ? (name.trim() || profile.sheet_name || '') : (profile.sheet_name || '')).trim();
   const today = karachiDateString();
   if (!clean) {
-    return { name: '', today, kpis: { assigned: 0, live: 0, pending: 0, overdue: 0 }, upcoming: [], requests: [] };
+    return { name: '', today, kpis: { assigned: 0, live: 0, pending: 0, rejected: 0, overdue: 0 }, upcoming: [], requests: [] };
   }
 
   const supabase = await createClient();
@@ -445,6 +652,7 @@ export async function getMyRequests(name: string = ''): Promise<MyRequestsResult
       .from('requests')
       .select('id,project_id,sub_project,approved_site,anchor,priority,assign_to,deadline,status,sync_state,sync_error,created_at,projects(name,slug)')
       .ilike('assign_to', pattern)
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .range(from, from + 999);
     if (error) throw error;
@@ -454,16 +662,17 @@ export async function getMyRequests(name: string = ''): Promise<MyRequestsResult
 
   const live = rows.filter((row) => row.status === 'Live').length;
   const pending = rows.filter((row) => row.status === 'Request shared').length;
-  const overdue = rows.filter((row) => row.status !== 'Live' && row.deadline && String(row.deadline).slice(0, 10) < today).length;
+  const rejected = rows.filter((row) => row.status === 'Rejected').length;
+  const overdue = rows.filter((row) => row.status === 'Request shared' && row.deadline && String(row.deadline).slice(0, 10) < today).length;
   const upcomingEnd = karachiDateOffsetString(6);
   const upcoming = rows
-    .filter((row) => row.status !== 'Live' && row.deadline && String(row.deadline).slice(0, 10) >= today && String(row.deadline).slice(0, 10) <= upcomingEnd)
+    .filter((row) => row.status === 'Request shared' && row.deadline && String(row.deadline).slice(0, 10) >= today && String(row.deadline).slice(0, 10) <= upcomingEnd)
     .sort((a, b) => String(a.deadline).localeCompare(String(b.deadline)));
 
   return {
     name: clean,
     today,
-    kpis: { assigned: rows.length, live, pending, overdue },
+    kpis: { assigned: rows.length, live, pending, rejected, overdue },
     upcoming,
     requests: rows,
   };
@@ -473,17 +682,19 @@ export async function getDashboardStats() {
   await requireAdminForAction();
   const supabase = await createClient();
   const month = karachiMonthBounds();
-  const [{ count: total }, { count: live }, { count: pending }, { count: failedSync }, { count: thisMonth }] = await Promise.all([
-    supabase.from('requests').select('*', { count: 'exact', head: true }),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('status', 'Live'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('status', 'Request shared'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).eq('sync_state', 'failed'),
-    supabase.from('requests').select('*', { count: 'exact', head: true }).gte('created_at', month.start).lt('created_at', month.end),
+  const [{ count: total }, { count: live }, { count: pending }, { count: rejected }, { count: failedSync }, { count: thisMonth }] = await Promise.all([
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Live'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Request shared'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('status', 'Rejected'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).eq('sync_state', 'failed'),
+    supabase.from('requests').select('*', { count: 'exact', head: true }).is('deleted_at', null).gte('created_at', month.start).lt('created_at', month.end),
   ]);
   return {
     total: total ?? 0,
     live: live ?? 0,
     pending: pending ?? 0,
+    rejected: rejected ?? 0,
     failedSync: failedSync ?? 0,
     thisMonth: thisMonth ?? 0,
   };
