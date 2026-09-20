@@ -362,6 +362,43 @@ export type ProjectBreakdownRow = {
   pending: number;
 };
 
+function normalizeProjectSummary(value: unknown): { name: string; slug: string } | null {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (!candidate || typeof candidate !== 'object') return null;
+
+  const record = candidate as Record<string, unknown>;
+  if (record.name == null || record.slug == null) return null;
+
+  return {
+    name: String(record.name),
+    slug: String(record.slug),
+  };
+}
+
+function normalizeDashboardActivityRows(rows: Array<{
+  id: unknown;
+  created_at: unknown;
+  approved_site: unknown;
+  assign_to: unknown;
+  status: unknown;
+  live_date: unknown;
+  sync_state: unknown;
+  sync_error: unknown;
+  projects: unknown;
+}> | null | undefined): DashboardActivityRow[] {
+  return (rows ?? []).map((row) => ({
+    id: String(row.id),
+    created_at: String(row.created_at),
+    approved_site: String(row.approved_site),
+    assign_to: row.assign_to == null ? null : String(row.assign_to),
+    status: String(row.status),
+    live_date: row.live_date == null ? null : String(row.live_date),
+    sync_state: String(row.sync_state),
+    sync_error: row.sync_error == null ? null : String(row.sync_error),
+    projects: normalizeProjectSummary(row.projects),
+  }));
+}
+
 async function loadAllRequestStatuses(supabase: Awaited<ReturnType<typeof createClient>>) {
   const rows: Array<{ project_id: string; status: string }> = [];
   for (let from = 0; ; from += 1000) {
@@ -443,8 +480,8 @@ export async function getDashboardOverview() {
       failedSync: failedSync ?? 0,
       thisMonth: thisMonth ?? 0,
     },
-    recent: (recentResult.data ?? []) as DashboardActivityRow[],
-    becameLive: (becameLiveResult.data ?? []) as DashboardActivityRow[],
+    recent: normalizeDashboardActivityRows(recentResult.data),
+    becameLive: normalizeDashboardActivityRows(becameLiveResult.data),
     failed: failedResult.data ?? [],
     breakdown,
     liveSince,
