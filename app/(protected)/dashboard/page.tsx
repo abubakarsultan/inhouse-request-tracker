@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { getDashboardOverview } from '@/services/requests';
+import { getDashboardOverview, type DashboardActivityRow } from '@/services/requests';
 import StatusBadge from '@/components/status-badge';
 import RetrySyncButton from '@/components/app/retry-sync-button';
 import { formatKarachiDateTime } from '@/lib/date';
@@ -97,7 +97,7 @@ export default async function Dashboard() {
             <table className="w-full min-w-[600px] text-sm">
               <thead className="bg-[var(--canvas)] text-left text-xs uppercase tracking-wide text-[var(--muted)]"><tr><th className="p-3">Date</th><th className="p-3">Client</th><th className="p-3">Website</th><th className="p-3">Owner</th><th className="p-3">Status</th></tr></thead>
               <tbody>
-                {data.recent.map((row) => (
+                {data.recent.map((row: DashboardActivityRow) => (
                   <tr key={row.id} className="border-t border-[var(--border)]/70">
                     <td className="whitespace-nowrap p-3 text-xs text-[var(--muted)]">{formatKarachiDateTime(row.created_at)}</td>
                     <td className="p-3 font-medium">{row.projects ? <Link href={`/projects/${row.projects.slug}`} className="hover:text-[var(--brand)]">{row.projects.name}</Link> : '—'}</td>
@@ -121,7 +121,7 @@ export default async function Dashboard() {
             <table className="w-full min-w-[620px] text-sm">
               <thead className="sticky top-0 bg-[var(--canvas)] text-left text-xs uppercase tracking-wide text-[var(--muted)]"><tr><th className="p-3">Live date</th><th className="p-3">Client</th><th className="p-3">Website</th><th className="p-3">Owner</th><th className="p-3">Now</th></tr></thead>
               <tbody>
-                {data.becameLive.map((row) => (
+                {data.becameLive.map((row: DashboardActivityRow) => (
                   <tr key={row.id} className="border-t border-[var(--border)]/70">
                     <td className="p-3 text-xs text-[var(--muted)]">{row.live_date || '—'}</td>
                     <td className="p-3 font-medium">{row.projects ? <Link href={`/projects/${row.projects.slug}`} className="hover:text-[var(--brand)]">{row.projects.name}</Link> : '—'}</td>

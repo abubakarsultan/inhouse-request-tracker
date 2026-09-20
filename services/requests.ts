@@ -492,6 +492,30 @@ export type ProjectBreakdownRow = {
   rejected: number;
 };
 
+export type DashboardOverview = {
+  stats: {
+    total: number;
+    live: number;
+    pending: number;
+    rejected: number;
+    failedSync: number;
+    thisMonth: number;
+  };
+  recent: DashboardActivityRow[];
+  becameLive: DashboardActivityRow[];
+  failed: Array<{
+    id: string;
+    approved_site: string;
+    anchor: string;
+    sync_error: string | null;
+    updated_at: string | null;
+    projects: { name: string; slug: string } | null;
+  }>;
+  breakdown: ProjectBreakdownRow[];
+  liveSince: string;
+  lastRefresh: { createdAt: string; updated: number; checked: number } | null;
+};
+
 function normalizeProjectSummary(value: unknown): { name: string; slug: string } | null {
   const candidate = Array.isArray(value) ? value[0] : value;
   if (!candidate || typeof candidate !== 'object') return null;
@@ -540,7 +564,7 @@ async function loadAllRequestStatuses(supabase: Awaited<ReturnType<typeof create
   return rows;
 }
 
-export async function getDashboardOverview() {
+export async function getDashboardOverview(): Promise<DashboardOverview> {
   await requireAdminForAction();
   const supabase = await createClient();
   const month = karachiMonthBounds();
