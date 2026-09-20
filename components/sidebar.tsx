@@ -2,12 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch } from 'lucide-react';
 
 const links = [
   ['Dashboard', '/dashboard', LayoutDashboard],
   ['Projects', '/projects', FolderKanban],
   ['Requests', '/requests', ListTodo],
+  ['Search', '/search', Search],
+  ['Site Check', '/site-check', ScanSearch],
   ['Import', '/import', Upload],
   ['Settings', '/settings', Settings],
 ] as const;
@@ -33,10 +35,10 @@ export default function Sidebar() {
         ))}
       </aside>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-[var(--border)] bg-white px-1 py-1 lg:hidden" aria-label="Mobile navigation">
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto border-t border-[var(--border)] bg-white px-1 py-1 lg:hidden" aria-label="Mobile navigation">
         {links.map(([label, href, Icon]) => (
-          <Link key={href} href={href} className={`flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)]'}`}>
-            <Icon size={17} /><span className="truncate">{label}</span>
+          <Link key={href} href={href} className={`flex min-w-[72px] flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)]'}`}>
+            <Icon size={17} /><span className="whitespace-nowrap">{label}</span>
           </Link>
         ))}
       </nav>

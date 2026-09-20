@@ -96,3 +96,115 @@ export async function getRecentImports() {
   if (error) throw error;
   return data;
 }
+
+export type TeamSheetImportReport = {
+  rowsRead: number;
+  added: number;
+  skipped: number;
+  errors: string[];
+  projects: Array<{ project: string; tab: string | null; rowsRead: number; added: number; skipped: number; state: 'ok' | 'skipped' | 'failed'; detail?: string }>;
+};
+
+function importTupleKey(projectId: string, website: string, anchor: string) {
+  return `${projectId}\u0000${website.trim().toLowerCase()}\u0000${anchor.trim().toLowerCase()}`;
+}
+
+function parseSheetMetric(value: string | number | null) {
+  if (value == null || String(value).trim() === '') return null;
+  const number = Number(String(value).replace(/,/g, '').trim());
+  return Number.isFinite(number) ? Math.trunc(number) : null;
+}
+
+export async function importFromTeamSheet(): Promise<TeamSheetImportReport> {
+  const { readTeamSheetProjectRows } = await import('@/services/google-sheet-sync');
+  const supabase = await createClient();
+  const { data: projects, error: projectsError } = await supabase
+    .from('projects')
+    .select('id,name,guest_post_tab_name')
+    .order('name');
+  if (projectsError) throw new Error(`Could not load projects: ${projectsError.message}`);
+
+  const existing: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data: page, error: existingError } = await supabase
+      .from('project_sites')
+      .select('project_id,website,anchor')
+      .range(from, from + 999);
+    if (existingError) throw new Error(`Could not load existing project sites: ${existingError.message}`);
+    existing.push(...(page ?? []));
+    if ((page ?? []).length < 1000) break;
+  }
+
+  const known = new Set(existing.map((row: any) => importTupleKey(String(row.project_id), String(row.website ?? ''), String(row.anchor ?? ''))));
+  const report: TeamSheetImportReport = { rowsRead: 0, added: 0, skipped: 0, errors: [], projects: [] };
+
+  for (const project of projects ?? []) {
+    const read = await readTeamSheetProjectRows(project as any);
+    const projectReport = {
+      project: String(project.name),
+      tab: project.guest_post_tab_name ? String(project.guest_post_tab_name) : null,
+      rowsRead: read.rows.length,
+      added: 0,
+      skipped: 0,
+      state: read.state,
+      detail: read.state === 'ok' ? undefined : read.reason,
+    } as TeamSheetImportReport['projects'][number];
+    report.rowsRead += read.rows.length;
+
+    if (read.state !== 'ok') {
+      if (read.state === 'failed') report.errors.push(`${project.name}: ${read.reason}`);
+      report.projects.push(projectReport);
+      continue;
+    }
+
+    const toInsert: any[] = [];
+    for (const row of read.rows) {
+      if (!row.website) {
+        const message = `${project.name} row ${row.teamRow}: Website is empty; row was not imported.`;
+        report.errors.push(message);
+        projectReport.skipped += 1;
+        report.skipped += 1;
+        continue;
+      }
+
+      const key = importTupleKey(String(project.id), row.website, row.anchor);
+      if (known.has(key)) {
+        projectReport.skipped += 1;
+        report.skipped += 1;
+        continue;
+      }
+
+      known.add(key);
+      toInsert.push({
+        project_id: project.id,
+        request_id: null,
+        website: row.website,
+        opportunity: row.opportunity || null,
+        anchor: row.anchor || null,
+        dr: parseSheetMetric(row.dr),
+        traffic: parseSheetMetric(row.traffic),
+        status: row.status === 'Live' ? 'Live' : 'Request shared',
+        note: row.note || null,
+        team_row: row.teamRow,
+      });
+    }
+
+    if (toInsert.length) {
+      const { error } = await supabase.from('project_sites').insert(toInsert);
+      if (error) {
+        report.errors.push(`${project.name}: ${error.message}`);
+        projectReport.state = 'failed';
+        projectReport.detail = error.message;
+      } else {
+        projectReport.added = toInsert.length;
+        report.added += toInsert.length;
+      }
+    }
+    report.projects.push(projectReport);
+  }
+
+  revalidatePath('/projects');
+  revalidatePath('/import');
+  revalidatePath('/site-check');
+  return report;
+}

@@ -1,24 +1,33 @@
 # INHOUSE REQUEST
 
-Phase 1 of the no-login Rankviz outreach request app. The database is the source of truth and the **Guest Post Anchor** Google Sheet is a server-side mirror.
+Phase 2 of the no-login Rankviz outreach request app. Supabase is the source of truth and the **Guest Post Anchor** Google Sheet remains a server-side mirror.
 
-## Phase 1 behavior
+## Current behavior
+
+### Phase 1 core
 
 - No login, auth page, middleware redirect, or Supabase Auth flow.
 - All Supabase access is server-side with `SUPABASE_SERVICE_ROLE_KEY`.
 - Request statuses are exactly `Request shared` and `Live`; both directions are allowed.
 - Priorities are `High`, `Medium`, and `Low` with `Medium` as the default.
-- `Assign To` and `Shared With` are free text with autocomplete from previous request values.
+- `Assign To` and `Shared With` are free text with autocomplete.
 - The browser-only **Who are you?** picker supplies `created_by_name` and `status_changed_by`.
-- Creating a request writes the request to Supabase first, creates its linked `project_sites` row, then mirrors it to the mapped team-sheet tab.
-- A Sheet failure never rolls back or loses the database request.
-- New team-sheet rows are written to `lastRow + 2`, serialized with a Postgres lease lock.
-- Status writes verify both Website (column A) and Anchor (column C) before changing Status (column F). A stale stored row is searched and repaired instead of trusted blindly.
-- Missing mapped tabs are treated as `skipped`, not failed, and tabs are never auto-created.
+- Request creation is DB first: `requests` -> linked `project_sites` -> team-sheet mirror.
+- Team-sheet appends use the intentional `lastRow + 2` gap and a DB lease lock.
+- Status updates verify both Website and Anchor before writing Sheet column F.
+
+### Phase 2 form and tools
+
+- Approved Site inline hint checks usage after about 400 ms and never blocks saving.
+- **Site Check** uses exact normalized host matching, so `www.example.com/path` = `example.com` while `example.co` != `example.com`.
+- Site Check reads the app database, returns every matching row per project, and labels projects without a mapped team tab as **Tracker only**.
+- **Search** starts at 2 characters, debounces for 250 ms, uses normalized server-side matching, caps display at 100 rows, highlights matches, and supports Mark Live / Revert through the canonical `setRequestStatus` action.
+- **Import from team sheet** reads mapped project tabs A2:G and creates missing `project_sites` rows only. It never creates `requests` rows and is safe to run repeatedly.
+- **Download Today CSV** exports the selected Asia/Karachi date in the exact 9-column Outreach OS bulk-add format with UTF-8 BOM and CRLF records.
 
 ## Environment variables
 
-Copy `.env.example` to `.env.local` and set exactly these values:
+Copy `.env.example` to `.env.local` and set:
 
 ```env
 NEXT_PUBLIC_SUPABASE_URL=
@@ -28,66 +37,50 @@ TEAM_SHEET_ID=
 SHEET_WEBHOOK_SECRET=
 ```
 
-`GOOGLE_SERVICE_ACCOUNT_JSON` is the **base64-encoded complete Google service-account JSON**. Share `TEAM_SHEET_ID` with that service-account email as **Editor**.
+No new environment variables were added in Phase 2.
 
-`SHEET_WEBHOOK_SECRET` is reserved for the sheet-to-site webhook. The webhook/trigger is completed in Phase 4; do not install the old simple `onEdit` snippet.
+`GOOGLE_SERVICE_ACCOUNT_JSON` is the base64-encoded complete Google service-account JSON. Share `TEAM_SHEET_ID` with that service-account email as **Editor**.
+
+`SHEET_WEBHOOK_SECRET` is reserved for the Phase 4 sheet-to-site webhook. Do not install the old simple `onEdit` snippet.
 
 ## Database
 
-For an existing installation, run:
+For an existing installation, run migrations in order:
 
 ```text
 database/migrations/001_phase1_core.sql
+database/migrations/002_phase2_search.sql
 ```
 
-The migration is designed to be re-runnable. It:
+`002_phase2_search.sql` is re-runnable and adds the normalized server-side request-search RPC used by `/search`.
 
-- removes the legacy forward-only status trigger;
-- maps `Request Shared` -> `Request shared`;
-- maps legacy `Removed` -> `Request shared` and records affected request IDs in `migration_audit`;
-- maps `Urgent` -> `High` and records affected request IDs in `migration_audit`;
-- changes status/priority to text + CHECK constraints;
-- converts assignment and audit identity fields to free text;
-- adds request/team-sheet sync metadata and `project_sites.request_id` / `team_row`;
-- creates the append lease lock RPCs;
-- seeds/repairs the 19 current project mappings.
-
-For a new database, `database/schema.sql` is the canonical Phase 1 schema.
-
-To inspect migrated legacy rows after running the migration:
-
-```sql
-select *
-from migration_audit
-where migration_key = '001_phase1_core'
-order by created_at, field_name, row_id;
-```
+For a fresh installation, `database/schema.sql` contains the current Phase 2 schema and helper functions.
 
 ## Local setup
 
 ```bash
 npm ci
 npx tsc --noEmit
+npm run test:phase2
 npm run build
 npm run dev
 ```
 
-Open `http://localhost:3000`. The app redirects straight to `/dashboard` and has no login.
+Open `http://localhost:3000`. The app opens without login.
 
-## Phase 1 manual acceptance checks
+## Phase 2 manual acceptance checks
 
-1. Pick a browser name from **Who are you?**.
-2. Create a request with a mapped project. Confirm `requests` and a linked `project_sites` row exist before checking the Sheet.
-3. Confirm Sheet columns are `Website | Opportunity | Anchor | DR | Traffic | Status | Note`, with the new row separated by one blank row.
-4. Create the same normalized Approved Site + Anchor again. Confirm the duplicate warning offers **Save anyway** and **Cancel**.
-5. Mark the request `Live`. Confirm DB, linked project site, Sheet column F, `request_logs`, and `live_date` update.
-6. Revert it to `Request shared`. Confirm `live_date` is preserved.
-7. Temporarily use invalid Google credentials. Create a request and confirm it remains in Supabase with `sync_state='failed'` and the UI offers **Retry sync**.
-8. Map a project to a nonexistent Sheet tab and confirm the request is saved with `sync_state='skipped'` and the saved-here-only message.
-9. Insert/sort rows in a mapped Sheet tab, then change status in the app. Confirm the row is found by Website + Anchor and `team_row` repairs itself before column F changes.
+1. Open **New Request**, type an Approved Site, and confirm the green/amber site-usage hint appears after the debounce.
+2. Check `https://www.example.com/path?q=1` and `example.com` in **Site Check** and confirm they are treated as the same host. Confirm `example.co` is not treated as `example.com`.
+3. If the same site has multiple rows in one project, confirm every matching row appears under **USED IN**.
+4. Search a client, site, anchor, assignee, status, or target URL. Confirm 2-character minimum, match highlighting, and `100+` capped messaging.
+5. Change status from a Search result and confirm the result card updates in place and the normal Phase 1 DB/project-site/Sheet/log flow is used.
+6. Run **Import from team sheet** twice. The second run should add 0 already-existing tuples and report them as skipped.
+7. Confirm blank gap rows in the team sheet are ignored and imported rows keep their actual Sheet row number in `team_row`.
+8. Download the CSV for a date with requests and confirm filename `requests_YYYY-MM-DD.csv` and exact columns: `Client, Sub-Project, Target URL, Anchor, Approved Site (Domain), Placement Page, Priority, Assign To, Deadline`.
+9. Pick a date with no requests and confirm the UI shows a friendly message instead of downloading an empty file.
 
 ## Deferred by the agreed phase plan
 
-Phase 2: inline site hint, Site Check, Search, Outreach OS CSV, import from team sheet.  
-Phase 3: complete dashboard, project card grid/counts, My Requests, deadline visuals.  
-Phase 4: webhook + installable Apps Script trigger, refresh/retry tooling, health check, diagnostics, and importer sheet-push update.
+Phase 3: full dashboard, project card grid/counts, My Requests, and deadline/status visuals.  
+Phase 4: webhook + installable Apps Script trigger, refresh/retry repair tooling, health check, diagnostics, and CSV/XLSX importer sheet-push update.

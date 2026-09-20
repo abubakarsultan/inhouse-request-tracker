@@ -1,1 +1,39 @@
-{"name":"inhouse-request","version":"1.0.0","private":true,"scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest","@supabase/ssr":"latest","@supabase/supabase-js":"latest","lucide-react":"latest","zod":"latest","papaparse":"latest","xlsx":"latest","clsx":"latest","tailwind-merge":"latest","@radix-ui/react-dialog":"latest","@radix-ui/react-label":"latest","@radix-ui/react-dropdown-menu":"latest","class-variance-authority":"latest","googleapis":"latest"},"devDependencies":{"typescript":"latest","@types/node":"latest","@types/react":"latest","@types/react-dom":"latest","tailwindcss":"latest","@tailwindcss/postcss":"latest","postcss":"latest"}}
+{
+  "name": "inhouse-request",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test:csv": "node --experimental-strip-types --test tests/outreach-csv.test.mjs",
+    "test:phase2": "node --experimental-strip-types --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "@supabase/ssr": "latest",
+    "@supabase/supabase-js": "latest",
+    "lucide-react": "latest",
+    "zod": "latest",
+    "papaparse": "latest",
+    "xlsx": "latest",
+    "clsx": "latest",
+    "tailwind-merge": "latest",
+    "@radix-ui/react-dialog": "latest",
+    "@radix-ui/react-label": "latest",
+    "@radix-ui/react-dropdown-menu": "latest",
+    "class-variance-authority": "latest",
+    "googleapis": "latest"
+  },
+  "devDependencies": {
+    "typescript": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "tailwindcss": "latest",
+    "@tailwindcss/postcss": "latest",
+    "postcss": "latest"
+  }
+}

@@ -412,3 +412,65 @@ export async function applyStatusFromSheet(projectId: string, website: string, s
   await logSync({ projectSiteId: site.id, direction: 'from_sheet', sheetName, sheetRow, status: 'success' });
   return { success: true };
 }
+
+export type TeamSheetProjectRow = {
+  teamRow: number;
+  website: string;
+  opportunity: string;
+  anchor: string;
+  dr: string | number | null;
+  traffic: string | number | null;
+  status: string;
+  note: string;
+};
+
+export type TeamSheetReadResult =
+  | { state: 'ok'; tab: string; rows: TeamSheetProjectRow[] }
+  | { state: 'skipped'; tab?: string; rows: TeamSheetProjectRow[]; reason: string }
+  | { state: 'failed'; tab?: string; rows: TeamSheetProjectRow[]; reason: string };
+
+// Phase 2 team-sheet import reader. This intentionally does not auto-create
+// missing tabs and does not write anything back to Google Sheets.
+export async function readTeamSheetProjectRows(project: {
+  id: string;
+  name: string;
+  guest_post_tab_name: string | null;
+}): Promise<TeamSheetReadResult> {
+  const tab = project.guest_post_tab_name?.trim();
+  if (!tab) return { state: 'skipped', rows: [], reason: 'Project has no team-sheet tab mapping.' };
+
+  const spreadsheetId = getTeamSheetId();
+  if (!spreadsheetId) return { state: 'failed', tab, rows: [], reason: 'TEAM_SHEET_ID is not configured.' };
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    return { state: 'failed', tab, rows: [], reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
+  }
+
+  try {
+    const sheets = getSheetsClient();
+    const titles = await getTabTitles(sheets, spreadsheetId);
+    if (!titles.has(tab)) return { state: 'skipped', tab, rows: [], reason: 'Mapped tab does not exist in the team sheet.' };
+
+    const response = await withGoogleRetry(() =>
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:G` })
+    ) as { data: { values?: unknown[][] } };
+
+    const rows: TeamSheetProjectRow[] = [];
+    for (let index = 0; index < (response.data.values ?? []).length; index += 1) {
+      const row = (response.data.values ?? [])[index] ?? [];
+      if (!rowHasContent(row)) continue;
+      rows.push({
+        teamRow: index + 2,
+        website: String(row[0] ?? '').trim(),
+        opportunity: String(row[1] ?? '').trim(),
+        anchor: String(row[2] ?? '').trim(),
+        dr: row[3] == null || String(row[3]).trim() === '' ? null : String(row[3]).trim(),
+        traffic: row[4] == null || String(row[4]).trim() === '' ? null : String(row[4]).trim(),
+        status: String(row[5] ?? '').trim(),
+        note: String(row[6] ?? '').trim(),
+      });
+    }
+    return { state: 'ok', tab, rows };
+  } catch (error) {
+    return { state: 'failed', tab, rows: [], reason: error instanceof Error ? error.message : String(error) };
+  }
+}

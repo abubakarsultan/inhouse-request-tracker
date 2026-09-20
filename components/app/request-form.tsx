@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
@@ -23,7 +23,31 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
   const [duplicate, setDuplicate] = useState<{ date: string; client: string } | null>(null);
   const [result, setResult] = useState<Extract<CreateRequestResult, { saved: true }> | null>(null);
   const [targetUrl, setTargetUrl] = useState('');
+  const [approvedSite, setApprovedSite] = useState('');
+  const [siteHint, setSiteHint] = useState<{ loading: boolean; usedProjectCount: number; projects: string[]; error?: string } | null>(null);
   const [lastForm, setLastForm] = useState<HTMLFormElement | null>(null);
+
+  useEffect(() => {
+    const value = approvedSite.trim();
+    if (!value) { setSiteHint(null); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setSiteHint({ loading: true, usedProjectCount: 0, projects: [] });
+      try {
+        const response = await fetch(`/api/site-check?q=${encodeURIComponent(value)}`, { cache: 'no-store', signal: controller.signal });
+        const body = await response.json() as { ok?: boolean; reason?: string; usedProjectCount?: number; used?: Array<{ project: string }> };
+        if (!body.ok) {
+          setSiteHint({ loading: false, usedProjectCount: 0, projects: [], error: body.reason || 'Could not check this site.' });
+          return;
+        }
+        const projects = [...new Set((body.used ?? []).map((row) => row.project))];
+        setSiteHint({ loading: false, usedProjectCount: body.usedProjectCount ?? projects.length, projects });
+      } catch (caught) {
+        if ((caught as Error).name !== 'AbortError') setSiteHint({ loading: false, usedProjectCount: 0, projects: [], error: 'Site check unavailable.' });
+      }
+    }, 400);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [approvedSite]);
 
   async function submit(form: HTMLFormElement, forceDuplicate: boolean) {
     setPending(true);
@@ -57,6 +81,8 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
       setDuplicate(null);
       form.reset();
       setTargetUrl('');
+      setApprovedSite('');
+      setSiteHint(null);
     } catch (caught) {
       const issue = caught as { issues?: { message?: string }[]; message?: string };
       setError(issue?.issues?.[0]?.message ?? issue?.message ?? 'Could not create request');
@@ -132,7 +158,15 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
         </div>
         <div>
           <Label htmlFor="approved_site">Approved Site Domain *</Label>
-          <Input id="approved_site" name="approved_site" required placeholder="partner-site.com" />
+          <Input id="approved_site" name="approved_site" required value={approvedSite} onChange={(event) => setApprovedSite(event.target.value)} placeholder="partner-site.com" />
+          {siteHint?.loading && <p className="mt-1 text-xs text-[var(--muted)]">Checking site usage…</p>}
+          {siteHint && !siteHint.loading && !siteHint.error && siteHint.usedProjectCount > 0 && (
+            <p className="mt-1 text-xs text-[#b06000]">Already used in {siteHint.usedProjectCount} project(s): {siteHint.projects.join(', ')}</p>
+          )}
+          {siteHint && !siteHint.loading && !siteHint.error && siteHint.usedProjectCount === 0 && (
+            <p className="mt-1 text-xs text-[#188038]">Not used in any project yet.</p>
+          )}
+          {siteHint?.error && <p className="mt-1 text-xs text-[var(--muted)]">{siteHint.error}</p>}
         </div>
         <div className="sm:col-span-2">
           <Label htmlFor="placement_page">Placement Page</Label>
