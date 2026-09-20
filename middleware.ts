@@ -3,6 +3,12 @@ import { createServerClient } from '@supabase/ssr';
 
 const PROTECTED = ['/dashboard', '/projects', '/requests', '/import', '/settings'];
 
+// TEMPORARY: the login screen is disabled for now. Instead of redirecting
+// to /login, this middleware silently signs in as the single admin account
+// (still a real Supabase session under the hood, so RLS and everything
+// else keeps working exactly the same) so the tool just opens directly.
+// To bring the login screen back later: restore the redirect-to-/login
+// block that used to be here instead of the auto sign-in call below.
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
 
@@ -23,16 +29,15 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  // IMPORTANT: this call refreshes the session cookie if it's expired —
-  // do not remove it, and do not add logic between creating the client
-  // and this call.
-  const { data } = await supabase.auth.getUser();
+  let { data } = await supabase.auth.getUser();
 
-  const isProtected = PROTECTED.some((p) => request.nextUrl.pathname.startsWith(p));
-  if (isProtected && !data.user) {
-    const loginUrl = new URL('/login', request.url);
-    loginUrl.searchParams.set('next', request.nextUrl.pathname);
-    return NextResponse.redirect(loginUrl);
+  if (!data.user) {
+    const email = process.env.ADMIN_EMAIL;
+    const password = process.env.ADMIN_PASSWORD;
+    if (email && password) {
+      await supabase.auth.signInWithPassword({ email, password });
+      ({ data } = await supabase.auth.getUser());
+    }
   }
 
   if (request.nextUrl.pathname === '/login' && data.user) {
