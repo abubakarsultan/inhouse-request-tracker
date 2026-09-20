@@ -9,9 +9,13 @@ export type CurrentUser = {
   role: 'admin' | 'member';
 };
 
+// This app has exactly one allowed account. Even if another row somehow
+// exists in public.users, it is treated as signed-out here.
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abubakarsultan@rankviz.com').toLowerCase().trim();
+
 // Reads the signed-in auth user + their public.users profile row (role,
-// active flag, name, avatar). Returns null if nobody is signed in, or if
-// their profile has been deactivated by an admin.
+// active flag, name, avatar). Returns null if nobody is signed in, if their
+// profile has been deactivated, or if it isn't the single allowed admin email.
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
@@ -24,6 +28,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     .single();
 
   if (!profile || !profile.active) return null;
+  if (profile.email.toLowerCase().trim() !== ADMIN_EMAIL) return null;
   return {
     id: profile.id,
     email: profile.email,

@@ -17,7 +17,8 @@ Stack: Next.js (App Router) · TypeScript · Tailwind · Supabase (Postgres + Au
 Copy `.env.example` to `.env.local` (or set these in Vercel → Project → Settings → Environment Variables) and fill in:
 
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
-- `ADMIN_EMAILS` — comma-separated @rankviz.com emails that should be admins the first time they sign in. Everyone else who signs in becomes a `member` automatically; promote them later from **Settings → Users**.
+- `ADMIN_EMAIL` — the single email allowed to sign in (`abubakarsultan@rankviz.com`). No other account can use this app, even if one exists in Supabase.
+- `ADMIN_PASSWORD` / `SETUP_SECRET` — only used once, to create/reset that one account via `POST /api/admin/seed`. Remove both from the environment (or delete the route) after running it.
 - `GOOGLE_SERVICE_ACCOUNT_JSON` / `SHEET_WEBHOOK_SECRET` — only needed for the Google Sheet sync, see below. The app runs fine without them; sync is simply skipped and logged.
 
 ## 3. Run it
@@ -76,7 +77,7 @@ This fires on every edit to the sheet and keeps `project_sites` (and
 
 ## Modules
 
-- **Auth** — Google OAuth restricted to `@rankviz.com`; every sign-in upserts a `users` row (role defaults to `member`, or `admin` for anyone in `ADMIN_EMAILS`).
+- **Auth** — email + password sign-in for a single account (`ADMIN_EMAIL`) only; no Google sign-in, no sign-up, no other accounts are recognized.
 - **Projects** — CRUD (admin-only write), search, enable/disable, and the Outreach OS ↔ Guest Post Anchor tab-name mapping the old NAME_MAP used to hold.
 - **Project detail (`/projects/[slug]`)** — the Website / Opportunity / Anchor / DR / Traffic / Status / Note table for that project (`project_sites`), fed by the importer and kept in sync with its Guest Post Anchor tab.
 - **Requests** — full create form with the required-field validation from the spec; status can only move `Request Shared → Live → Removed`, enforced in the UI, in the server action, *and* by a Postgres trigger so it can never be bypassed. Every change is written to `request_logs`.
