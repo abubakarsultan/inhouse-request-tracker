@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch, UserRoundCheck } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch, UserRoundCheck, HeartPulse } from 'lucide-react';
 
 const links = [
   ['Dashboard', '/dashboard', LayoutDashboard],
@@ -12,6 +12,7 @@ const links = [
   ['Search', '/search', Search],
   ['Site Check', '/site-check', ScanSearch],
   ['Import', '/import', Upload],
+  ['Health', '/health', HeartPulse],
   ['Settings', '/settings', Settings],
 ] as const;
 

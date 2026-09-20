@@ -3,7 +3,8 @@ import { getDashboardOverview } from '@/services/requests';
 import StatusBadge from '@/components/status-badge';
 import RetrySyncButton from '@/components/app/retry-sync-button';
 import { formatKarachiDateTime } from '@/lib/date';
-import { Link2, Clock, AlertTriangle, LayoutGrid, CalendarDays, RefreshCw, Activity, CheckCircle2, BarChart3 } from 'lucide-react';
+import { Link2, Clock, AlertTriangle, LayoutGrid, CalendarDays, Activity, CheckCircle2, BarChart3 } from 'lucide-react';
+import RefreshLiveStatusButton from '@/components/app/refresh-live-status-button';
 
 const CARDS = [
   { key: 'total', label: 'Total Requests', icon: LayoutGrid },
@@ -24,12 +25,7 @@ export default async function Dashboard() {
           <h1 className="text-2xl font-bold text-[var(--text)]">Dashboard</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">Live request, deadline, project, and sync overview.</p>
         </div>
-        <div className="text-right">
-          <button type="button" disabled title="Team-sheet reconciliation is delivered in Phase 4" className="inline-flex cursor-not-allowed items-center gap-2 rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm font-medium text-[var(--muted)] opacity-70">
-            <RefreshCw size={15} /> Refresh live status
-          </button>
-          <p className="mt-1 text-[11px] text-[var(--muted)]">Last refresh: not run yet · reconciliation is Phase 4</p>
-        </div>
+        <RefreshLiveStatusButton lastRefresh={data.lastRefresh} />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">

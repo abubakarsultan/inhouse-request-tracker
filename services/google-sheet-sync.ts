@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { google, type sheets_v4 } from 'googleapis';
 import { adminClient } from '@/lib/supabase-admin';
 import { normalizeForDuplicate } from '@/lib/validators';
+import { revalidatePath } from 'next/cache';
 
 type SyncableProject = {
   id: string;
@@ -20,6 +21,19 @@ export type RequestSheetRecord = {
   assign_to: string | null;
   status: string;
   team_tab: string | null;
+  team_row: number | null;
+};
+
+export type ProjectSiteSheetRecord = {
+  id: string;
+  project_id: string;
+  website: string;
+  opportunity: string | null;
+  anchor: string | null;
+  dr: number | null;
+  traffic: number | null;
+  status: string;
+  note: string | null;
   team_row: number | null;
 };
 
@@ -387,30 +401,317 @@ export async function syncRequestStatusToTeamSheet(
   }
 }
 
-// Kept only so the existing Phase-0 webhook route remains safe until Phase 4
-// replaces its payload/trigger setup. It updates a linked request when possible
-// without pushing back to Sheets, preventing ping-pong loops.
-export async function applyStatusFromSheet(projectId: string, website: string, status: string, sheetName: string, sheetRow: number) {
-  if (status !== 'Request shared' && status !== 'Live') return { error: 'invalid status' };
-
-  const { data: site } = await adminClient
-    .from('project_sites')
-    .select('id,request_id,anchor')
-    .eq('project_id', projectId)
-    .ilike('website', website)
-    .limit(1)
-    .maybeSingle();
-
-  if (!site) return { error: 'not found' };
-
-  if (site.request_id) {
-    const { setRequestStatus } = await import('@/services/requests');
-    return setRequestStatus(site.request_id, status, 'team sheet', { pushToSheet: false, sheetRow });
+export async function appendProjectSiteToTeamSheet(
+  project: SyncableProject,
+  site: ProjectSiteSheetRecord
+): Promise<SheetSyncResult> {
+  const preflight = syncPreflight(project);
+  if (preflight.state !== 'ok') {
+    await logSync({
+      projectSiteId: site.id,
+      direction: 'to_sheet',
+      sheetName: project.guest_post_tab_name,
+      status: preflight.state === 'failed' ? 'error' : 'skipped',
+      detail: preflight.error ?? preflight.text,
+    });
+    return preflight;
   }
 
-  await adminClient.from('project_sites').update({ status, team_row: sheetRow }).eq('id', site.id);
-  await logSync({ projectSiteId: site.id, direction: 'from_sheet', sheetName, sheetRow, status: 'success' });
-  return { success: true };
+  const { tab, spreadsheetId } = preflight;
+  const ownerToken = randomUUID();
+  const lockKey = `team-sheet:${spreadsheetId}:${tab}`;
+  try {
+    const sheets = getSheetsClient();
+    const titles = await getTabTitles(sheets, spreadsheetId);
+    if (!titles.has(tab)) {
+      await logSync({ projectSiteId: site.id, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
+      return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
+    }
+
+    await acquireAppendLock(lockKey, ownerToken);
+    try {
+      const allRows = await withGoogleRetry(() =>
+        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:G` })
+      ) as { data: { values?: unknown[][] } };
+      let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
+      let freeTargetConfirmed = false;
+      for (let check = 0; check < 10; check += 1) {
+        const target = await withGoogleRetry(() =>
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:G${targetRow}` })
+        ) as { data: { values?: unknown[][] } };
+        if (!rowHasContent((target.data.values ?? [])[0])) {
+          freeTargetConfirmed = true;
+          break;
+        }
+        const reread = await withGoogleRetry(() =>
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:G` })
+        ) as { data: { values?: unknown[][] } };
+        targetRow = Math.max(targetRow + 1, lastNonEmptyRow((reread.data.values ?? []) as unknown[][]) + 2);
+      }
+      if (!freeTargetConfirmed) throw new Error('Could not find a safe empty row for the team-sheet append.');
+
+      await withGoogleRetry(() =>
+        sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${quoteTab(tab)}!A${targetRow}:G${targetRow}`,
+          valueInputOption: 'RAW',
+          requestBody: { values: [[
+            site.website,
+            site.opportunity ?? '',
+            site.anchor ?? '',
+            site.dr ?? '',
+            site.traffic ?? '',
+            site.status,
+            site.note ?? '',
+          ]] },
+        })
+      );
+      await logSync({ projectSiteId: site.id, direction: 'to_sheet', sheetName: tab, sheetRow: targetRow, status: 'success', detail: 'Imported project-site row pushed to team sheet' });
+      return { state: 'synced', text: `✅ Added to team sheet tab "${tab}" row ${targetRow}.`, tab, row: targetRow };
+    } finally {
+      try {
+        await releaseAppendLock(lockKey, ownerToken);
+      } catch (releaseError) {
+        const detail = `Append lock release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`;
+        console.error(detail);
+        await logSync({ projectSiteId: site.id, direction: 'to_sheet', sheetName: tab, status: 'error', detail });
+      }
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await logSync({ projectSiteId: site.id, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
+    return { state: 'failed', text: `❌ Team sheet sync failed: ${reason}. Imported row is still saved here.`, tab, error: reason };
+  }
+}
+
+export type VerifiedTeamRowResult =
+  | { state: 'ok'; tab: string; row: number; repaired: boolean; sheetStatus: string }
+  | { state: 'failed'; tab?: string; reason: string };
+
+export async function verifyRequestTeamRow(request: {
+  id: string;
+  approved_site: string;
+  anchor: string;
+  team_tab: string | null;
+  team_row: number | null;
+  project_site_id?: string | null;
+}, persistRepair = false): Promise<VerifiedTeamRowResult> {
+  const tab = request.team_tab?.trim();
+  if (!tab) return { state: 'failed', reason: 'Request has no stored team_tab.' };
+  const spreadsheetId = getTeamSheetId();
+  if (!spreadsheetId) return { state: 'failed', tab, reason: 'TEAM_SHEET_ID is not configured.' };
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { state: 'failed', tab, reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
+
+  try {
+    const sheets = getSheetsClient();
+    const titles = await getTabTitles(sheets, spreadsheetId);
+    if (!titles.has(tab)) return { state: 'failed', tab, reason: `Team-sheet tab "${tab}" does not exist.` };
+
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    if (!verified) {
+      return { state: 'failed', tab, reason: `No row in "${tab}" matches both website "${request.approved_site}" and anchor "${request.anchor}".` };
+    }
+
+    const response = await withGoogleRetry(() =>
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${verified.row}:F${verified.row}` })
+    ) as { data: { values?: unknown[][] } };
+    const row = (response.data.values ?? [])[0] ?? [];
+    if (!rowMatches(row as unknown[], request.approved_site, request.anchor)) {
+      return { state: 'failed', tab, reason: `Verified row ${verified.row} changed before it could be read again.` };
+    }
+
+    if (persistRepair && verified.repaired) {
+      await adminClient.from('requests').update({ team_row: verified.row, sync_state: 'synced', sync_error: null }).eq('id', request.id);
+      if (request.project_site_id) await adminClient.from('project_sites').update({ team_row: verified.row }).eq('id', request.project_site_id);
+      await logSync({ requestId: request.id, projectSiteId: request.project_site_id, direction: 'from_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: 'Stored row repaired by verify-and-search' });
+    }
+
+    return { state: 'ok', tab, row: verified.row, repaired: verified.repaired, sheetStatus: String(row[5] ?? '').trim() };
+  } catch (error) {
+    return { state: 'failed', tab, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function applyStatusFromSheet(payload: {
+  tab: string;
+  row: number;
+  website: string;
+  anchor: string;
+  status: 'Request shared' | 'Live';
+}) {
+  const { data, error } = await adminClient.rpc('find_request_from_sheet', {
+    p_tab: payload.tab,
+    p_website: payload.website,
+    p_anchor: payload.anchor,
+    p_row: payload.row,
+  });
+  if (error) {
+    await logSync({ direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'error', detail: `Request lookup failed: ${error.message}` });
+    throw new Error(`Request lookup failed: ${error.message}`);
+  }
+
+  const match = Array.isArray(data) ? data[0] : null;
+  if (!match?.request_id) {
+    const reason = 'No request matched this tab + website + anchor, or the stored row fallback.';
+    await logSync({ direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'error', detail: reason });
+    return { ok: false, notFound: true, error: reason };
+  }
+
+  const requestId = String(match.request_id);
+  const { data: site } = await adminClient.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
+  const { setRequestStatus } = await import('@/services/requests');
+  const result = await setRequestStatus(requestId, payload.status, 'team sheet', {
+    pushToSheet: false,
+    sheetRow: payload.row,
+  });
+
+  await adminClient.from('requests').update({
+    team_tab: payload.tab,
+    team_row: payload.row,
+    sync_state: 'synced',
+    sync_error: null,
+  }).eq('id', requestId);
+  const warning = result.ok ? null : [result.database.reason, result.projectSite.reason, result.teamSheet.reason].filter(Boolean).join(' | ');
+  await logSync({
+    requestId,
+    projectSiteId: site?.id ?? null,
+    direction: 'from_sheet',
+    sheetName: payload.tab,
+    sheetRow: payload.row,
+    status: result.ok ? 'success' : 'error',
+    detail: result.ok
+      ? `Webhook applied via ${String(match.match_type ?? 'unknown')} match`
+      : `Webhook status was applied with warnings: ${warning || 'linked step failed'}`,
+  });
+  return result.ok
+    ? { ok: true, requestId, matchType: String(match.match_type ?? ''), result }
+    : { ok: false, notFound: false, error: warning || 'Status changed with linked-step warnings.', requestId, result };
+}
+
+export type RefreshSheetStatusReport = {
+  checked: number;
+  updated: number;
+  repairedRows: number;
+  unchanged: number;
+  invalidStatuses: number;
+  failed: number;
+  errors: string[];
+  refreshedAt: string;
+};
+
+export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatusReport> {
+  const report: RefreshSheetStatusReport = {
+    checked: 0,
+    updated: 0,
+    repairedRows: 0,
+    unchanged: 0,
+    invalidStatuses: 0,
+    failed: 0,
+    errors: [],
+    refreshedAt: new Date().toISOString(),
+  };
+
+  const requests: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await adminClient
+      .from('requests')
+      .select('id,approved_site,anchor,status,team_tab,team_row,project_sites(id)')
+      .not('team_tab', 'is', null)
+      .not('team_row', 'is', null)
+      .range(from, from + 999);
+    if (error) throw new Error(`Could not load requests for refresh: ${error.message}`);
+    requests.push(...(data ?? []));
+    if ((data ?? []).length < 1000) break;
+  }
+
+  const spreadsheetId = getTeamSheetId();
+  if (!spreadsheetId || !process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    throw new Error(!spreadsheetId ? 'TEAM_SHEET_ID is not configured.' : 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.');
+  }
+  const sheets = getSheetsClient();
+  const titles = await getTabTitles(sheets, spreadsheetId);
+  const rowsByTab = new Map<string, unknown[][]>();
+
+  for (const request of requests) {
+    report.checked += 1;
+    const tab = String(request.team_tab ?? '').trim();
+    const projectSiteId = Array.isArray(request.project_sites) ? request.project_sites[0]?.id ?? null : request.project_sites?.id ?? null;
+    try {
+      if (!titles.has(tab)) throw new Error(`Tab "${tab}" does not exist.`);
+      let rows = rowsByTab.get(tab);
+      if (!rows) {
+        const response = await withGoogleRetry(() =>
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:F` })
+        ) as { data: { values?: unknown[][] } };
+        rows = (response.data.values ?? []) as unknown[][];
+        rowsByTab.set(tab, rows);
+      }
+
+      const storedIndex = Number(request.team_row) - 2;
+      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor) ? storedIndex : -1;
+      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor));
+      if (index < 0) throw new Error(`No matching row for ${request.approved_site} + ${request.anchor}.`);
+      const verifiedRow = index + 2;
+      const sheetStatus = String(rows[index]?.[5] ?? '').trim();
+      const repaired = verifiedRow !== Number(request.team_row);
+      if (repaired) report.repairedRows += 1;
+
+      if (sheetStatus !== 'Request shared' && sheetStatus !== 'Live') {
+        report.invalidStatuses += 1;
+        report.errors.push(`${tab} row ${verifiedRow}: invalid status "${sheetStatus || '(blank)'}".`);
+        await adminClient.from('requests').update({ team_row: verifiedRow, sync_state: 'failed', sync_error: `Invalid team-sheet status: ${sheetStatus || '(blank)'}` }).eq('id', request.id);
+        if (projectSiteId) await adminClient.from('project_sites').update({ team_row: verifiedRow }).eq('id', projectSiteId);
+        await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'error', detail: `Invalid status: ${sheetStatus || '(blank)'}` });
+        continue;
+      }
+
+      const { setRequestStatus } = await import('@/services/requests');
+      const statusResult = await setRequestStatus(request.id, sheetStatus, 'team sheet refresh', { pushToSheet: false, sheetRow: verifiedRow });
+      await adminClient.from('requests').update({ team_tab: tab, team_row: verifiedRow, sync_state: 'synced', sync_error: null }).eq('id', request.id);
+      if (request.status === sheetStatus) report.unchanged += 1;
+      else report.updated += 1;
+      if (!statusResult.ok) {
+        report.failed += 1;
+        const warning = [statusResult.database.reason, statusResult.projectSite.reason, statusResult.teamSheet.reason].filter(Boolean).join(' | ') || 'linked status step failed';
+        report.errors.push(`${tab} row ${verifiedRow}: ${warning}`);
+        await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'error', detail: `Refresh applied status with warnings: ${warning}` });
+      } else {
+        await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'success', detail: repaired ? 'Refresh reconciled status and repaired row' : 'Refresh reconciled status' });
+      }
+    } catch (error) {
+      report.failed += 1;
+      const reason = error instanceof Error ? error.message : String(error);
+      report.errors.push(`${tab || '(no tab)'}: ${reason}`);
+      await adminClient.from('requests').update({ sync_state: 'failed', sync_error: reason }).eq('id', request.id);
+      await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab || null, sheetRow: request.team_row, status: 'error', detail: reason });
+    }
+  }
+
+  await logSync({
+    direction: 'from_sheet',
+    sheetName: '__refresh__',
+    status: report.failed > 0 || report.invalidStatuses > 0 ? 'error' : 'success',
+    detail: JSON.stringify(report),
+  });
+  revalidatePath('/dashboard');
+  revalidatePath('/requests');
+  revalidatePath('/projects');
+  revalidatePath('/my-requests');
+  revalidatePath('/health');
+  return report;
+}
+
+export async function checkTeamSheetConnection() {
+  const spreadsheetId = getTeamSheetId();
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { ok: false, detail: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
+  if (!spreadsheetId) return { ok: false, detail: 'TEAM_SHEET_ID is not configured.' };
+  try {
+    const sheets = getSheetsClient();
+    const titles = await getTabTitles(sheets, spreadsheetId);
+    return { ok: true, detail: `Team sheet reachable (${titles.size} tab${titles.size === 1 ? '' : 's'} visible).` };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 export type TeamSheetProjectRow = {

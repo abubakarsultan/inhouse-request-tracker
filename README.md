@@ -1,42 +1,77 @@
 # INHOUSE REQUEST
 
-Phase 3 of the no-login Rankviz outreach request app. Supabase is the source of truth and the **Guest Post Anchor** Google Sheet remains a server-side mirror.
+Final Phase 4 of the no-login Rankviz outreach request app. Supabase is the source of truth and the **Guest Post Anchor** Google Sheet is a server-side mirror with two-way status sync.
 
 ## Current behavior
 
-### Phase 1 core
+### Core request flow
 
-- No login, auth page, middleware redirect, or Supabase Auth flow.
-- All Supabase access is server-side with `SUPABASE_SERVICE_ROLE_KEY`.
-- Request statuses are exactly `Request shared` and `Live`; both directions are allowed.
-- Priorities are `High`, `Medium`, and `Low` with `Medium` as the default.
+- No login, auth middleware, or Supabase Auth.
+- All database access is server-side with `SUPABASE_SERVICE_ROLE_KEY`.
+- Request statuses are exactly `Request shared` and `Live`; revert is allowed and `live_date` is never cleared.
+- Priorities are exactly `High`, `Medium`, and `Low`.
 - `Assign To` and `Shared With` are free text with autocomplete.
-- The browser-only **Who are you?** picker supplies `created_by_name` and `status_changed_by`.
-- Request creation is DB first: `requests` -> linked `project_sites` -> team-sheet mirror.
-- Team-sheet appends use the intentional `lastRow + 2` gap and a DB lease lock.
-- Status updates verify both Website and Anchor before writing Sheet column F.
+- Browser-only **Who are you?** supplies audit attribution; it is not authentication.
+- Create request is DB first: `requests` -> linked `project_sites` -> team-sheet mirror.
+- Team-sheet appends intentionally use `lastRow + 2` and are serialized with the DB lease lock.
+- Stored Sheet rows are verified by normalized Website + Anchor before status writes; moved/sorted rows are searched and repaired.
 
-### Phase 2 form and tools
+### Form, search, checks, imports, exports
 
-- Approved Site inline hint checks usage after about 400 ms and never blocks saving.
-- **Site Check** uses exact normalized host matching, so `www.example.com/path` = `example.com` while `example.co` != `example.com`.
-- Site Check reads the app database, returns every matching row per project, and labels projects without a mapped team tab as **Tracker only**.
-- **Search** starts at 2 characters, debounces for 250 ms, uses normalized server-side matching, caps display at 100 rows, highlights matches, and supports Mark Live / Revert through the canonical `setRequestStatus` action.
-- **Import from team sheet** reads mapped project tabs A2:G and creates missing `project_sites` rows only. It never creates `requests` rows and is safe to run repeatedly.
-- **Download Today CSV** exports the selected Asia/Karachi date in the exact 9-column Outreach OS bulk-add format with UTF-8 BOM and CRLF records.
+- Approved Site inline usage hint is debounced and never blocks save.
+- Site Check uses exact normalized host matching and reads the app database, not Google Sheets.
+- Search is normalized server-side, debounced, capped at 100 displayed results, and uses the canonical status action.
+- Repeatable **Import from team sheet** reads mapped tabs A2:G and creates missing unlinked `project_sites` rows only.
+- CSV/XLSX project-site import accepts `Website, Opportunity, Anchor, DR, Traffic, Status, Note`, normalizes status to the two-status vocabulary, and can optionally push imported rows to the team sheet. Sheet push is **off by default** and database inserts happen first.
+- Outreach OS export uses the exact 9-column format, UTF-8 BOM, CRLF, trailing CRLF, and Asia/Karachi date selection.
 
-### Phase 3 views
+### Views
 
-- **Dashboard** now includes Total Requests, Live Links, Pending, Failed Sync, and This Month KPIs; failed-sync drill-down with Retry; the latest 8 requests; links that first became Live in the last 7 Karachi calendar days; and a per-project status breakdown.
-- **Projects** is a responsive card grid (3 per row on desktop) with Requests / Live / Pending database counts plus add/edit/disable controls. Project detail keeps the `project_sites` table and canonical linked-request status control.
-- **My Requests** uses the browser-only name picker and shows Assigned / Live / Pending / Overdue KPIs, upcoming deadlines for the next 7 Karachi calendar days, and the full assigned request list with Live/Revert controls.
-- Deadline visuals now use red `#f4c7c3` for overdue non-Live work and yellow `#fff2cc` for non-Live work due within 2 days.
-- Shared loading and error states were added for route transitions/server view failures.
-- The Dashboard visibly reserves **Refresh live status**, but the button is intentionally disabled until the Phase 4 sheet-to-site reconciliation implementation.
+- Dashboard: Total Requests, Live Links, Pending, Failed Sync, This Month, recent activity, last-7-days Live activity, per-project breakdown, failed-sync retry, and live Sheet reconciliation.
+- Projects: responsive cards plus project detail `project_sites` table.
+- My Requests: Assigned / Live / Pending / Overdue, next-7-days deadlines, and canonical Live/Revert controls.
+- Health Check: read-only linkage scan for request <-> `project_sites` <-> team-sheet row, with explicit one-row **Re-link** repair.
+- Settings: browser identity, Supabase/Sheets/webhook diagnostics, and a ready-to-copy installable Apps Script trigger snippet with the current site URL filled in.
+
+## Team sheet -> site status sync
+
+`POST /api/sheet-webhook` expects header:
+
+```text
+x-sheet-webhook-secret: <SHEET_WEBHOOK_SECRET>
+```
+
+and JSON body:
+
+```json
+{
+  "tab": "getprolinks",
+  "row": 12,
+  "website": "example.com",
+  "anchor": "example anchor",
+  "status": "Live"
+}
+```
+
+Lookup order is normalized `team_tab + website + anchor`, then `team_tab + team_row` as fallback. Incoming changes call the same `setRequestStatus()` function with Sheet push disabled, preventing ping-pong loops. `changed_by` is `team sheet` for webhook changes.
+
+The team-sheet Apps Script must use an **installable edit trigger**. A standalone source is included at:
+
+```text
+apps-script/SheetStatusWebhook.gs
+```
+
+The Settings page renders the same snippet with the current site URL filled in. Replace the secret placeholder, paste it into the team sheet Apps Script project, then run `installTrigger()` once and authorize it. The handler is `onSheetEdit`, not a simple `onEdit`, so `UrlFetchApp` is permitted.
+
+## Dashboard refresh and repair
+
+**Refresh live status** reads Sheet column F for requests that have stored `team_tab/team_row`. Each row is verified by Website + Anchor; if sorting/insertion moved it, the matching row is found and the stored row is repaired. Valid Sheet differences are reconciled through `setRequestStatus()`. Invalid statuses or missing rows become visible failed-sync diagnostics rather than overwriting request status.
+
+**Retry sync** updates an already-linked verified row when `team_row` exists. It only appends a new row when no Sheet row has ever been stored, avoiding duplicate rows after a status-sync failure.
 
 ## Environment variables
 
-Copy `.env.example` to `.env.local` and set:
+Copy `.env.example` to `.env.local` and set exactly:
 
 ```env
 NEXT_PUBLIC_SUPABASE_URL=
@@ -46,11 +81,9 @@ TEAM_SHEET_ID=
 SHEET_WEBHOOK_SECRET=
 ```
 
-No new environment variables were added in Phase 3.
-
 `GOOGLE_SERVICE_ACCOUNT_JSON` is the base64-encoded complete Google service-account JSON. Share `TEAM_SHEET_ID` with that service-account email as **Editor**.
 
-`SHEET_WEBHOOK_SECRET` is reserved for the Phase 4 sheet-to-site webhook. Do not install the old simple `onEdit` snippet.
+No additional Phase 4 environment variables were added.
 
 ## Database
 
@@ -59,35 +92,34 @@ For an existing installation, run migrations in order:
 ```text
 database/migrations/001_phase1_core.sql
 database/migrations/002_phase2_search.sql
+database/migrations/003_phase4_sync.sql
 ```
 
-`002_phase2_search.sql` is re-runnable and adds the normalized server-side request-search RPC used by `/search`.
+`003_phase4_sync.sql` is re-runnable. It adds Sheet lookup/repair indexes and the normalized `find_request_from_sheet(...)` RPC used by the webhook.
 
-Phase 3 makes no database schema changes. For a fresh installation, `database/schema.sql` remains the current schema and helper functions from Phase 2.
+For a fresh installation, use the current `database/schema.sql`.
 
-## Local setup
+## Local setup and final verification
 
 ```bash
 npm ci
 npx tsc --noEmit
-npm run test:phase3
+npm run test:phase4
 npm run build
 npm run dev
 ```
 
-Open `http://localhost:3000`. The app opens without login.
+Open `http://localhost:3000`. The app opens directly without login.
 
-## Phase 3 manual acceptance checks
+## Final production acceptance checks
 
-1. Open **Dashboard** and confirm the five KPI cards, latest 8 activity rows, last-7-days Live section, and per-project status table.
-2. If any request has `sync_state = failed`, click the Failed Sync card and retry one item; confirm the DB record remains intact even if Sheets is unavailable.
-3. Open **Projects** and confirm a 3-column desktop card grid with Requests / Live / Pending counts. Add/edit/disable still works.
-4. Open a project and confirm the Website / Opportunity / Anchor / DR / Traffic / Status / Note table remains intact and linked rows use the canonical status control.
-5. Open **My Requests**, choose a prior `Assign To` value, and confirm Assigned / Live / Pending / Overdue plus upcoming next-7-days and the full list.
-6. Mark an item Live or revert it inside My Requests and confirm the list/KPIs reload.
-7. Confirm an overdue non-Live deadline is red, a non-Live deadline due today/within 2 days is yellow, and Live rows do not show urgency background.
-8. Confirm the Dashboard Refresh live status control is visibly deferred rather than pretending to reconcile the Sheet; Phase 4 wires it.
-
-## Deferred by the agreed phase plan
-
-Phase 4: webhook + installable Apps Script trigger, refresh/retry repair tooling, health check, diagnostics, and CSV/XLSX importer sheet-push update.
+1. Run migrations `001`, `002`, `003` in order and configure all five environment variables.
+2. Open **Settings** and confirm Supabase, service account, team sheet, and webhook secret all show OK.
+3. Create a Request shared request and confirm DB + linked `project_sites` + team-sheet A:G at `lastRow + 2`.
+4. Mark it Live in the site and confirm DB, `project_sites`, request log, `live_date`, and Sheet F update. Revert it and confirm `live_date` remains set.
+5. Edit Sheet F directly and confirm the site changes through `/api/sheet-webhook` without writing back to the Sheet.
+6. Insert/sort Sheet rows, run **Refresh live status**, and confirm stored row repair plus status reconciliation.
+7. Break Sheet credentials temporarily and confirm the DB change survives with `sync_state = failed`; restore credentials and use **Retry sync** without creating a duplicate Sheet row.
+8. Run **Health Check** and verify clean rows show no problem; deliberately move one row and confirm Re-link repairs only the stored row pointer.
+9. Import a small CSV/XLSX once with Sheet push off and once with it on; confirm both use only `Request shared` / `Live`.
+10. Run `npx tsc --noEmit`, `npm run test:phase4`, and `npm run build` in the deployment environment before release.

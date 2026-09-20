@@ -4,6 +4,8 @@ import * as XLSX from 'xlsx';
 import { createClient } from '@/lib/supabase-server';
 import { SITE_IMPORT_HEADERS } from '@/lib/validators';
 import { revalidatePath } from 'next/cache';
+import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
+import { appendProjectSiteToTeamSheet, type ProjectSiteSheetRecord } from '@/services/google-sheet-sync';
 
 export async function getProjectSites(projectId: string) {
   const supabase = await createClient();
@@ -16,74 +18,122 @@ export async function getProjectSites(projectId: string) {
   return data;
 }
 
-type ImportResult = { rowsImported: number; errors: string[] };
+export type ImportResult = {
+  rowsImported: number;
+  rowsSynced: number;
+  rowsSkippedSync: number;
+  rowsFailedSync: number;
+  errors: string[];
+};
 
-// Existing importer is retained in Phase 1. Phase 4 will add the optional
-// team-sheet push checkbox and finish the two-status import vocabulary pass.
+function parseOptionalInteger(value: unknown, label: string, rowNumber: number, errors: string[]) {
+  if (value == null || String(value).trim() === '') return null;
+  const parsed = Number(String(value).replace(/,/g, '').trim());
+  if (!Number.isFinite(parsed)) {
+    errors.push(`Row ${rowNumber}: ${label} "${String(value)}" is not numeric; saved blank.`);
+    return null;
+  }
+  return Math.trunc(parsed);
+}
+
 export async function importSitesFromFile(formData: FormData): Promise<ImportResult> {
   const supabase = await createClient();
 
   const projectId = String(formData.get('project_id') ?? '');
+  const pushToTeamSheet = String(formData.get('push_to_team_sheet') ?? '') === 'on';
   const file = formData.get('file') as File | null;
-  if (!projectId) return { rowsImported: 0, errors: ['Select a project first.'] };
-  if (!file || file.size === 0) return { rowsImported: 0, errors: ['Choose a CSV or XLSX file.'] };
+  const emptyResult = (): ImportResult => ({ rowsImported: 0, rowsSynced: 0, rowsSkippedSync: 0, rowsFailedSync: 0, errors: [] });
+  if (!projectId) return { ...emptyResult(), errors: ['Select a project first.'] };
+  if (!file || file.size === 0) return { ...emptyResult(), errors: ['Choose a CSV or XLSX file.'] };
   const fileName = file.name;
+
+  const { data: project, error: projectError } = await supabase
+    .from('projects')
+    .select('id,name,guest_post_tab_name,sync_enabled')
+    .eq('id', projectId)
+    .single();
+  if (projectError || !project) return { ...emptyResult(), errors: [projectError?.message ?? 'Project not found.'] };
 
   const workbook = XLSX.read(Buffer.from(await file.arrayBuffer()));
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
 
-  const errors: string[] = [];
+  const result = emptyResult();
   if (rows.length === 0) {
-    errors.push('The file has no data rows.');
-    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: null, rows_imported: 0, errors });
-    return { rowsImported: 0, errors };
+    result.errors.push('The file has no data rows.');
+    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: null, rows_imported: 0, errors: result.errors });
+    return result;
   }
 
   const headerKeys = Object.keys(rows[0]);
   const missing = SITE_IMPORT_HEADERS.filter((header) => !headerKeys.includes(header));
   if (missing.length) {
-    errors.push(`Missing required column(s): ${missing.join(', ')}`);
-    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: null, rows_imported: 0, errors });
-    return { rowsImported: 0, errors };
+    result.errors.push(`Missing required column(s): ${missing.join(', ')}`);
+    await supabase.from('imports').insert({ project_id: projectId, file_name: fileName, uploaded_by: null, rows_imported: 0, errors: result.errors });
+    return result;
   }
 
   const toInsert = rows.flatMap((row: Record<string, unknown>, index: number) => {
+    const rowNumber = index + 2;
     const website = String(row.Website ?? '').trim();
     if (!website) {
-      errors.push(`Row ${index + 2}: "Website" is empty - skipped.`);
+      result.errors.push(`Row ${rowNumber}: "Website" is empty - skipped.`);
       return [];
+    }
+    const rawStatus = String(row.Status ?? '').trim();
+    const status = normalizeImportedSiteStatus(rawStatus);
+    if (rawStatus && rawStatus.toLowerCase() !== 'live' && rawStatus.toLowerCase() !== 'request shared') {
+      result.errors.push(`Row ${rowNumber}: unsupported status "${rawStatus}" mapped to "Request shared".`);
     }
     return [{
       project_id: projectId,
       request_id: null,
       website,
-      opportunity: String(row.Opportunity ?? ''),
-      anchor: String(row.Anchor ?? ''),
-      dr: row.DR !== '' ? Number(row.DR) : null,
-      traffic: row.Traffic !== '' ? Number(row.Traffic) : null,
-      status: String(row.Status ?? 'Request shared') || 'Request shared',
-      note: String(row.Note ?? ''),
+      opportunity: String(row.Opportunity ?? '').trim() || null,
+      anchor: String(row.Anchor ?? '').trim() || null,
+      dr: parseOptionalInteger(row.DR, 'DR', rowNumber, result.errors),
+      traffic: parseOptionalInteger(row.Traffic, 'Traffic', rowNumber, result.errors),
+      status,
+      note: String(row.Note ?? '').trim() || null,
       team_row: null,
     }];
   });
 
+  let inserted: any[] = [];
   if (toInsert.length) {
-    const { error } = await supabase.from('project_sites').insert(toInsert);
-    if (error) errors.push(error.message);
+    const { data, error } = await supabase.from('project_sites').insert(toInsert).select('*');
+    if (error) result.errors.push(error.message);
+    else inserted = data ?? [];
+  }
+  result.rowsImported = inserted.length;
+
+  if (pushToTeamSheet && inserted.length) {
+    for (const row of inserted) {
+      const sync = await appendProjectSiteToTeamSheet(project as any, row as ProjectSiteSheetRecord);
+      if (sync.state === 'synced') {
+        result.rowsSynced += 1;
+        if (sync.row) await supabase.from('project_sites').update({ team_row: sync.row }).eq('id', row.id);
+      } else if (sync.state === 'skipped') {
+        result.rowsSkippedSync += 1;
+      } else {
+        result.rowsFailedSync += 1;
+        result.errors.push(`${row.website}: ${sync.error ?? sync.text}`);
+      }
+    }
   }
 
   await supabase.from('imports').insert({
     project_id: projectId,
     file_name: fileName,
     uploaded_by: null,
-    rows_imported: toInsert.length,
-    errors: errors.length ? errors : null,
+    rows_imported: result.rowsImported,
+    errors: result.errors.length ? result.errors : null,
   });
 
   revalidatePath('/projects');
   revalidatePath('/import');
-  return { rowsImported: toInsert.length, errors };
+  revalidatePath('/site-check');
+  return result;
 }
 
 export async function getRecentImports() {

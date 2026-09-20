@@ -202,7 +202,9 @@ export async function retryRequestSync(requestId: string) {
 
   const { data: site } = await supabase.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
   const project = request.projects as any;
-  const sync = await appendRequestToTeamSheet(project, request as RequestSheetRecord, site?.id ?? null);
+  const sync = request.team_row
+    ? await syncRequestStatusToTeamSheet(project, request as RequestSheetRecord, site?.id ?? null)
+    : await appendRequestToTeamSheet(project, request as RequestSheetRecord, site?.id ?? null);
 
   const update: Record<string, unknown> = {
     sync_state: sync.state,
@@ -249,15 +251,23 @@ export async function setRequestStatus(
     .maybeSingle();
 
   if (current.status === newStatus) {
-    if (options?.sheetRow && options.sheetRow !== current.team_row) {
-      await supabase.from('requests').update({ team_row: options.sheetRow }).eq('id', requestId);
-      if (linkedSite?.id) await supabase.from('project_sites').update({ team_row: options.sheetRow }).eq('id', linkedSite.id);
+    const requestNoOpUpdate: Record<string, unknown> = {};
+    if (options?.sheetRow && options.sheetRow !== current.team_row) requestNoOpUpdate.team_row = options.sheetRow;
+    if (options?.pushToSheet === false) {
+      requestNoOpUpdate.sync_state = 'synced';
+      requestNoOpUpdate.sync_error = null;
+    }
+    if (Object.keys(requestNoOpUpdate).length) await supabase.from('requests').update(requestNoOpUpdate).eq('id', requestId);
+    if (linkedSite?.id) {
+      const siteNoOpUpdate: Record<string, unknown> = { status: newStatus };
+      if (options?.sheetRow) siteNoOpUpdate.team_row = options.sheetRow;
+      await supabase.from('project_sites').update(siteNoOpUpdate).eq('id', linkedSite.id);
     }
     return {
       ok: true,
       database: { ok: true, noOp: true },
       projectSite: { ok: true, noOp: true, skipped: !linkedSite },
-      teamSheet: { ok: true, noOp: true, skipped: options?.pushToSheet === false },
+      teamSheet: { ok: true, noOp: true, skipped: options?.pushToSheet === false, state: options?.pushToSheet === false ? 'synced' : undefined },
     };
   }
 
@@ -293,6 +303,7 @@ export async function setRequestStatus(
 
   let teamSheet: SetStatusResult['teamSheet'];
   if (options?.pushToSheet === false) {
+    await supabase.from('requests').update({ sync_state: 'synced', sync_error: null }).eq('id', requestId);
     teamSheet = { ok: true, skipped: true, state: 'synced', text: 'Sheet-originated change; push-back intentionally skipped.' };
   } else {
     const record: RequestSheetRecord = {
@@ -378,6 +389,7 @@ export async function getDashboardOverview() {
     failedResult,
     projectsResult,
     requestStatuses,
+    refreshResult,
   ] = await Promise.all([
     supabase.from('requests').select('*', { count: 'exact', head: true }),
     supabase.from('requests').select('*', { count: 'exact', head: true }).eq('status', 'Live'),
@@ -389,12 +401,25 @@ export async function getDashboardOverview() {
     supabase.from('requests').select('id,approved_site,anchor,sync_error,updated_at,projects(name,slug)').eq('sync_state', 'failed').order('updated_at', { ascending: false }).limit(50),
     supabase.from('projects').select('id,name,slug').order('name'),
     loadAllRequestStatuses(supabase),
+    supabase.from('sync_logs').select('created_at,detail').eq('direction', 'from_sheet').eq('sheet_name', '__refresh__').order('created_at', { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   if (recentResult.error) throw recentResult.error;
   if (becameLiveResult.error) throw becameLiveResult.error;
   if (failedResult.error) throw failedResult.error;
   if (projectsResult.error) throw projectsResult.error;
+  if (refreshResult.error) throw refreshResult.error;
+
+  let lastRefresh: { createdAt: string; updated: number; checked: number } | null = null;
+  if (refreshResult.data?.created_at) {
+    let parsed: any = {};
+    try { parsed = refreshResult.data.detail ? JSON.parse(String(refreshResult.data.detail)) : {}; } catch { parsed = {}; }
+    lastRefresh = {
+      createdAt: String(refreshResult.data.created_at),
+      updated: Number(parsed.updated ?? 0),
+      checked: Number(parsed.checked ?? 0),
+    };
+  }
 
   const counts = new Map<string, { total: number; live: number; pending: number }>();
   for (const row of requestStatuses) {
@@ -423,6 +448,7 @@ export async function getDashboardOverview() {
     failed: failedResult.data ?? [],
     breakdown,
     liveSince,
+    lastRefresh,
   };
 }
 
