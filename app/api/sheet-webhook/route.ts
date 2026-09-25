@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
+import crypto from 'node:crypto';
 import { applyStatusFromSheet } from '@/services/google-sheet-sync';
 import { parseSheetWebhookPayload } from '@/lib/sheet-webhook';
+
+function safeSecretCompare(a: string, b: string) { const aa = Buffer.from(a); const bb = Buffer.from(b); return aa.length === bb.length && crypto.timingSafeEqual(aa, bb); }
 
 export async function POST(req: Request) {
   const configuredSecret = process.env.SHEET_WEBHOOK_SECRET;
   const secret = req.headers.get('x-sheet-webhook-secret');
-  if (!configuredSecret || !secret || secret !== configuredSecret) {
+  if (!configuredSecret || !secret || !safeSecretCompare(secret, configuredSecret)) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
