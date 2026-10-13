@@ -75,6 +75,7 @@ export async function createProject(input: ProjectInput) {
     ? { data: { id: parsed.category_id }, error: null }
     : await supabase.from('project_categories').select('id').eq('slug', 'inhouse').single();
   if (categoryError || !inhouseCategory) throw new Error(categoryError?.message ?? 'Default Inhouse category is missing. Run migration 009.');
+
   const { error } = await supabase.from('projects').insert({
     name: parsed.name,
     slug,
