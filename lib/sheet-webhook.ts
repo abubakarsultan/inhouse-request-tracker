@@ -35,7 +35,9 @@ export function parseSheetWebhookPayload(input: unknown):
   return { ok: true, value: { tab, row, website, anchor, status, ...(spreadsheetId ? { spreadsheetId } : {}), ...(body.liveLink ? { liveLink: String(body.liveLink).trim() } : {}) } };
 }
 
-export function normalizeImportedSiteStatus(value: unknown): RequestStatus {
+export type ImportedSiteStatus = 'Request shared' | 'Live' | 'Rejected';
+
+export function normalizeImportedSiteStatus(value: unknown): ImportedSiteStatus {
   const cleaned = String(value ?? '').trim().toLowerCase();
   if (cleaned === 'live') return 'Live';
   if (cleaned === 'rejected' || cleaned === 'reject') return 'Rejected';

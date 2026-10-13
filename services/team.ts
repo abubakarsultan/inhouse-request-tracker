@@ -16,7 +16,6 @@ export async function getAvailableTeamNames(): Promise<TeamNameOption[]> {
     adminClient.from('users').select('id,sheet_name').not('sheet_name', 'is', null),
   ]);
   if (namesError) throw new Error(namesError.message);
-  if (auditsError) throw new Error(auditsError.message);
   if (usersError) throw new Error(usersError.message);
   const claims = new Map<string, string>();
   for (const user of users ?? []) { const key = String(user.sheet_name ?? '').trim().toLowerCase(); if (key) claims.set(key, String(user.id)); }
@@ -80,7 +79,6 @@ export async function getTeamAdminData(): Promise<TeamAdminData> {
   ]);
   if (usersError) throw new Error(usersError.message);
   if (namesError) throw new Error(namesError.message);
-  if (auditsError) throw new Error(auditsError.message);
 
   const requestRows: any[] = [];
   for (let from = 0; ; from += 1000) {
