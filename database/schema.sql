@@ -1293,8 +1293,6 @@ $$;
 
 revoke execute on function get_admin_team_attention() from public, anon, authenticated;
 grant execute on function get_admin_team_attention() to service_role;
-
-
 -- Upgrade foundation (also shipped as migration 009 for existing installs).
 -- 009: project categories, per-project sheet metadata, flags, viewer role and audit.
 -- Safe to re-run; existing project/request data is preserved.
