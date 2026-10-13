@@ -5,6 +5,9 @@ import StatusControl from '@/components/app/status-control';
 import Link from 'next/link';
 import { UploadCloud } from 'lucide-react';
 import { requireActiveProfile } from '@/lib/auth';
+import { headers } from 'next/headers';
+import { buildOwnSheetTriggerSnippet } from '@/lib/sheet-webhook';
+import ClientSheetScript from '@/components/app/client-sheet-script';
 
 export default async function ProjectPage({ params }: { params: Promise<{ slug: string }> }) {
   const profile = await requireActiveProfile();
@@ -12,6 +15,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
   const { slug } = await params;
   const project = await getProjectBySlug(slug);
   const sites = await getProjectSites(project.id);
+  const requestHeaders = await headers();
+  const host = requestHeaders.get('x-forwarded-host') || requestHeaders.get('host') || 'YOUR-VERCEL-DOMAIN';
+  const proto = requestHeaders.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
+  const ownSheetScript = profile.role === 'admin' && project.google_sheet_id && project.sheet_tab_name && process.env.SHEET_WEBHOOK_SECRET
+    ? buildOwnSheetTriggerSnippet(`${proto}://${host}`, process.env.SHEET_WEBHOOK_SECRET) : null;
+  const ownSheetUrl = project.google_sheet_id ? `https://docs.google.com/spreadsheets/d/${project.google_sheet_id}/edit` : null;
   const liveCount = sites.filter((site: any) => site.status === 'Live').length;
   const pendingCount = sites.filter((site: any) => site.status === 'Request shared').length;
   const rejectedCount = sites.filter((site: any) => site.status === 'Rejected').length;
@@ -30,6 +39,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
           </Link>}
         </div>
       </div>
+
+      {ownSheetScript && ownSheetUrl && <ClientSheetScript script={ownSheetScript} sheetUrl={ownSheetUrl} tabName={project.sheet_tab_name} />}
 
       <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-2xl font-bold">{sites.length}</p><p className="text-xs text-[var(--muted)]">Project rows</p></div>

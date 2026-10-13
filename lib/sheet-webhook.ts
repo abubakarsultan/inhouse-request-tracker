@@ -108,3 +108,56 @@ function onSheetEdit(e) {
   });
 }`;
 }
+
+
+/** Build the per-spreadsheet trigger used by Client/Onpage sheets. This is rendered only on an admin-only project page. */
+export function buildOwnSheetTriggerSnippet(siteUrl: string, secret: string) {
+  const base = siteUrl.replace(/\/+$/, '');
+  const safeSecret = secret.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return `const INHOUSE_REQUEST_WEBHOOK_URL = '${base}/api/sheet-webhook';
+const SHEET_WEBHOOK_SECRET = '${safeSecret}';
+
+function installTrigger() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  ScriptApp.getProjectTriggers()
+    .filter(trigger => trigger.getHandlerFunction() === 'onClientSheetEdit')
+    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+  ScriptApp.newTrigger('onClientSheetEdit').forSpreadsheet(spreadsheet).onEdit().create();
+}
+
+function onClientSheetEdit(e) {
+  if (!e || !e.range || e.range.getRow() < 2) return;
+  const sheet = e.range.getSheet();
+  const lastColumn = sheet.getLastColumn();
+  if (lastColumn < 4) return;
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(v => String(v || '').trim());
+  const statusColumn = headers.indexOf('Status') + 1;
+  const liveLinkColumn = headers.indexOf('Live Link') + 1;
+  const anchorColumn = headers.indexOf('Anchor') + 1;
+  if (!statusColumn || !liveLinkColumn || !anchorColumn) return;
+  if (e.range.getColumn() !== statusColumn || e.range.getNumColumns() !== 1) return;
+
+  const startRow = e.range.getRow();
+  const rowCount = e.range.getNumRows();
+  const values = sheet.getRange(startRow, 1, rowCount, lastColumn).getDisplayValues();
+  values.forEach((row, index) => {
+    const liveLink = String(row[liveLinkColumn - 1] || '').trim();
+    const anchor = String(row[anchorColumn - 1] || '').trim();
+    const status = String(row[statusColumn - 1] || '').trim();
+    if (!liveLink || !anchor) return;
+    if (!['Request shared', 'Live', 'Rejected', 'Removed'].includes(status)) return;
+    const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
+      method: 'post', contentType: 'application/json',
+      headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },
+      payload: JSON.stringify({
+        spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
+        tab: sheet.getName(), row: startRow + index,
+        liveLink: liveLink, website: liveLink, anchor: anchor, status: status
+      }), muteHttpExceptions: true
+    });
+    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
+      console.error('INHOUSE REQUEST webhook failed', response.getResponseCode(), response.getContentText());
+    }
+  });
+}`;
+}

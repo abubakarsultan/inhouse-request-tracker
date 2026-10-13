@@ -67,7 +67,7 @@ export default function ProjectFormDialog({ project, categories = [], serviceAcc
         )}
       </DialogTrigger>
       <DialogContent title={isEdit ? 'Edit project' : 'New project'}>
-        <form onSubmit={onSubmit} className="space-y-3">
+        <form onSubmit={onSubmit} className="space-y-4">
           <div>
             <Label htmlFor="name">Project name</Label>
             <Input id="name" name="name" defaultValue={project?.name} required placeholder="e.g. Get Pro Links" />

@@ -49,3 +49,9 @@
 - `npm ci` did not complete in the available environment, so `npm run build` and the full test suite could not be verified here.
 - Before/after query counts, payload sizes and navigation timings were not benchmarked; no performance improvement is claimed.
 - This package is **not yet the complete implementation** described in the original prompt. See the remaining items in `UPGRADE_GUIDE.md` before considering production deployment.
+
+- `components/ui/dialog.tsx` — constrained dialogs to the viewport and made the content region vertically scrollable; fixes long New Project forms on smaller screens.
+- `lib/sheet-webhook.ts` — added a Client/Onpage Apps Script generator that resolves Status, Live Link, and Anchor by header names and sends spreadsheet ID + tab + row to the webhook.
+- `components/app/client-sheet-script.tsx` — added copyable script and simple installation steps on project pages.
+- `app/(protected)/projects/[slug]/page.tsx` — shows the client sheet setup panel to admins for projects with a configured separate sheet.
+- `tests/upgrade-009.test.mjs` — added structural checks for the client script and scrollable dialog.

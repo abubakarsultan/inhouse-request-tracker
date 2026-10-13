@@ -1,6 +1,6 @@
 # INHOUSE REQUEST — Upgrade Guide
 
-> **Important status note:** This is an upgrade-in-progress package, not yet a production-ready replacement for the live project. The migration and foundations below are included, but the complete per-project Google Sheets sync, all viewer read-only page guards, full request-flag coverage, performance benchmark, and full end-to-end verification still need to be finished before deploying this package to Vercel. Keep the currently working deployment available for rollback.
+> **Important status note:** This ZIP contains the scrolling-modal fix and a per-project Apps Script panel for Client/Onpage sheets. It is still not a verified, production-ready replacement: full per-project request sync across every operation, complete role/flag coverage, and end-to-end verification remain incomplete. Keep the current deployment available for rollback.
 
 ## 1. Backup first
 
@@ -66,7 +66,7 @@ Google Sheets API already use ho rahi hai. New spreadsheet create/share karne ke
 The original upgrade request is broader than the implemented foundation. Do **not** treat these as complete in this package:
 
 - per-project header-name based sync for every operation (append/update/clear/verify/refresh/import) across separate client sheets;
-- client-generated Apps Script with secret and webhook URL, plus connected/not-installed project status;
+- client-generated Apps Script with webhook URL and secret shown on the admin-only project detail page; the status-connected indicator is not yet complete;
 - `Removed`/`Incomplete` badges on every list, Search, Site Check, project detail, and all dashboard surfaces;
 - viewer permission enforcement and read-only rendering across every route/action, plus complete role/name/status audit history UI;
 - server-side pagination, aggregate/RPC replacement for every large list, caching, route-level Suspense/loading states, animation/accessibility audit;
