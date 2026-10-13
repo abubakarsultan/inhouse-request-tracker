@@ -8,25 +8,28 @@ import { Plus } from 'lucide-react';
 import { redirect } from 'next/navigation';
 import DeadlineCell from '@/components/deadline-cell';
 import { karachiDateString } from '@/lib/date';
+import { getIncompleteFields } from '@/lib/validators';
 import { requireActiveProfile } from '@/lib/auth';
 
-export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string }> }) {
+export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string; incomplete?: string }> }) {
   const profile = await requireActiveProfile();
-  if (profile.role !== 'admin') redirect('/my-requests');
+  if (profile.role === 'member') redirect('/my-requests');
 
-  const { status, project } = await searchParams;
+  const { status, project, incomplete } = await searchParams;
   const today = karachiDateString();
-  const [rows, projects] = await Promise.all([getRequests({ status, project_id: project }), getProjects()]);
+  const [allRows, projects] = await Promise.all([getRequests({ status, project_id: project }), getProjects()]);
+  const rows = incomplete === '1' ? allRows.filter((row: any) => getIncompleteFields(row).length > 0) : allRows;
 
   return (
     <div className="min-w-0">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div><h1 className="text-2xl font-bold text-[var(--text)]">All Requests</h1><p className="mt-1 text-sm text-[var(--muted)]">Company-wide new requests and imported Guest Post Anchor history.</p></div>
-        <Link href="/requests/new" className="flex items-center gap-1.5 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--brand-dark)]"><Plus size={16} /> New Request</Link>
+        {profile.role !== 'viewer' && <Link href="/requests/new" className="flex items-center gap-1.5 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--brand-dark)]"><Plus size={16} /> New Request</Link>}
       </div>
 
       <form className="mb-5 flex flex-wrap gap-3">
         <select name="project" defaultValue={project ?? ''} className="h-10 min-w-0 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm text-[var(--text)]"><option value="">All projects</option>{projects.map((item: any) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+        <label className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm"><input type="checkbox" name="incomplete" value="1" defaultChecked={incomplete === '1'} /> Incomplete only</label>
         <select name="status" defaultValue={status ?? ''} className="h-10 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm text-[var(--text)]"><option value="">All statuses</option>{['Request shared', 'Live', 'Rejected'].map((item) => <option key={item} value={item}>{item}</option>)}</select>
         <button className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">Filter</button>
       </form>
@@ -38,14 +41,14 @@ export default async function Requests({ searchParams }: { searchParams: Promise
             {rows.map((row: any) => (
               <tr key={row.id} className="border-t border-[var(--border)]/70 align-top">
                 <td className="p-3 font-medium text-[var(--text)]">{row.projects ? <Link href={`/projects/${row.projects.slug}`} className="hover:text-[var(--brand)]">{row.projects.name}</Link> : '—'}{row.source !== 'app' && <span className="ml-2 rounded-full bg-[#e8f0fe] px-1.5 py-0.5 text-[10px] font-semibold text-[#174ea6]">Imported</span>}</td>
-                <td className="max-w-52 truncate p-3 text-[var(--muted)]" title={row.approved_site}>{row.approved_site}</td>
+                <td className="max-w-52 p-3 text-[var(--muted)]"><div className="truncate" title={row.approved_site}>{row.approved_site}</div>{row.sheet_flag === 'Removed' && <span title="This request was marked Removed in the sheet; the tool status is unchanged." className="mt-1 inline-flex rounded-full bg-[#fce8e6] px-2 py-0.5 text-[10px] font-bold text-[#c5221f]">Removed in sheet</span>}{getIncompleteFields(row).length > 0 && <span title={`Missing: ${getIncompleteFields(row).join(', ')}`} className="mt-1 ml-1 inline-flex rounded-full bg-[#fef7e0] px-2 py-0.5 text-[10px] font-bold text-[#8a4b00]">Incomplete · {getIncompleteFields(row).length}</span>}</td>
                 <td className="max-w-52 truncate p-3 text-[var(--muted)]" title={row.anchor}>{row.anchor || '—'}</td>
                 <td className="p-3 text-[var(--muted)]">{row.assign_to || 'Unassigned'}</td>
                 <td className="max-w-48 truncate p-3 text-xs text-[var(--muted)]" title={row.created_by_email || row.created_by_name || ''}>{row.created_by_email || row.created_by_name || '—'}</td>
                 <td className="p-3"><DeadlineCell deadline={row.deadline} status={row.status} today={today} /></td>
-                <td className="p-3"><StatusControl id={row.id} status={row.status} syncState={row.sync_state} /></td>
+                <td className="p-3">{profile.role === 'viewer' ? <StatusBadge status={row.status} /> : <StatusControl id={row.id} status={row.status} syncState={row.sync_state} />}</td>
                 <td className="p-3">{row.sync_state === 'failed' ? <div><StatusBadge status={row.status} failedSync /><p className="mt-1 max-w-48 text-xs text-[#c5221f]">{row.sync_error || 'Sheet sync failed'}</p></div> : <span className="text-xs text-[var(--muted)]">{row.sync_state === 'synced' ? `${row.team_tab || 'Team sheet'} · row ${row.team_row ?? '—'}` : 'Saved here only'}</span>}</td>
-                <td className="p-3"><RequestActions id={row.id} /></td>
+                <td className="p-3">{profile.role !== 'viewer' && <RequestActions id={row.id} />}</td>
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-[var(--muted)]">No requests match these filters.</td></tr>}

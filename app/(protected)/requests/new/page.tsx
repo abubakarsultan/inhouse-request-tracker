@@ -1,8 +1,8 @@
-import { redirect } from 'next/navigation';
 import RequestForm from '@/components/app/request-form';
 import { getActiveProjects } from '@/services/projects';
 import { getAutocompleteOptions } from '@/services/requests';
 import { requireActiveProfile } from '@/lib/auth';
+import { redirect } from 'next/navigation';
 
 export default async function NewRequest() {
   const profile = await requireActiveProfile();

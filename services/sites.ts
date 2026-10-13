@@ -2,17 +2,19 @@
 
 import * as XLSX from 'xlsx';
 import { createClient } from '@/lib/supabase-server';
+import { adminClient } from '@/lib/supabase-admin';
 import { SITE_IMPORT_HEADERS } from '@/lib/validators';
 import { extractHost } from '@/lib/domain';
 import { revalidatePath } from 'next/cache';
 import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
 import { appendRequestToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
-import { requireAdminForAction } from '@/lib/auth';
+import { requireAdminForAction, requireActiveUserForAction } from '@/lib/auth';
 
 export async function getProjectSites(projectId: string) {
-  await requireAdminForAction();
-  const supabase = await createClient();
-  const { data, error } = await supabase.from('project_sites').select('*').eq('project_id', projectId).is('archived_at', null).order('created_at', { ascending: false });
+  const profile = await requireActiveUserForAction();
+  if (profile.role === 'member') throw new Error('Project-wide site lists are available to admins and read-only viewers.');
+  const supabase = adminClient;
+  const { data, error } = await supabase.from('project_sites').select('*, requests(sheet_flag,placement_page,target_url,assign_to,deadline)').eq('project_id', projectId).is('archived_at', null).order('created_at', { ascending: false });
   if (error) throw error;
   return data;
 }

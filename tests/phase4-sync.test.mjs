@@ -9,6 +9,9 @@ test('sheet webhook accepts the exact Phase 4 payload and statuses', () => {
 
   const bad = parseSheetWebhookPayload({ tab: 'getprolinks', row: 1, website: 'example.com', anchor: 'best links', status: 'Removed' });
   assert.equal(bad.ok, false);
+  const removed = parseSheetWebhookPayload({ tab: 'getprolinks', row: 12, website: 'example.com', anchor: 'best links', status: 'Removed' });
+  assert.equal(removed.ok, true);
+  assert.equal(removed.ok && removed.value.status, 'Removed');
 
   const rejected = parseSheetWebhookPayload({ tab: 'getprolinks', row: 12, website: 'example.com', anchor: 'best links', status: 'Rejected' });
   assert.equal(rejected.ok, true);
@@ -30,4 +33,5 @@ test('installable trigger snippet uses the site webhook and installTrigger', () 
   assert.match(script, /\.onEdit\(\)/);
   assert.match(script, /range\.getColumn\(\) !== 6/);
   assert.match(script, /Rejected/);
+  assert.match(script, /Removed/);
 });

@@ -2,10 +2,10 @@ import Link from 'next/link';
 import RelinkHealthButton from '@/components/app/relink-health-button';
 import { runHealthCheck } from '@/services/health';
 import { formatKarachiDateTime } from '@/lib/date';
-import { requireAdminProfile } from '@/lib/auth';
+import { requireActiveProfile } from '@/lib/auth';
 
 export default async function HealthPage() {
-  await requireAdminProfile();
+  const profile = await requireActiveProfile();
   let result;
   try {
     result = await runHealthCheck();
@@ -45,7 +45,7 @@ export default async function HealthPage() {
                   <p className="mt-1 text-sm text-[var(--muted)]">{problem.details}</p>
                   <div className="mt-2 flex gap-3 text-xs"><Link href="/requests" className="text-[var(--brand)] hover:underline">Open requests</Link>{problem.projectSlug && <Link href={`/projects/${problem.projectSlug}`} className="text-[var(--brand)] hover:underline">Open project</Link>}</div>
                 </div>
-                {problem.canRelink && <RelinkHealthButton requestId={problem.requestId} />}
+                {problem.canRelink && profile.role === 'admin' && <RelinkHealthButton requestId={problem.requestId} />}
               </div>
             ))}
           </div>

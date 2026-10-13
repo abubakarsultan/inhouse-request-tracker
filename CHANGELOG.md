@@ -1,28 +1,51 @@
-# Changelog — INHOUSE REQUEST upgrade foundation
+# CHANGELOG — INHOUSE REQUEST upgrade foundations
 
-## Added
-- `database/migrations/009_project_categories_sheets_viewer.sql` — idempotent category seeds, project sheet metadata, request sheet flags, viewer enum value, audit table, indexes, category-deactivation safeguard, verification query.
-- `lib/sheet-config.ts` — shared sheet header constants, header-name resolution, tab-name validation, and incomplete-field helper.
-- `tests/upgrade-foundation.test.mjs` — tests for column resolution, tab names, and missing-field calculation.
-- `UPGRADE_GUIDE.md` — Roman Urdu + English deployment and rollback instructions.
+## Added files
 
-## Changed
-- `database/schema.sql` — appended migration 009 logic so fresh installs receive the upgrade foundation.
-- `lib/auth-types.ts` — adds the `viewer` role type.
-- `lib/auth.ts` — normalizes viewer profiles and fixes `ADMIN_EMAILS` bootstrap so it only bootstraps an admin when the profile is first created; an existing manually changed role is not overridden.
-- `lib/validators.ts` — accepts optional per-project category and sheet metadata fields.
-- `services/projects.ts` — assigns legacy form-created projects to Inhouse by default and no longer forcibly nulls an existing Google Sheet ID during updates.
-- `services/team.ts` — team role type includes viewer.
-- `lib/sheet-webhook.ts` and `services/google-sheet-sync.ts` — webhook accepts `Removed`, preserves the tool status, and records a read-only request sheet flag.
-- `package.json` — dependency versions pinned to versions already recorded in `package-lock.json`.
+- `database/migrations/009_project_categories_sheets_roles.sql` — idempotent category seed/backfill, per-project sheet metadata, sheet-only request flags, viewer enum value, audit table, indexes, aggregate RPC and RLS policies.
+- `UPGRADE_GUIDE.md` — simple Roman Urdu + English operational guide, migration steps, API enablement, deploy/rollback steps and current verification limitations.
+- `tests/upgrade-009.test.mjs` — tab-name, incomplete-field and webhook compatibility tests.
+
+## Changed files
+
+- `database/schema.sql` — appended migration 009 definitions so fresh installs include the new schema.
+- `lib/auth-types.ts` — added `viewer` role.
+- `lib/auth.ts` — recognizes viewer profiles, permits approved viewers without a sheet-name mapping, and preserves manually changed roles instead of re-applying `ADMIN_EMAILS` on every profile upsert.
+- `lib/validators.ts` — added project sheet metadata validation fields, Google tab-name validation and shared incomplete-field helper.
+- `lib/sheet-webhook.ts` — supports `spreadsheetId`/`liveLink`, accepts sheet-only `Removed`, and keeps the old payload format.
+- `services/google-sheet-sync.ts` — added Inhouse tab creation with headers/format/status validation; added own-sheet connection test/create helper; webhook can set/clear `sheet_flag` while preserving request status for `Removed`.
+- `services/projects.ts` — added category listing and management actions, project category assignment/backfill use, Inhouse tab creation attempt, own-sheet connection metadata and stopped forcing `google_sheet_id` to null.
+- `components/app/project-form-dialog.tsx` — category dropdown, own-sheet connection fields, service-account email display/copy, and category-change warning.
+- `components/app/project-category-manager.tsx` — basic admin category create/edit/reorder/activate/deactivate UI with protection against deactivating categories that still have projects.
+- `app/(protected)/projects/page.tsx` — category tabs/counts and category label on project cards; viewer-safe read-only project list.
+- `app/(protected)/projects/[slug]/page.tsx` — viewer-safe read-only project detail rendering.
+- `services/requests.ts` — viewer read-only company dashboard counts, mutation helper usage, and role-aware All Requests access.
+- `app/(protected)/requests/page.tsx` — viewer read-only controls, incomplete-only filter, and Removed/Incomplete badges on the site cell.
+- `app/(protected)/requests/new/page.tsx` and `app/(protected)/requests/[id]/edit/page.tsx` — block viewer access to mutation pages.
+- `services/team.ts` — viewer onboarding approval, role change support, last-active-admin safeguards, and role/status/mapping audit records.
+- `components/app/onboarding-name-selector.tsx` and `app/onboarding/page.tsx` — viewer onboarding option.
+- `components/sidebar.tsx` — role-aware viewer navigation.
+- `app/(protected)/team/page.tsx` — read-only viewer team directory.
+- `components/app/team-admin-panel.tsx` — role dropdown and access-change history.
+- `services/search.ts` — viewer search uses company-wide read query.
+- `services/sites.ts` and `services/health.ts` — read-only viewer access to project site and health data.
+- `app/(protected)/health/page.tsx` — viewer read-only health page.
+- `app/(protected)/dashboard/page.tsx` — viewer company dashboard with Removed/Incomplete KPI links.
+- `apps-script/SheetStatusWebhook.gs` — team-sheet trigger accepts `Removed` as a sheet-only state.
+- `tests/phase4-sync.test.mjs` — updated webhook expectations for the new sheet-only flag.
+- `package.json` and `package-lock.json` — replaced `latest` dependency ranges with versions already recorded in the lockfile.
 
 ## Assumptions
-- Existing projects should be categorized as Inhouse during migration, per the prompt.
-- Existing project form submissions without a category continue to use Inhouse for backward compatibility.
-- The `Removed` value is a sheet-only flag and must not become a tool request status.
-- Existing production tables/data must not be dropped during rollback.
-- The current repository ZIP is the baseline; no live Supabase, Google Cloud, or Vercel credentials were supplied, so external integrations cannot be verified from this workspace.
 
-## Validation / known gaps
-- No before/after DB query counts, payload sizes, or build measurements are claimed without running against the configured services.
-- Full category-management UI, own-sheet Google Drive/Sheets lifecycle, per-project sync refactor, client-sheet Apps Script generator, complete viewer route/action enforcement, role-change audit UI, SQL aggregate performance refactor, and full UX redesign remain to be completed and integration-tested before this can be described as the complete implementation of the supplied prompt.
+- All existing projects are assigned to the seeded `Inhouse` category to preserve existing behavior.
+- `Removed` is a sheet-only flag and must never be written into the tool's request-status enum/check constraint.
+- Viewer accounts are read-only and do not need a Guest Post Anchor sheet-name mapping, but still require admin approval.
+- Existing sheet data must never be renamed or deleted automatically when a project category or tab name changes.
+- Google service-account credentials remain server-only; only the service-account email may be shown in the UI.
+
+## Verification / performance notes
+
+- `node --experimental-strip-types --test tests/phase4-sync.test.mjs` passed in the available environment.
+- `npm ci` did not complete in the available environment, so `npm run build` and the full test suite could not be verified here.
+- Before/after query counts, payload sizes and navigation timings were not benchmarked; no performance improvement is claimed.
+- This package is **not yet the complete implementation** described in the original prompt. See the remaining items in `UPGRADE_GUIDE.md` before considering production deployment.

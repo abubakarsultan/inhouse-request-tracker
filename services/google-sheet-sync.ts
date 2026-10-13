@@ -3,7 +3,7 @@ import 'server-only';
 import { randomUUID } from 'node:crypto';
 import { google, type sheets_v4 } from 'googleapis';
 import { adminClient } from '@/lib/supabase-admin';
-import { normalizeForDuplicate } from '@/lib/validators';
+import { normalizeForDuplicate, validateSheetTabName } from '@/lib/validators';
 import { revalidatePath } from 'next/cache';
 import { requireAdminForAction } from '@/lib/auth';
 
@@ -57,22 +57,69 @@ function getTeamSheetId() {
 }
 
 function getSheetsClient() {
+  const credentials = getServiceAccountCredentials();
+  const auth = new google.auth.GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+  return google.sheets({ version: 'v4', auth });
+}
+
+function getServiceAccountCredentials() {
   const encoded = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!encoded) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not configured');
+  try { return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as Record<string, unknown>; }
+  catch { throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid base64-encoded JSON'); }
+}
 
-  let credentials: Record<string, unknown>;
-  try {
-    const raw = Buffer.from(encoded, 'base64').toString('utf8');
-    credentials = JSON.parse(raw);
-  } catch {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid base64-encoded JSON');
+export function getServiceAccountEmail() {
+  try { return String(getServiceAccountCredentials().client_email ?? '') || null; }
+  catch { return null; }
+}
+
+function getDriveClient() {
+  const auth = new google.auth.GoogleAuth({ credentials: getServiceAccountCredentials(), scopes: ['https://www.googleapis.com/auth/drive'] });
+  return google.drive({ version: 'v3', auth });
+}
+
+export async function prepareOwnSheetConnection(input: { mode: 'existing' | 'create'; title: string; url?: string | null; tabName?: string | null; shareEmails?: string[]; includeDrTraffic?: boolean }) {
+  const tabName = (input.tabName || 'Live Link').trim();
+  const invalid = validateSheetTabName(tabName);
+  if (invalid) throw new Error(invalid);
+  const sheets = getSheetsClient();
+  let spreadsheetId = '';
+  let url = '';
+  if (input.mode === 'existing') {
+    const match = String(input.url ?? '').match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match) throw new Error('Google Sheet URL is not valid. Copy the full URL from the browser address bar.');
+    spreadsheetId = match[1];
+    const response = await withGoogleRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: 'spreadsheetUrl,sheets.properties.title' }));
+    const tabExists = (response.data.sheets ?? []).some((sheet) => sheet.properties?.title === tabName);
+    if (!tabExists) throw new Error(`Tab “${tabName}” was not found in this Google Sheet.`);
+    const headerResponse = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tabName)}!A1:Z1` }));
+    const headers = (headerResponse.data.values?.[0] ?? []).map((value) => String(value ?? '').trim());
+    const required = ['Live Link', 'Anchor', 'Target Page', 'Status'];
+    const missing = required.filter((header) => !headers.includes(header));
+    if (missing.length) throw new Error(`Missing required header(s) in “${tabName}”: ${missing.join(', ')}. Existing columns were left untouched.`);
+    url = String(response.data.spreadsheetUrl ?? input.url ?? '');
+  } else {
+    const headers = input.includeDrTraffic ? ['Live Link', 'Anchor', 'Target Page', 'Status', 'DR', 'Traffic'] : ['Live Link', 'Anchor', 'Target Page', 'Status'];
+    const created = await withGoogleRetry(() => sheets.spreadsheets.create({ requestBody: { properties: { title: input.title }, sheets: [{ properties: { title: tabName, gridProperties: { frozenRowCount: 1 } } }] } }));
+    spreadsheetId = String(created.data.spreadsheetId ?? '');
+    url = String(created.data.spreadsheetUrl ?? (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : ''));
+    if (!spreadsheetId) throw new Error('Google created the sheet but did not return its ID. Check Google Cloud API access.');
+    await withGoogleRetry(() => sheets.spreadsheets.values.update({ spreadsheetId, range: `${quoteTab(tabName)}!A1:${input.includeDrTraffic ? 'F' : 'D'}1`, valueInputOption: 'RAW', requestBody: { values: [headers] } }));
+    const metadata = await withGoogleRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties' }));
+    const sheetId = Number(metadata.data.sheets?.find((sheet) => sheet.properties?.title === tabName)?.properties?.sheetId);
+    if (Number.isFinite(sheetId)) await withGoogleRetry(() => sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [
+      { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.12, green: 0.38, blue: 0.25 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)' } },
+      { setDataValidation: { range: { sheetId, startRowIndex: 1, startColumnIndex: 3, endColumnIndex: 4 }, rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: 'Request shared' }, { userEnteredValue: 'Live' }, { userEnteredValue: 'Rejected' }] }, strict: true, showCustomUi: true } } },
+      { addConditionalFormatRule: { index: 0, rule: { ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 3, endColumnIndex: 4 }], booleanRule: { condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Live' }] }, format: { backgroundColor: { red: 0.82, green: 0.93, blue: 0.84 }, textFormat: { foregroundColor: { red: 0.08, green: 0.42, blue: 0.2 }, bold: true } } } } } },
+    ] } }));
+    const drive = getDriveClient();
+    for (const email of [...new Set((input.shareEmails ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean))]) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error(`Invalid sharing email: ${email}`);
+      await withGoogleRetry(() => drive.permissions.create({ fileId: spreadsheetId, requestBody: { type: 'user', role: 'writer', emailAddress: email }, sendNotificationEmail: true, fields: 'id,emailAddress,role' }));
+    }
   }
-
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-  return google.sheets({ version: 'v4', auth });
+  return { spreadsheetId, url, tabName, serviceAccountEmail: getServiceAccountEmail(), sheetColumnConfig: { liveLink: 'Live Link', anchor: 'Anchor', targetUrl: 'Target Page', status: 'Status', ...(input.includeDrTraffic ? { dr: 'DR', traffic: 'Traffic' } : {}) }, shareEmails: input.shareEmails ?? [] };
 }
 
 function quoteTab(tab: string) {
@@ -229,6 +276,45 @@ function syncPreflight(project: SyncableProject, tabOverride?: string | null): {
     };
   }
   return { state: 'ok', tab, spreadsheetId };
+}
+
+export async function ensureTeamSheetTab(tabName: string): Promise<{ tab: string; created: boolean }> {
+  const invalid = validateSheetTabName(tabName);
+  if (invalid) throw new Error(invalid);
+  const spreadsheetId = getTeamSheetId();
+  if (!spreadsheetId) throw new Error('TEAM_SHEET_ID is not configured.');
+  const sheets = getSheetsClient();
+  const titles = await getTabTitles(sheets, spreadsheetId);
+  const expected = ['Website', 'Opportunity', 'Anchor', 'DR', 'Traffic', 'Status', 'Note', 'Created By Email'];
+  if (titles.has(tabName)) {
+    const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tabName)}!A1:H1` }));
+    const headers = (response.data.values?.[0] ?? []).map((value) => String(value ?? '').trim());
+    if (expected.slice(0, 7).some((header, index) => headers[index] !== header)) {
+      throw new Error(`A tab named “${tabName}” already exists but its headers do not match the Inhouse template. Choose another tab name or fix the existing headers first.`);
+    }
+    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tabName);
+    return { tab: tabName, created: false };
+  }
+  const created = await withGoogleRetry(() => sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests: [{ addSheet: { properties: { title: tabName, gridProperties: { frozenRowCount: 1 } } } }] },
+  }));
+  const sheetId = Number(created.data.replies?.[0]?.addSheet?.properties?.sheetId);
+  await withGoogleRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId, range: `${quoteTab(tabName)}!A1:H1`, valueInputOption: 'RAW',
+    requestBody: { values: [expected] },
+  }));
+  if (Number.isFinite(sheetId)) {
+    await withGoogleRetry(() => sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [
+      { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.12, green: 0.38, blue: 0.25 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)' } },
+      { setDataValidation: { range: { sheetId, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 }, rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: 'Request shared' }, { userEnteredValue: 'Live' }, { userEnteredValue: 'Rejected' }] }, strict: true, showCustomUi: true } } },
+      { addConditionalFormatRule: { index: 0, rule: { ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 }], booleanRule: { condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Live' }] }, format: { backgroundColor: { red: 0.82, green: 0.93, blue: 0.84 }, textFormat: { foregroundColor: { red: 0.08, green: 0.42, blue: 0.2 }, bold: true } } } } } },
+      { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 8 }, properties: { pixelSize: 150 }, fields: 'pixelSize' } },
+    ] } }));
+  }
+  metadataCache = null;
+  await logSync({ direction: 'to_sheet', sheetName: tabName, status: 'success', detail: 'Created Inhouse project tab with standard headers and status validation.' });
+  return { tab: tabName, created: true };
 }
 
 export async function appendRequestToTeamSheet(
@@ -647,13 +733,29 @@ export async function applyStatusFromSheet(payload: {
   website: string;
   anchor: string;
   status: 'Request shared' | 'Live' | 'Rejected' | 'Removed';
+  spreadsheetId?: string;
+  liveLink?: string;
 }) {
-  const { data, error } = await adminClient.rpc('find_request_from_sheet', {
-    p_tab: payload.tab,
-    p_website: payload.website,
-    p_anchor: payload.anchor,
-    p_row: payload.row,
-  });
+  // The main team sheet remains backward-compatible. For project-owned sheets,
+  // resolve the project by spreadsheet ID + tab before matching the request.
+  let data: any; let error: any;
+  if (payload.spreadsheetId) {
+    const { data: project, error: projectError } = await adminClient.from('projects').select('id,google_sheet_id,sheet_tab_name,guest_post_tab_name').eq('google_sheet_id', payload.spreadsheetId).or(`sheet_tab_name.eq.${payload.tab},guest_post_tab_name.eq.${payload.tab}`).maybeSingle();
+    if (projectError) { data = null; error = projectError; }
+    else if (project) {
+      const siteKey = String(payload.liveLink ?? payload.website ?? '').trim();
+      const { data: requestRows, error: requestError } = await adminClient.from('requests').select('id,project_id,approved_site,placement_page,anchor,status,team_tab,team_row').eq('project_id', project.id).eq('anchor', payload.anchor).is('deleted_at', null).limit(100);
+      if (requestError) { data = null; error = requestError; }
+      else {
+        const found = (requestRows ?? []).find((row: any) => String(row.placement_page ?? row.approved_site ?? '').trim() === siteKey || String(row.approved_site ?? '').trim() === siteKey);
+        data = found ? [{ request_id: found.id, match_type: 'project_sheet_identity' }] : [];
+        error = null;
+      }
+    } else { data = []; error = null; }
+  } else {
+    const rpcResult = await adminClient.rpc('find_request_from_sheet', { p_tab: payload.tab, p_website: payload.website, p_anchor: payload.anchor, p_row: payload.row });
+    data = rpcResult.data; error = rpcResult.error;
+  }
   if (error) {
     await logSync({ direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'error', detail: `Request lookup failed: ${error.message}` });
     throw new Error(`Request lookup failed: ${error.message}`);
@@ -667,16 +769,14 @@ export async function applyStatusFromSheet(payload: {
   }
 
   const requestId = String(match.request_id);
+  const { data: site } = await adminClient.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
   if (payload.status === 'Removed') {
-    const { error: flagError } = await adminClient.from('requests')
-      .update({ sheet_flag: 'Removed', sheet_flag_at: new Date().toISOString(), team_tab: payload.tab, team_row: payload.row, sync_state: 'synced', sync_error: null })
-      .eq('id', requestId);
-    if (flagError) throw new Error(`Could not set Removed sheet flag: ${flagError.message}`);
-    await logSync({ requestId, direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'success', detail: 'Set read-only Removed in sheet flag; tool status preserved.' });
-    return { ok: true, requestId, sheetFlag: 'Removed' };
+    const { error: flagError } = await adminClient.from('requests').update({ sheet_flag: 'Removed', sheet_flag_at: new Date().toISOString(), team_tab: payload.tab, team_row: payload.row, sync_state: 'synced', sync_error: null }).eq('id', requestId);
+    if (flagError) throw new Error(`Could not save Removed flag: ${flagError.message}`);
+    await logSync({ requestId, projectSiteId: site?.id ?? null, direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'success', detail: 'Sheet-only Removed flag set; tool request status was preserved.' });
+    return { ok: true, requestId, flag: 'Removed', statusPreserved: true };
   }
   await adminClient.from('requests').update({ sheet_flag: null, sheet_flag_at: null }).eq('id', requestId);
-  const { data: site } = await adminClient.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
   const { setRequestStatusCore } = await import('@/services/request-status-core');
   const result = await setRequestStatusCore(requestId, payload.status, 'team sheet', {
     pushToSheet: false,

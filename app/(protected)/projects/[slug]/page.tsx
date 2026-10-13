@@ -4,10 +4,11 @@ import StatusBadge from '@/components/status-badge';
 import StatusControl from '@/components/app/status-control';
 import Link from 'next/link';
 import { UploadCloud } from 'lucide-react';
-import { requireAdminProfile } from '@/lib/auth';
+import { requireActiveProfile } from '@/lib/auth';
 
 export default async function ProjectPage({ params }: { params: Promise<{ slug: string }> }) {
-  await requireAdminProfile();
+  const profile = await requireActiveProfile();
+  if (profile.role === 'member') { const { redirect } = await import('next/navigation'); redirect('/dashboard'); }
   const { slug } = await params;
   const project = await getProjectBySlug(slug);
   const sites = await getProjectSites(project.id);
@@ -24,9 +25,9 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.sync_enabled ? 'Sync on' : 'Sync off'}</span>
-          <Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">
+          {profile.role === 'admin' && <Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">
             <UploadCloud size={15} /> Import sites
-          </Link>
+          </Link>}
         </div>
       </div>
 
@@ -47,13 +48,13 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
           <tbody>
             {sites.map((site: any) => (
               <tr key={site.id} className="border-t border-[var(--border)]/70">
-                <td className="p-4 font-medium text-[var(--text)]">{site.website}</td>
+                <td className="p-4 font-medium text-[var(--text)]"><div>{site.website}</div>{(Array.isArray(site.requests) ? site.requests[0]?.sheet_flag : site.requests?.sheet_flag) === 'Removed' && <span className="mt-1 inline-flex rounded-full bg-[#fce8e6] px-2 py-0.5 text-[10px] font-bold text-[#c5221f]">Removed in sheet</span>}</td>
                 <td className="p-4 text-[var(--muted)]">{site.opportunity || '—'}</td>
                 <td className="p-4 text-[var(--muted)]">{site.anchor || '—'}</td>
                 <td className="p-4 text-[var(--muted)]">{site.dr ?? '—'}</td>
                 <td className="p-4 text-[var(--muted)]">{site.traffic ?? '—'}</td>
                 <td className="p-4">
-                  {site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} /><p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p></div>}
+                  {profile.role !== 'viewer' && site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} /><p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p></div>}
                 </td>
                 <td className="max-w-xs truncate p-4 text-[var(--muted)]" title={site.note}>{site.note || '—'}</td>
               </tr>

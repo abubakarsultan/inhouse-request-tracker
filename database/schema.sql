@@ -1293,12 +1293,10 @@ $$;
 
 revoke execute on function get_admin_team_attention() from public, anon, authenticated;
 grant execute on function get_admin_team_attention() to service_role;
+-- INHOUSE REQUEST upgrade 009: categories, per-project sheet settings, request flags, viewer role audit and query support.
+-- Safe to re-run; does not delete or rewrite request/project data beyond category backfill.
 
-
--- Upgrade foundation (also shipped as migration 009 for existing installs).
--- 009: project categories, per-project sheet metadata, flags, viewer role and audit.
--- Safe to re-run; existing project/request data is preserved.
-create table if not exists project_categories (
+create table if not exists public.project_categories (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   slug text not null,
@@ -1308,79 +1306,107 @@ create table if not exists project_categories (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create unique index if not exists project_categories_name_lower_unique
-  on project_categories (lower(name));
-create unique index if not exists project_categories_slug_unique
-  on project_categories (slug);
+create unique index if not exists project_categories_name_lower_uq on public.project_categories (lower(name));
+create unique index if not exists project_categories_slug_uq on public.project_categories (slug);
 
-insert into project_categories (name, slug, sort_order, sheet_mode, active)
-values ('Inhouse','inhouse',1,'team_sheet_tab',true),
-       ('Client','client',2,'own_sheet',true),
-       ('Onpage','onpage',3,'own_sheet',true)
-on conflict (slug) do update set
-  sheet_mode = excluded.sheet_mode,
-  sort_order = excluded.sort_order;
+insert into public.project_categories (name, slug, sort_order, sheet_mode, active)
+select v.name, v.slug, v.sort_order, v.sheet_mode, true
+from (values
+  ('Inhouse','inhouse',10,'team_sheet_tab'),
+  ('Client','client',20,'own_sheet'),
+  ('Onpage','onpage',30,'own_sheet')
+) as v(name,slug,sort_order,sheet_mode)
+where not exists (select 1 from public.project_categories c where lower(c.name)=lower(v.name));
 
-alter table projects add column if not exists category_id uuid;
-alter table projects add column if not exists sheet_tab_name text;
-alter table projects add column if not exists sheet_column_config jsonb not null default '{}'::jsonb;
-alter table projects add column if not exists sheet_share_emails text[] not null default '{}'::text[];
-alter table projects add column if not exists sheet_sync_error text;
+alter table public.projects add column if not exists category_id uuid;
+alter table public.projects add column if not exists sheet_tab_name text;
+alter table public.projects add column if not exists sheet_column_config jsonb not null default '{}'::jsonb;
+alter table public.projects add column if not exists sheet_share_emails text[] not null default '{}'::text[];
 
-update projects p
-set category_id = c.id
-from project_categories c
-where c.slug = 'inhouse' and p.category_id is null;
+update public.projects set sheet_tab_name = guest_post_tab_name
+where sheet_tab_name is null and guest_post_tab_name is not null;
+update public.projects p set category_id = c.id
+from public.project_categories c
+where p.category_id is null and lower(c.name)='inhouse';
 
+-- If a legacy installation somehow has no Inhouse category, seed it before enforcing NOT NULL.
+insert into public.project_categories(name,slug,sort_order,sheet_mode,active)
+select 'Inhouse','inhouse',10,'team_sheet_tab',true
+where not exists (select 1 from public.project_categories where lower(name)='inhouse');
+update public.projects p set category_id = c.id
+from public.project_categories c
+where p.category_id is null and lower(c.name)='inhouse';
+
+alter table public.projects alter column category_id set not null;
 do $$ begin
-  alter table projects add constraint projects_category_id_fkey
-    foreign key (category_id) references project_categories(id) on delete restrict;
+  alter table public.projects add constraint projects_category_id_fkey
+    foreign key (category_id) references public.project_categories(id) on delete restrict;
 exception when duplicate_object then null; end $$;
-alter table projects alter column category_id set not null;
-create index if not exists projects_category_active_idx on projects(category_id, active);
+create index if not exists projects_category_active_idx on public.projects(category_id, active, name);
 
-alter table requests add column if not exists sheet_flag text;
-alter table requests add column if not exists sheet_flag_at timestamptz;
+alter table public.requests add column if not exists sheet_flag text;
+alter table public.requests add column if not exists sheet_flag_at timestamptz;
 do $$ begin
-  alter table requests add constraint requests_sheet_flag_check
+  alter table public.requests add constraint requests_sheet_flag_check
     check (sheet_flag is null or sheet_flag in ('Removed'));
 exception when duplicate_object then null; end $$;
+create index if not exists requests_sheet_flag_idx on public.requests(sheet_flag) where sheet_flag is not null;
+create index if not exists requests_project_status_created_idx on public.requests(project_id, status, created_at desc) where deleted_at is null;
+create index if not exists project_sites_project_status_idx on public.project_sites(project_id, status);
 
-alter type user_role add value if not exists 'viewer';
+-- Existing role is an enum in canonical schema. Add viewer without changing existing roles.
+alter type public.user_role add value if not exists 'viewer';
 
-create table if not exists user_role_audit (
+create table if not exists public.user_role_audit (
   id uuid primary key default gen_random_uuid(),
-  target_user_id uuid not null references users(id) on delete cascade,
-  changed_by uuid references users(id) on delete set null,
-  field_name text not null check (field_name in ('role','sheet_name','account_status')),
-  old_value text,
-  new_value text,
+  changed_user_id uuid not null references public.users(id) on delete cascade,
+  changed_by_user_id uuid references public.users(id) on delete set null,
+  action text not null,
+  old_value jsonb,
+  new_value jsonb,
   created_at timestamptz not null default now()
 );
-create index if not exists user_role_audit_target_created_idx
-  on user_role_audit(target_user_id, created_at desc);
-create index if not exists requests_sheet_flag_idx on requests(sheet_flag) where sheet_flag is not null;
-create index if not exists requests_project_status_created_idx on requests(project_id, status, created_at desc);
+create index if not exists user_role_audit_changed_user_idx on public.user_role_audit(changed_user_id, created_at desc);
+create index if not exists user_role_audit_changed_by_idx on public.user_role_audit(changed_by_user_id, created_at desc);
 
--- Category deactivation is prohibited while projects still reference it.
-create or replace function prevent_used_category_deactivation()
-returns trigger language plpgsql as $$
-begin
-  if old.active and not new.active and exists (
-    select 1 from projects where category_id = old.id
-  ) then
-    raise exception 'Move all projects out of this category before deactivating it.';
-  end if;
-  return new;
-end $$;
-drop trigger if exists trg_prevent_used_category_deactivation on project_categories;
-create trigger trg_prevent_used_category_deactivation
-before update of active on project_categories
-for each row execute function prevent_used_category_deactivation();
+create or replace function public.get_project_request_counts()
+returns table(project_id uuid, request_count bigint, live_count bigint, pending_count bigint, rejected_count bigint, removed_count bigint)
+language sql stable security definer set search_path=public as $$
+  select p.id,
+    count(r.id) filter (where r.deleted_at is null),
+    count(r.id) filter (where r.deleted_at is null and r.status='Live'),
+    count(r.id) filter (where r.deleted_at is null and r.status='Request shared'),
+    count(r.id) filter (where r.deleted_at is null and r.status='Rejected'),
+    count(r.id) filter (where r.deleted_at is null and r.sheet_flag='Removed')
+  from public.projects p left join public.requests r on r.project_id=p.id
+  group by p.id;
+$$;
+revoke all on function public.get_project_request_counts() from public, anon, authenticated;
+grant execute on function public.get_project_request_counts() to service_role;
 
--- Verification: all existing projects must be assigned to Inhouse (or a valid category).
-select
-  (select count(*) from project_categories) as category_count,
-  (select count(*) from projects where category_id is null) as projects_without_category,
-  (select count(*) from project_categories where slug in ('inhouse','client','onpage')) as seeded_categories,
-  (select count(*) from requests where sheet_flag not in ('Removed') and sheet_flag is not null) as invalid_sheet_flags;
+alter table public.project_categories enable row level security;
+drop policy if exists project_categories_read_active on public.project_categories;
+create policy project_categories_read_active on public.project_categories for select to authenticated
+  using (active = true or exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
+drop policy if exists project_categories_admin_insert on public.project_categories;
+create policy project_categories_admin_insert on public.project_categories for insert to authenticated
+  with check (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
+drop policy if exists project_categories_admin_update on public.project_categories;
+create policy project_categories_admin_update on public.project_categories for update to authenticated
+  using (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'))
+  with check (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
+
+alter table public.user_role_audit enable row level security;
+drop policy if exists user_role_audit_admin_read on public.user_role_audit;
+create policy user_role_audit_admin_read on public.user_role_audit for select to authenticated
+  using (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
+
+drop trigger if exists trg_project_categories_updated on public.project_categories;
+create trigger trg_project_categories_updated before update on public.project_categories
+  for each row execute function public.set_updated_at();
+
+-- Verification queries (run after this migration):
+-- select name, slug, sheet_mode from public.project_categories order by sort_order;
+-- select count(*) as projects_without_category from public.projects where category_id is null;
+-- select column_name from information_schema.columns where table_schema='public' and table_name='requests' and column_name in ('sheet_flag','sheet_flag_at');
+-- select unnest(enum_range(null::public.user_role)) as role;

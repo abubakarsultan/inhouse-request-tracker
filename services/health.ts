@@ -5,7 +5,7 @@ import { readTeamSheetProjectRows, verifyRequestTeamRow, type TeamSheetReadResul
 import { revalidatePath } from 'next/cache';
 import { normalizeForDuplicate } from '@/lib/validators';
 import { extractHost } from '@/lib/domain';
-import { requireAdminForAction } from '@/lib/auth';
+import { requireAdminForAction, requireActiveUserForAction } from '@/lib/auth';
 
 export type HealthProblem = {
   requestId: string;
@@ -25,7 +25,7 @@ export type HealthCheckResult = {
 };
 
 export async function runHealthCheck(): Promise<HealthCheckResult> {
-  await requireAdminForAction();
+  await requireActiveUserForAction();
   const checkedAt = new Date().toISOString();
   const requests: any[] = [];
   for (let from = 0; ; from += 500) {

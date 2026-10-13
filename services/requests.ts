@@ -1,11 +1,12 @@
 'use server';
 
 import { createClient } from '@/lib/supabase-server';
+import { adminClient } from '@/lib/supabase-admin';
 import { requestSchema, isRequestStatus, looksLikeHttpUrl, type RequestInput } from '@/lib/validators';
 import { karachiDateString, karachiDateOffsetString, karachiMonthBounds } from '@/lib/date';
 import { appendRequestToTeamSheet, syncRequestStatusToTeamSheet, syncRequestFullRowToTeamSheet, clearRequestFromTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { revalidatePath } from 'next/cache';
-import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
+import { requireMutableUserForAction, requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
 import { setRequestStatusCore, type SetStatusResult } from '@/services/request-status-core';
 
 export type ProjectDomainUsage = { requestId: string | null; projectSiteId: string | null; approvedSite: string; anchor: string; status: string; assignTo: string | null; createdAt: string; source: string };
@@ -60,13 +61,16 @@ async function assertProjectDomainAvailable(projectId: string, approvedSite: str
 }
 
 export async function getRequests(filters?: { status?: string; project_id?: string }) {
-  await requireAdminForAction();
-  const supabase = await createClient();
+  const profile = await requireActiveUserForAction();
+  const supabase = profile.role === 'viewer' ? adminClient : await createClient();
   let query = supabase
     .from('requests')
     .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name)')
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
+  if (profile.role === 'member') {
+    query = query.or(`assigned_user_id.eq.${profile.id},assign_to.ilike.${profile.sheet_name ?? ''}`);
+  }
   if (filters?.status) query = query.eq('status', filters.status);
   if (filters?.project_id) query = query.eq('project_id', filters.project_id);
   const { data, error } = await query;
@@ -108,7 +112,7 @@ async function resolveAssignee(profile: Awaited<ReturnType<typeof requireActiveU
 }
 
 export async function createRequest(input: RequestInput): Promise<CreateRequestResult> {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const parsed = requestSchema.parse(input);
   const supabase = await createClient();
 
@@ -233,7 +237,7 @@ function makeCreateSummary(projectName: string, request: any, targetUrl: string)
 }
 
 export async function retryRequestSync(requestId: string) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
@@ -302,7 +306,7 @@ export async function retryRequestSync(requestId: string) {
 }
 
 export async function setRequestStatus(requestId: string, newStatus: string): Promise<SetStatusResult> {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   if (profile.role !== 'admin') {
     const { data: request, error } = await supabase
@@ -329,7 +333,7 @@ function requestOwnedByProfile(profile: Awaited<ReturnType<typeof requireActiveU
 }
 
 export async function getRequestForEdit(requestId: string) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
@@ -343,7 +347,7 @@ export async function getRequestForEdit(requestId: string) {
 }
 
 export async function updateRequest(requestId: string, input: RequestInput) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const parsed = requestSchema.parse(input);
   const supabase = await createClient();
   const { data: current, error } = await supabase
@@ -437,7 +441,7 @@ export async function updateRequest(requestId: string, input: RequestInput) {
 }
 
 export async function archiveRequest(requestId: string) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   const { data: current, error } = await supabase
     .from('requests')
@@ -695,6 +699,20 @@ export async function getMyRequests(name: string = ''): Promise<MyRequestsResult
     upcoming,
     requests: rows,
   };
+}
+
+export async function getViewerDashboardOverview() {
+  const profile = await requireActiveUserForAction();
+  if (profile.role !== 'viewer') throw new Error('Viewer dashboard is only for viewer accounts.');
+  const base = () => adminClient.from('requests').select('id', { count: 'exact', head: true }).is('deleted_at', null);
+  const [{ count: total }, { count: live }, { count: pending }, { count: rejected }, { count: removed }, { data: rows, error }] = await Promise.all([
+    base(), base().eq('status', 'Live'), base().eq('status', 'Request shared'), base().eq('status', 'Rejected'), base().eq('sheet_flag', 'Removed'),
+    adminClient.from('requests').select('approved_site,placement_page,target_url,anchor,assign_to,deadline').is('deleted_at', null).limit(5000),
+  ]);
+  if (error) throw new Error(error.message);
+  const { getIncompleteFields } = await import('@/lib/validators');
+  const incomplete = (rows ?? []).filter((row: any) => getIncompleteFields(row).length > 0).length;
+  return { total: total ?? 0, live: live ?? 0, pending: pending ?? 0, rejected: rejected ?? 0, removed: removed ?? 0, incomplete };
 }
 
 export async function getDashboardStats() {

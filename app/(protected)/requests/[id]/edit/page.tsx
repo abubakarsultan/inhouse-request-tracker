@@ -1,7 +1,7 @@
-import { redirect } from 'next/navigation';
 import RequestEditForm from '@/components/app/request-edit-form';
 import { getAutocompleteOptions, getRequestForEdit } from '@/services/requests';
 import { requireActiveProfile } from '@/lib/auth';
+import { redirect } from 'next/navigation';
 
 export default async function EditRequestPage({ params }: { params: Promise<{ id: string }> }) {
   const profile = await requireActiveProfile();

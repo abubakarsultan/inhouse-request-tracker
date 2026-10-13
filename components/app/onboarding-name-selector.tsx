@@ -9,16 +9,17 @@ export default function OnboardingNameSelector({ names }: { names: TeamNameOptio
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
+  const [viewerMode, setViewerMode] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const filtered = useMemo(() => names.filter((name) => name.name.toLowerCase().includes(query.toLowerCase())), [names, query]);
 
   function submit() {
-    if (!selected) { setError('Select your exact Guest Post Anchor name.'); return; }
+    if (!selected && !viewerMode) { setError('Select your exact Guest Post Anchor name or choose read-only viewer access.'); return; }
     setError(null);
     startTransition(async () => {
       try {
-        const result = await completeOnboarding(selected);
+        const result = await completeOnboarding(viewerMode ? null : selected);
         router.replace(result.pending ? '/pending' : '/dashboard');
         router.refresh();
       } catch (caught) {
@@ -38,9 +39,10 @@ export default function OnboardingNameSelector({ names }: { names: TeamNameOptio
         })}
         {filtered.length === 0 && <p className="p-3 text-sm text-[var(--muted)]">No matching approved name. Contact an admin if your team mapping is incorrect.</p>}
       </div>
+      <label className="mt-4 flex items-start gap-2 rounded-xl border border-[var(--border)] p-3 text-sm"><input type="checkbox" checked={viewerMode} onChange={(event) => { setViewerMode(event.target.checked); if (event.target.checked) setSelected(null); }} className="mt-1" /><span><strong>I don't have a sheet name — I only need to view everything.</strong><span className="mt-1 block text-xs text-[var(--muted)]">Viewer access is read-only and still requires admin approval.</span></span></label>
       <p className="mt-3 text-xs leading-5 text-[var(--muted)]">Choose the name exactly as it appears in Guest Post Anchor. A member account is sent to admin approval before any private work data is shown.</p>
       {error && <p className="mt-3 rounded-lg bg-[#fce8e6] p-3 text-sm text-[#c5221f]">{error}</p>}
-      <button type="button" disabled={pending || !selected} onClick={submit} className="mt-5 h-11 w-full rounded-xl bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:bg-[var(--brand-dark)] disabled:opacity-50">{pending ? 'Saving…' : 'Continue'}</button>
+      <button type="button" disabled={pending || (!selected && !viewerMode)} onClick={submit} className="mt-5 h-11 w-full rounded-xl bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:bg-[var(--brand-dark)] disabled:opacity-50">{pending ? 'Saving…' : 'Continue'}</button>
     </div>
   );
 }

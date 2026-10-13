@@ -60,9 +60,12 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
     .maybeSingle();
   if (existingError) throw new Error(existingError.message);
 
+  // ADMIN_EMAILS bootstraps only a brand-new profile. Existing manual role changes are preserved.
   const bootstrapAdmin = !existing && explicitlyAdmin;
   const now = new Date().toISOString();
-  const role: AppRole = existing ? (existing.role as AppRole) : bootstrapAdmin ? 'admin' : 'member';
+  const role: AppRole = existing?.role === 'admin' || existing?.role === 'viewer' || existing?.role === 'member'
+    ? existing.role
+    : bootstrapAdmin ? 'admin' : 'member';
   const accountStatus: AccountStatus = existing?.account_status
     ? (String(existing.account_status) as AccountStatus)
     : bootstrapAdmin
@@ -124,7 +127,7 @@ export async function requireAuthenticatedProfile(): Promise<UserProfile> {
 
 export async function requireActiveProfile(): Promise<UserProfile> {
   const profile = await requireAuthenticatedProfile();
-  if (!profile.onboarding_completed || !profile.sheet_name) redirect('/onboarding');
+  if (!profile.onboarding_completed || (profile.role !== 'viewer' && !profile.sheet_name)) redirect('/onboarding');
   if (profile.account_status === 'pending') redirect('/pending');
   if (profile.account_status === 'disabled') redirect('/login?error=disabled');
   return profile;
@@ -139,7 +142,7 @@ export async function requireAdminProfile(): Promise<UserProfile> {
 export async function requireActiveUserForAction(): Promise<UserProfile> {
   const profile = await getCurrentProfile();
   if (!profile) throw new Error('Please sign in again.');
-  if (!profile.onboarding_completed || !profile.sheet_name) throw new Error('Complete your profile first.');
+  if (!profile.onboarding_completed || (profile.role !== 'viewer' && !profile.sheet_name)) throw new Error('Complete your profile first.');
   if (profile.account_status !== 'active') throw new Error(profile.account_status === 'disabled' ? 'Your account is disabled.' : 'Your account is waiting for admin approval.');
   return profile;
 }
@@ -147,5 +150,12 @@ export async function requireActiveUserForAction(): Promise<UserProfile> {
 export async function requireAdminForAction(): Promise<UserProfile> {
   const profile = await requireActiveUserForAction();
   if (profile.role !== 'admin') throw new Error('Admin access required.');
+  return profile;
+}
+
+/** Use at the start of every member/admin mutation. Viewers are strictly read-only. */
+export async function requireMutableUserForAction(): Promise<UserProfile> {
+  const profile = await requireActiveUserForAction();
+  if (profile.role === 'viewer') throw new Error('Viewer accounts have read-only access.');
   return profile;
 }

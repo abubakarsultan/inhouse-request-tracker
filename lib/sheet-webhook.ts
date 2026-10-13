@@ -1,7 +1,7 @@
 type RequestStatus = 'Request shared' | 'Live' | 'Rejected' | 'Removed';
 
 function isRequestStatus(value: string): value is RequestStatus {
-  return value === 'Request shared' || value === 'Live' || value === 'Rejected' || value === 'Removed';
+  return value === 'Request shared' || value === 'Live' || value === 'Rejected';
 }
 
 export type SheetWebhookPayload = {
@@ -10,6 +10,8 @@ export type SheetWebhookPayload = {
   website: string;
   anchor: string;
   status: RequestStatus;
+  spreadsheetId?: string;
+  liveLink?: string;
 };
 
 export function parseSheetWebhookPayload(input: unknown):
@@ -19,20 +21,21 @@ export function parseSheetWebhookPayload(input: unknown):
   const body = input as Record<string, unknown>;
   const tab = String(body.tab ?? '').trim();
   const row = Number(body.row);
-  const website = String(body.website ?? '').trim();
+  const website = String(body.website ?? body.liveLink ?? '').trim();
+  const spreadsheetId = String(body.spreadsheetId ?? '').trim();
   const anchor = String(body.anchor ?? '').trim();
   const status = String(body.status ?? '').trim();
 
   if (!tab) return { ok: false, error: 'tab is required.' };
   if (!Number.isInteger(row) || row < 2) return { ok: false, error: 'row must be an integer >= 2.' };
-  if (!website) return { ok: false, error: 'website is required.' };
   if (!anchor) return { ok: false, error: 'anchor is required.' };
-  if (!isRequestStatus(status)) return { ok: false, error: 'status must be "Request shared", "Live", "Rejected", or "Removed".' };
+  if (!isRequestStatus(status) && status !== 'Removed') return { ok: false, error: 'status must be "Request shared", "Live", "Rejected", or sheet-only "Removed".' };
+  if (status !== 'Removed' && !website) return { ok: false, error: 'website/liveLink is required.' };
 
-  return { ok: true, value: { tab, row, website, anchor, status } };
+  return { ok: true, value: { tab, row, website, anchor, status, ...(spreadsheetId ? { spreadsheetId } : {}), ...(body.liveLink ? { liveLink: String(body.liveLink).trim() } : {}) } };
 }
 
-export function normalizeImportedSiteStatus(value: unknown): 'Request shared' | 'Live' | 'Rejected' {
+export function normalizeImportedSiteStatus(value: unknown): RequestStatus {
   const cleaned = String(value ?? '').trim().toLowerCase();
   if (cleaned === 'live') return 'Live';
   if (cleaned === 'rejected' || cleaned === 'reject') return 'Rejected';
@@ -80,13 +83,14 @@ function onSheetEdit(e) {
     const anchor = String(row[2] || '').trim();
     const status = String(row[5] || '').trim();
     if (!website || !anchor) return;
-    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected') return;
+    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected' && status !== 'Removed') return;
 
     const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
       method: 'post',
       contentType: 'application/json',
       headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },
       payload: JSON.stringify({
+        spreadsheetId: SpreadsheetApp.getActive().getId(),
         tab: sheet.getName(),
         row: sheetRow,
         website: website,

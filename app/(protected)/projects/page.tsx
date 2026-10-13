@@ -1,14 +1,18 @@
 import Link from 'next/link';
-import { getProjectsWithCounts } from '@/services/projects';
+import { getProjectsWithCounts, getProjectCategories } from '@/services/projects';
 import ProjectFormDialog from '@/components/app/project-form-dialog';
 import ProjectToggleActive from '@/components/app/project-toggle-active';
+import ProjectCategoryManager from '@/components/app/project-category-manager';
 import { ArrowRight, Database, Link2, Clock, XCircle } from 'lucide-react';
-import { requireAdminProfile } from '@/lib/auth';
+import { requireActiveProfile } from '@/lib/auth';
+import { getServiceAccountEmail } from '@/services/google-sheet-sync';
 
-export default async function Projects({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
-  await requireAdminProfile();
-  const { q } = await searchParams;
-  const projects = await getProjectsWithCounts(q);
+export default async function Projects({ searchParams }: { searchParams: Promise<{ q?: string; category?: string }> }) {
+  const profile = await requireActiveProfile();
+  const { q, category } = await searchParams;
+  const serviceAccountEmail = getServiceAccountEmail();
+  const [allProjects, categories, allCategories] = await Promise.all([getProjectsWithCounts(q), getProjectCategories(true), getProjectCategories(false)]);
+  const projects = category ? allProjects.filter((project: any) => String(project.category_id) === category) : allProjects;
 
   return (
     <div>
@@ -17,9 +21,14 @@ export default async function Projects({ searchParams }: { searchParams: Promise
           <h1 className="text-2xl font-bold text-[var(--text)]">Projects</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">Each card is a database-backed client mapping to its team-sheet tab.</p>
         </div>
-        <ProjectFormDialog />
+        {profile.role === 'admin' && <ProjectFormDialog categories={categories as any} serviceAccountEmail={serviceAccountEmail} />}
       </div>
 
+      {profile.role === 'admin' && <ProjectCategoryManager categories={allCategories as any} />}
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Link href="/projects" className={`rounded-full border px-3 py-1.5 text-sm ${!category ? 'border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'border-[var(--border)] text-[var(--muted)]'}`}>All ({allProjects.length})</Link>
+        {categories.map((item: any) => <Link key={item.id} href={`/projects?category=${item.id}${q ? `&q=${encodeURIComponent(q)}` : ''}`} className={`rounded-full border px-3 py-1.5 text-sm ${category === item.id ? 'border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'border-[var(--border)] text-[var(--muted)]'}`}>{item.name} ({allProjects.filter((project: any) => project.category_id === item.id).length})</Link>)}
+      </div>
       <form className="mb-5">
         <input name="q" defaultValue={q} placeholder="Search projects…" className="h-10 w-full max-w-sm rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]" />
       </form>
@@ -30,9 +39,9 @@ export default async function Projects({ searchParams }: { searchParams: Promise
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-lg font-bold text-[var(--text)]" title={project.name}>{project.name}</h2>
-                <p className="mt-1 truncate text-xs text-[var(--muted)]" title={project.guest_post_tab_name || ''}>Team tab: {project.guest_post_tab_name || '—'}</p>
+                <p className="mt-1 truncate text-xs text-[var(--muted)]" title={project.guest_post_tab_name || ''}>{project.category?.name || 'Inhouse'} · Sheet tab: {project.sheet_tab_name || project.guest_post_tab_name || '—'}</p>
               </div>
-              <div className="flex shrink-0 items-center gap-1"><ProjectFormDialog project={project} /><ProjectToggleActive id={project.id} active={project.active} /></div>
+              <div className="flex shrink-0 items-center gap-1">{profile.role === 'admin' && <><ProjectFormDialog project={project} categories={categories as any} serviceAccountEmail={serviceAccountEmail} /><ProjectToggleActive id={project.id} active={project.active} /></>}</div>
             </div>
 
             <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
