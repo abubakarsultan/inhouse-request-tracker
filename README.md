@@ -1,91 +1,152 @@
-# INHOUSE REQUEST
+# INHOUSE REQUEST — Final V2
 
-Rankviz's internal outreach request management SaaS — replaces the
-"Inhouse Request Tracker" and "Guest Post Anchor" Google Sheets.
+Internal Rankviz outreach-request app built with Next.js App Router, TypeScript, Supabase/Postgres, Google Sheets API and Vercel.
 
-Stack: Next.js (App Router) · TypeScript · Tailwind · Supabase (Postgres) · Vercel
+## Final workflow
 
-> **No login.** Opening the site opens the tool directly. There is no sign-in page, no session, no cookies. All database access happens on the server with the Supabase service-role key, so anyone who has the site URL can use it — keep the URL private.
+- Google sign-in only; only `@rankviz.com` accounts are allowed.
+- First login asks for the exact Guest Post Anchor name, then a normal member waits for admin approval.
+- Admins are explicitly bootstrapped through `ADMIN_EMAILS`.
+- Approved team roster is fixed to: `M.ATIF`, `Wasif`, `Atif latif`, `Sohail Ahmad`, `Rizwan`, `Abubakar`, `Zunnorain Ali`.
+- `Abubakar Sultan` historical assignments are normalized to `Abubakar`.
+- Historical labels such as `Index` / `No Index` are not treated as people; Admin → Team & Approvals surfaces them for reassignment.
+- Existing imported Guest Post Anchor rows are converted into first-class requests, so they appear in Dashboard, Requests, member dashboards and project counts.
+- Request statuses are exactly `Request shared`, `Live`, `Rejected`.
+- Requests can be edited or deleted/archived. Archive keeps audit history but removes the request from active views and clears the verified Sheet row.
+- `live_date` is set on first Live and is never cleared by a later revert/rejection.
+- Google Sheet column H is `Created By Email` and stores the signed-in Rankviz email for site-created requests.
 
-## 1. Supabase setup
+## Project/domain uniqueness rule
 
-1. Create a Supabase project.
-2. Open the SQL editor and run the entire contents of `database/schema.sql`. This creates every table, the forward-only status-transition trigger, and Row Level Security policies.
-3. Grab your `Project URL` and `service_role` key from Settings → API. (The anon key is no longer used.)
+The canonical business rule is:
 
-## 2. Environment variables
-
-Copy `.env.example` to `.env.local` (or set these in Vercel → Project → Settings → Environment Variables) and fill in:
-
-- `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- `GOOGLE_SERVICE_ACCOUNT_JSON` / `SHEET_WEBHOOK_SECRET` — only needed for the Google Sheet sync, see below. The app runs fine without them; sync is simply skipped and logged.
-
-## 3. Run it
-
-```
-npm install
-npm run dev
+```text
+same project + same normalized website/domain = blocked
+same website/domain + different project = allowed
 ```
 
-Open http://localhost:3000 — it goes straight to the dashboard.
+Anchor text does not change the decision. `https://www.example.com/page`, `www.example.com` and `example.com` normalize to the same host, while `example.co` and `example.com` remain different.
 
-## 4. Google Sheet sync (two-way)
+The rule is enforced in three places:
 
-**App → Sheet:** when a request's status changes, or a project site's
-status changes, the app looks up the matching row (by Website) in the
-project's Guest Post Anchor tab and updates column F (Status). This
-needs a Google service account:
+1. Debounced form hint for the selected project only.
+2. Server-side request/import validation.
+3. Database trigger to protect against simultaneous writes/races.
 
-1. Google Cloud Console → create a service account → generate a JSON key.
-2. Share the Guest Post Anchor spreadsheet with the service account's `client_email` (Editor access).
-3. Base64-encode the key file and set it as `GOOGLE_SERVICE_ACCOUNT_JSON`.
-4. On the project's edit dialog (Projects page), fill in the spreadsheet ID (from its URL) and the exact tab name, and turn sync on.
+Historical duplicates are preserved rather than silently deleted; Health Check surfaces active same-project/domain duplicates so an admin can resolve them deliberately.
 
-**Sheet → App:** paste this into the spreadsheet's **Extensions → Apps
-Script**, replacing `YOUR_APP_URL`, `YOUR_PROJECT_ID` and
-`YOUR_WEBHOOK_SECRET` (the project ID is visible in the project's edit
-dialog / database row; the secret is whatever you set `SHEET_WEBHOOK_SECRET`
-to):
+## Member workspace
 
-```javascript
-function onEdit(e) {
-  var sheet = e.range.getSheet();
-  if (e.range.getColumn() !== 6) return; // column F = Status
-  var row = e.range.getRow();
-  if (row === 1) return;
-  var website = sheet.getRange(row, 1).getValue();
-  var status = e.range.getValue();
+A member sees personal data only:
 
-  UrlFetchApp.fetch('YOUR_APP_URL/api/sheet-webhook', {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { 'x-sheet-webhook-secret': 'YOUR_WEBHOOK_SECRET' },
-    payload: JSON.stringify({
-      projectId: 'YOUR_PROJECT_ID',
-      website: website,
-      status: status,
-      sheetName: sheet.getName(),
-      sheetRow: row,
-    }),
-  });
-}
+- Assigned / Live / Pending / Rejected / Overdue KPIs
+- Upcoming deadlines
+- New + imported historical requests
+- Project breakdown
+- Edit / Delete / status controls for owned requests
+- Profile, theme toggle and logout
+
+New member requests automatically use their approved Guest Post Anchor name for `Assign To` and their signed-in Rankviz email for `Created By Email`.
+
+## Admin workspace
+
+Admins see a clearly marked ADMIN workspace with:
+
+- Company-wide dashboard
+- Pending registration count
+- Active team account count
+- Invalid-assignment count
+- Team approval queue showing Google name, Rankviz email, selected Sheet name, requested time and matching historical record count
+- Team accounts / role / enable-disable / reset mapping / View as user
+- Fixed seven-name roster
+- Invalid historical assignment reassignment
+- Projects, Requests, Search, Site Check, Import, Health and Settings
+
+## Google Sheet mirror
+
+Project tabs use:
+
+```text
+A Website
+B Opportunity
+C Anchor
+D DR
+E Traffic
+F Status
+G Note / Assign To
+H Created By Email
 ```
 
-This fires on every edit to the sheet and keeps `project_sites` (and
-`sync_logs`) in the app up to date instantly — no polling needed.
+Sheet status edits support `Request shared`, `Live`, and `Rejected`. The Apps Script must use the installable `onSheetEdit` trigger from `apps-script/SheetStatusWebhook.gs` (or the generated Settings snippet).
 
-## Modules
+The service account remains the technical Sheets API writer; column H stores the real signed-in employee email for business auditing.
 
-- **Auth** — none. The login screen, middleware and seed route were removed.
-- **Projects** — CRUD (admin-only write), search, enable/disable, and the Outreach OS ↔ Guest Post Anchor tab-name mapping the old NAME_MAP used to hold.
-- **Project detail (`/projects/[slug]`)** — the Website / Opportunity / Anchor / DR / Traffic / Status / Note table for that project (`project_sites`), fed by the importer and kept in sync with its Guest Post Anchor tab.
-- **Requests** — full create form with the required-field validation from the spec; status can only move `Request Shared → Live → Removed`, enforced in the UI, in the server action, *and* by a Postgres trigger so it can never be bypassed. Every change is written to `request_logs`.
-- **Import** — CSV/XLSX upload into a project's `project_sites`, validated against the required header row before anything is written; logged to `imports`.
-- **Settings** — admin-only user directory (promote/demote, activate/deactivate).
-- **Dashboard** — live counts pulled from the database (no hardcoded numbers).
 
-## Notes / assumptions made while completing the spec
+## UX + Performance Patch
 
-- The spec's table list didn't include a table for the per-project Website/Opportunity/Anchor/DR/Traffic/Status/Note data shown on `/projects/[slug]` and produced by the importer — that's `project_sites` in `database/schema.sql`.
-- `projects.google_sheet_id` and `projects.active`, and `users.active`, were added to support "disable project" / "manage users" / "which spreadsheet to sync to", which the spec required functionally but didn't list as fields.
-- Role-based UI: admins see Add/Edit/Disable on Projects and the Users table in Settings; members see everything else (Requests, Import, project detail) since the spec scopes "Member" to creating requests, viewing projects, and updating allowed fields.
+The current build also includes the focused My Requests / speed patch:
+
+- `My Requests` is visible in member and admin navigation; admin company-wide list is labeled `All Requests`.
+- My Requests supports quick status tabs, search, Project/Priority/Deadline/Source filters, sorting and 25/50/100-row pagination.
+- Internal navigation shows an immediate top progress bar, skeleton loaders and a short page transition.
+- Member Dashboard uses a compact summary query instead of loading the full request history.
+- My Requests loads only the requested page from Postgres.
+- Admin Dashboard and admin attention cards use aggregate database RPCs instead of full request scans in Next.js.
+- Protected navigation no longer writes/upserts the user profile on every page click.
+
+For an existing Final V2 production database, run only:
+
+```text
+database/migrations/006_my_requests_performance.sql
+```
+
+No new environment variables or Google/Apps Script setup is required for this patch.
+
+## Environment variables
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+ADMIN_EMAILS=
+GOOGLE_SERVICE_ACCOUNT_JSON=
+TEAM_SHEET_ID=
+SHEET_WEBHOOK_SECRET=
+```
+
+No new environment variable is introduced by Final V2.
+
+## Database upgrades
+
+For a production installation already running Final V2 / migration 005, run only:
+
+```text
+database/migrations/006_my_requests_performance.sql
+```
+
+`006` adds performance indexes plus member/admin summary and paginated My Requests RPCs. It does not rewrite business data. If 005 has not yet been installed, run 005 first and then 006.
+
+For a completely fresh database use current `database/schema.sql`.
+
+## Verification commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run test:final
+npm run build
+```
+
+Final V2's source-level test suite checks auth/domain rules, project-domain hard blocking, the exact seven-person roster, Rejected status, edit/archive wiring, creator email and admin approval/cleanup UI.
+
+## Production acceptance
+
+1. Run migration 005.
+2. Deploy the Final V2 code with the existing environment variables.
+3. Replace the team Sheet Apps Script with the new Final V2 trigger code and run `installTrigger()` once so direct Sheet edits can send `Rejected` too.
+4. Run Import from team sheet once. Existing already-imported rows were backfilled by migration 005; this catches rows added to the Sheet since the last import.
+5. Open Team & Approvals and reassign any invalid `Index` / `No Index` labels.
+6. Test one normal member: Google login → select exact name → pending → admin sees identity/details → approve → history appears.
+7. Test uniqueness: `Project A + example.com` once succeeds, second attempt is blocked; `Project B + example.com` is allowed.
+8. Test Edit, Rejected, Revert, Delete/archive and verify the same team-sheet row changes.
+9. Run Health Check to surface linkage or historical duplicate-domain problems.

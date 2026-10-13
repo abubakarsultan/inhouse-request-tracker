@@ -1,39 +1,55 @@
 import { z } from 'zod';
 
+export const REQUEST_STATUSES = ['Request shared', 'Live', 'Rejected'] as const;
+export const REQUEST_PRIORITIES = ['High', 'Medium', 'Low'] as const;
+
 export const requestSchema = z.object({
   project_id: z.string().uuid('Select a project'),
   sub_project: z.string().optional().nullable(),
-  target_url: z.string().url('Enter a valid URL'),
-  anchor: z.string().min(1, 'Anchor is required'),
-  approved_site: z.string().min(1, 'Approved site is required'),
+  target_url: z.string().trim(),
+  anchor: z.string().trim().min(1, 'Anchor is required'),
+  approved_site: z.string().trim().min(1, 'Approved site is required'),
   placement_page: z.string().optional().nullable(),
-  priority: z.enum(['Low', 'Medium', 'High', 'Urgent']).default('Medium'),
-  assigned_to: z.string().uuid().optional().nullable(),
-  deadline: z.string().optional().nullable(),
   shared_with: z.string().optional().nullable(),
+  priority: z.enum(REQUEST_PRIORITIES).default('Medium'),
+  assign_to: z.string().optional().nullable(),
+  deadline: z.string().optional().nullable(),
+  status: z.enum(REQUEST_STATUSES).default('Request shared'),
+  created_by_name: z.string().optional().nullable(),
 });
 export type RequestInput = z.infer<typeof requestSchema>;
 
 export const projectSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  outreach_project_name: z.string().optional().nullable(),
-  guest_post_tab_name: z.string().optional().nullable(),
-  google_sheet_id: z.string().optional().nullable(),
-  sync_enabled: z.boolean().default(false),
+  name: z.string().trim().min(1, 'Name is required'),
+  outreach_project_name: z.string().trim().optional().nullable(),
+  guest_post_tab_name: z.string().trim().optional().nullable(),
+  category_id: z.string().uuid().optional().nullable(),
+  sheet_tab_name: z.string().trim().optional().nullable(),
+  google_sheet_id: z.string().trim().optional().nullable(),
+  sheet_column_config: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  sheet_share_emails: z.array(z.string().email()).optional(),
+  sync_enabled: z.boolean().default(true),
 });
 export type ProjectInput = z.infer<typeof projectSchema>;
 
-// Status workflow — kept in one place so the UI and any server action
-// agree on what's legal. The database trigger (see database/schema.sql)
-// enforces the same rule as a last line of defense.
-export const STATUS_ORDER = ['Request Shared', 'Live', 'Removed'] as const;
-export const transitions: Record<string, string[]> = {
-  'Request Shared': ['Live'],
-  Live: ['Removed'],
-  Removed: [],
-};
-export function canChangeStatus(from: string, to: string) {
-  return from === to || (transitions[from] ?? []).includes(to);
+export function isRequestStatus(value: string): value is (typeof REQUEST_STATUSES)[number] {
+  return REQUEST_STATUSES.includes(value as (typeof REQUEST_STATUSES)[number]);
+}
+
+// Legacy helper retained for Sheet row identity matching. Project-domain uniqueness
+// itself uses exact host normalization in normalize_project_domain()/extractHost().
+export function normalizeForDuplicate(value: string | null | undefined) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+export function looksLikeHttpUrl(value: string) {
+  if (!value.trim()) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 export const SITE_IMPORT_HEADERS = ['Website', 'Opportunity', 'Anchor', 'DR', 'Traffic', 'Status', 'Note'] as const;

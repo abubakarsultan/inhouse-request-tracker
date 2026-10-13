@@ -1,9 +1,10 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 // Service-role client. Server-side only — never import this into a client
-// component. It bypasses Row Level Security, which is what lets the app
-// work with NO login: every database call is made here on the server, and
-// the browser never talks to Supabase directly.
+// component. It bypasses Row Level Security for trusted server-side business
+// data operations. Supabase Auth sessions are handled separately with the
+// browser-safe publishable key; protected actions verify the signed-in user
+// before they use this client.
 //
 // Built lazily on first use so that merely importing this file can never
 // fail a build when env vars aren't resolved yet.
