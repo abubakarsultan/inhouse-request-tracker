@@ -65,7 +65,7 @@ export async function getRequests(filters?: { status?: string; project_id?: stri
   const supabase = profile.role === 'viewer' ? adminClient : await createClient();
   let query = supabase
     .from('requests')
-    .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name)')
+    .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (profile.role === 'member') {
@@ -120,7 +120,7 @@ export async function createRequest(input: RequestInput): Promise<CreateRequestR
 
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id,name,slug,outreach_project_name,guest_post_tab_name,sync_enabled,active')
+    .select('id,name,slug,outreach_project_name,guest_post_tab_name,sync_enabled,active,google_sheet_id,sheet_tab_name,sheet_column_config')
     .eq('id', parsed.project_id)
     .single();
   if (projectError || !project) throw new Error(projectError?.message ?? 'Project not found');
@@ -197,6 +197,7 @@ export async function createRequest(input: RequestInput): Promise<CreateRequestR
     project_id: request.project_id,
     approved_site: request.approved_site,
     placement_page: request.placement_page,
+    target_url: request.target_url,
     anchor: request.anchor,
     assign_to: request.assign_to,
     status: request.status,
@@ -241,7 +242,7 @@ export async function retryRequestSync(requestId: string) {
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -256,6 +257,7 @@ export async function retryRequestSync(requestId: string) {
   const currentRecord: RequestSheetRecord = {
     id: String(request.id), project_id: String(request.project_id), approved_site: String(request.approved_site),
     placement_page: request.placement_page ? String(request.placement_page) : null,
+    target_url: request.target_url ? String(request.target_url) : null,
     anchor: String(request.anchor ?? ''), assign_to: request.assign_to ? String(request.assign_to) : null,
     status: String(request.status), team_tab: request.team_tab ? String(request.team_tab) : null,
     team_row: request.team_row == null ? null : Number(request.team_row),
@@ -337,7 +339,7 @@ export async function getRequestForEdit(requestId: string) {
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -352,7 +354,7 @@ export async function updateRequest(requestId: string, input: RequestInput) {
   const supabase = await createClient();
   const { data: current, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -445,7 +447,7 @@ export async function archiveRequest(requestId: string) {
   const supabase = await createClient();
   const { data: current, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();

@@ -26,7 +26,7 @@ export async function setRequestStatusCore(
 
   const { data: current, error: fetchError } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();

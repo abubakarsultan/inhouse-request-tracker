@@ -11,6 +11,9 @@ type SyncableProject = {
   id: string;
   guest_post_tab_name: string | null;
   sync_enabled: boolean;
+  google_sheet_id?: string | null;
+  sheet_tab_name?: string | null;
+  sheet_column_config?: Record<string, string> | null;
 };
 
 export type RequestSheetRecord = {
@@ -18,6 +21,7 @@ export type RequestSheetRecord = {
   project_id: string;
   approved_site: string;
   placement_page: string | null;
+  target_url?: string | null;
   anchor: string;
   assign_to: string | null;
   status: string;
@@ -252,31 +256,56 @@ async function releaseAppendLock(lockKey: string, ownerToken: string) {
   if (error) throw new Error(error.message);
 }
 
-function syncPreflight(project: SyncableProject, tabOverride?: string | null): { state: 'ok'; tab: string; spreadsheetId: string } | SheetSyncResult {
-  if (!project.sync_enabled) {
-    return { state: 'skipped', text: '⚪ Sheet sync is disabled for this project (saved here only).' };
-  }
-  const tab = tabOverride?.trim() || project.guest_post_tab_name?.trim();
-  if (!tab) {
-    return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).' };
-  }
-  const spreadsheetId = getTeamSheetId();
+function syncPreflight(project: SyncableProject, tabOverride?: string | null): { state: 'ok'; tab: string; spreadsheetId: string; mode: 'own' | 'team' } | SheetSyncResult {
+  if (!project.sync_enabled) return { state: 'skipped', text: '⚪ Sheet sync is disabled for this project (saved here only).' };
+  const ownSheetId = String(project.google_sheet_id ?? '').trim();
+  const ownTab = String(project.sheet_tab_name ?? '').trim();
+  const isOwnSheet = Boolean(ownSheetId && ownTab);
+  const tab = tabOverride?.trim() || (isOwnSheet ? ownTab : project.guest_post_tab_name?.trim());
+  if (!tab) return { state: 'skipped', text: '⚪ This project has no configured Google Sheet tab (saved here only).' };
+  const spreadsheetId = isOwnSheet ? ownSheetId : getTeamSheetId();
   if (!spreadsheetId) {
-    return {
-      state: 'failed',
-      text: '❌ Team sheet sync failed: TEAM_SHEET_ID is not configured. Request is still saved.',
-      error: 'TEAM_SHEET_ID is not configured',
-    };
+    const error = isOwnSheet ? 'Project Google Sheet is not configured' : 'TEAM_SHEET_ID is not configured';
+    return { state: 'failed', text: `❌ Google Sheet sync failed: ${error}. Request is still saved.`, error };
   }
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return {
-      state: 'failed',
-      text: '❌ Team sheet sync failed: Google service-account credentials are not configured. Request is still saved.',
-      error: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured',
-    };
-  }
-  return { state: 'ok', tab, spreadsheetId };
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { state: 'failed', text: '❌ Google Sheet sync failed: Google service-account credentials are not configured. Request is still saved.', error: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured' };
+  return { state: 'ok', tab, spreadsheetId, mode: isOwnSheet ? 'own' : 'team' };
 }
+
+function ownSheetHeaderIndex(headers: unknown[], configuredName: string | undefined, fallbackName: string): number {
+  const name = String(configuredName || fallbackName).trim().toLowerCase();
+  return headers.findIndex((value) => String(value ?? '').trim().toLowerCase() === name);
+}
+
+async function appendRequestToOwnSheet(sheets: sheets_v4.Sheets, spreadsheetId: string, tab: string, project: SyncableProject, request: RequestSheetRecord) {
+  const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!1:1` })) as { data: { values?: unknown[][] } };
+  const headers = (response.data.values?.[0] ?? []) as unknown[];
+  const config = project.sheet_column_config ?? {};
+  const indexes = {
+    liveLink: ownSheetHeaderIndex(headers, config.liveLink, 'Live Link'),
+    anchor: ownSheetHeaderIndex(headers, config.anchor, 'Anchor'),
+    targetUrl: ownSheetHeaderIndex(headers, config.targetUrl, 'Target Page'),
+    status: ownSheetHeaderIndex(headers, config.status, 'Status'),
+    dr: ownSheetHeaderIndex(headers, config.dr, 'DR'),
+    traffic: ownSheetHeaderIndex(headers, config.traffic, 'Traffic'),
+  };
+  if (indexes.liveLink < 0 || indexes.anchor < 0 || indexes.targetUrl < 0 || indexes.status < 0) throw new Error('Project sheet must have Live Link, Anchor, Target Page, and Status headers.');
+  const rowsResponse = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:Z` })) as { data: { values?: unknown[][] } };
+  const rows = rowsResponse.data.values ?? [];
+  const rowNumber = Math.max(2, rows.length + 1);
+  const values = Array.from({ length: Math.max(headers.length, 4) }, () => '');
+  values[indexes.liveLink] = request.approved_site;
+  values[indexes.anchor] = request.anchor;
+  values[indexes.targetUrl] = request.target_url ?? '';
+  values[indexes.status] = request.status;
+  if (indexes.dr >= 0) values[indexes.dr] = '';
+  if (indexes.traffic >= 0) values[indexes.traffic] = '';
+  await withGoogleRetry(() => sheets.spreadsheets.values.update({ spreadsheetId, range: `${quoteTab(tab)}!A${rowNumber}:${columnLetter(values.length)}${rowNumber}`, valueInputOption: 'RAW', requestBody: { values: [values] } }));
+  return rowNumber;
+}
+
+function columnLetter(column: number) { let n = column; let out = ''; while (n > 0) { const r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = Math.floor((n - 1) / 26); } return out; }
+
 
 export async function ensureTeamSheetTab(tabName: string): Promise<{ tab: string; created: boolean }> {
   const invalid = validateSheetTabName(tabName);
@@ -336,6 +365,20 @@ export async function appendRequestToTeamSheet(
   }
 
   const { tab, spreadsheetId } = preflight;
+  if (preflight.mode === 'own') {
+    try {
+      const sheets = getSheetsClient();
+      const titles = await getTabTitles(sheets, spreadsheetId);
+      if (!titles.has(tab)) throw new Error(`Project sheet tab “${tab}” was not found. Check the Tab name in project settings.`);
+      const row = await appendRequestToOwnSheet(sheets, spreadsheetId, tab, project, request);
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: row, status: 'success', detail: 'Request appended to project-owned sheet.' });
+      return { state: 'synced', text: `✅ Request added to this project's Google Sheet tab “${tab}”, row ${row}.`, tab, row };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
+      return { state: 'failed', text: `❌ Project Google Sheet sync failed: ${reason}. Request is still saved.`, tab, error: reason };
+    }
+  }
   const ownerToken = randomUUID();
   const lockKey = `team-sheet:${spreadsheetId}:${tab}`;
 
@@ -473,6 +516,21 @@ export async function syncRequestStatusToTeamSheet(
   const { tab, spreadsheetId } = preflight;
   try {
     const sheets = getSheetsClient();
+    if (preflight.mode === 'own') {
+      const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:Z` })) as { data: { values?: unknown[][] } };
+      const rows = response.data.values ?? [];
+      const headers = (rows[0] ?? []) as unknown[];
+      const config = project.sheet_column_config ?? {};
+      const liveIndex = ownSheetHeaderIndex(headers, config.liveLink, 'Live Link');
+      const anchorIndex = ownSheetHeaderIndex(headers, config.anchor, 'Anchor');
+      const statusIndex = ownSheetHeaderIndex(headers, config.status, 'Status');
+      if (liveIndex < 0 || anchorIndex < 0 || statusIndex < 0) throw new Error('Project sheet is missing required Live Link, Anchor, or Status headers.');
+      const rowIndex = rows.findIndex((row, index) => index > 0 && String(row[liveIndex] ?? '').trim().toLowerCase() === request.approved_site.trim().toLowerCase() && String(row[anchorIndex] ?? '').trim().toLowerCase() === request.anchor.trim().toLowerCase());
+      if (rowIndex < 1) throw new Error(`Could not find a matching row for “${request.approved_site}” and anchor “${request.anchor}”.`);
+      await withGoogleRetry(() => sheets.spreadsheets.values.update({ spreadsheetId, range: `${quoteTab(tab)}!${columnLetter(statusIndex + 1)}${rowIndex + 1}`, valueInputOption: 'RAW', requestBody: { values: [[request.status]] } }));
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: rowIndex + 1, status: 'success', detail: 'Project-owned sheet status updated.' });
+      return { state: 'synced', text: `✅ Status updated in project sheet “${tab}”, row ${rowIndex + 1}.`, tab, row: rowIndex + 1 };
+    }
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) {
       await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });

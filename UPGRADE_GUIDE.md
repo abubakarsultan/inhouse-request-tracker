@@ -79,3 +79,9 @@ These items must be finished and verified before using this as the live replacem
 1. Vercel → Deployments mein last known-good deployment select karo → **Instant Rollback**.
 2. GitHub Desktop mein known-good commit identify karo. Normal revert commit use karo; force-push mat karna.
 3. Agar migration se issue aaye to pehle app rollback karo. SQL rollback manually chalane se pehle database backup aur foreign-key/data impact review karna zaroori hai; migration-created categories/columns ko blindly drop mat karna because project data may now depend on them.
+
+
+### Own-sheet request sync fix (in progress)
+- Request creation now routes to a project's configured `google_sheet_id` + `sheet_tab_name` when present, rather than treating it as a missing team-sheet tab.
+- Appends by matching the configured `Live Link`, `Anchor`, `Target Page`, and `Status` header names; status changes target the matching own-sheet row and its `Status` column.
+- Build/test verification is still required before deployment; full-row edits and archive/restore/reconciliation paths need a complete end-to-end pass.
