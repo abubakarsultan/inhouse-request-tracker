@@ -1,9 +1,11 @@
+import { redirect } from 'next/navigation';
 import RequestEditForm from '@/components/app/request-edit-form';
 import { getAutocompleteOptions, getRequestForEdit } from '@/services/requests';
 import { requireActiveProfile } from '@/lib/auth';
 
 export default async function EditRequestPage({ params }: { params: Promise<{ id: string }> }) {
   const profile = await requireActiveProfile();
+  if (profile.role === 'viewer') redirect('/requests');
   const { id } = await params;
   const [request, autocomplete] = await Promise.all([getRequestForEdit(id), getAutocompleteOptions()]);
   return (
