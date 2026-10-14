@@ -29,10 +29,6 @@ export const projectSchema = z.object({
   google_sheet_id: z.string().trim().optional().nullable(),
   sheet_column_config: z.record(z.string(), z.string()).optional(),
   sheet_share_emails: z.array(z.string().email()).optional(),
-<<<<<<< HEAD
-  sheet_source: z.enum(['guest_post_anchor', 'own_sheet', 'none']).optional(),
-=======
->>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
   sheet_connection_mode: z.enum(['existing', 'create', 'none']).optional(),
   sheet_url: z.string().trim().optional().nullable(),
   include_dr_traffic: z.boolean().optional(),

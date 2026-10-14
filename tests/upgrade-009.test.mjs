@@ -32,12 +32,7 @@ test('client sheet Apps Script resolves columns by header name and includes inst
   assert.match(webhook, /headers\.indexOf\('Status'\)/);
   assert.match(webhook, /headers\.indexOf\('Live Link'\)/);
   assert.match(webhook, /spreadsheetId: SpreadsheetApp\.getActiveSpreadsheet\(\)\.getId\(\)/);
-<<<<<<< HEAD
-  assert.match(projectPage, /ProjectSheetSettingsDialog/);
-  assert.match(projectPage, /Sheet & Sync/);
-=======
   assert.match(projectPage, /ClientSheetScript/);
->>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
   assert.match(dialog, /max-h-\[calc\(100dvh-2rem\)\]/);
   assert.match(dialog, /overflow-y-auto/);
 });

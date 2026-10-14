@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-import { Suspense } from 'react';
-import { getProjectOverview } from '@/services/projects';
-import ProjectsBrowser from '@/components/app/projects-browser';
-=======
 import Link from 'next/link';
 import { getProjectsWithCounts, getProjectCategories } from '@/services/projects';
 import ProjectFormDialog from '@/components/app/project-form-dialog';
@@ -18,33 +13,8 @@ export default async function Projects({ searchParams }: { searchParams: Promise
   const serviceAccountEmail = getServiceAccountEmail();
   const [allProjects, categories, allCategories] = await Promise.all([getProjectsWithCounts(q), getProjectCategories(true), getProjectCategories(false)]);
   const projects = category ? allProjects.filter((project: any) => String(project.category_id) === category) : allProjects;
->>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
 
-function ProjectsLoading() {
   return (
-<<<<<<< HEAD
-    <div className="space-y-6 animate-pulse">
-      <div className="h-20 rounded-2xl bg-[var(--card)]" />
-      <div className="h-20 rounded-2xl bg-[var(--card)]" />
-      <div className="grid gap-4 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-56 rounded-2xl bg-[var(--card)]" />)}</div>
-    </div>
-  );
-}
-
-async function ProjectsData() {
-  const overview = await getProjectOverview();
-  return <ProjectsBrowser projects={overview.projects as any} categories={overview.categories as any} />;
-}
-
-export default async function ProjectsPage() {
-  return (
-    <div className="min-w-0">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[var(--text)]">Projects</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">Manage projects by category and control where their request data is mirrored.</p>
-      </div>
-      <Suspense fallback={<ProjectsLoading />}><ProjectsData /></Suspense>
-=======
     <div>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -94,7 +64,6 @@ export default async function ProjectsPage() {
       </div>
 
       {projects.length === 0 && <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-8 text-center text-[var(--muted)]">No projects found.</div>}
->>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
     </div>
   );
 }

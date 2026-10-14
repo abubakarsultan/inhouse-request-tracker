@@ -1,76 +1,16 @@
 import Link from 'next/link';
-import { Suspense } from 'react';
-import { getRequestsPage } from '@/services/requests';
+import { getRequests } from '@/services/requests';
 import { getProjects } from '@/services/projects';
 import StatusControl from '@/components/app/status-control';
 import StatusBadge from '@/components/status-badge';
 import RequestActions from '@/components/app/request-actions';
-import { Plus, Search } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { redirect } from 'next/navigation';
 import DeadlineCell from '@/components/deadline-cell';
 import { karachiDateString } from '@/lib/date';
 import { getIncompleteFields } from '@/lib/validators';
 import { requireActiveProfile } from '@/lib/auth';
-import Pagination from '@/components/app/pagination';
 
-<<<<<<< HEAD
-function RequestsLoading() {
-  return <div className="space-y-3 animate-pulse"><div className="h-16 rounded-2xl bg-[var(--card)]" /><div className="h-12 rounded-xl bg-[var(--card)]" /><div className="h-[420px] rounded-2xl bg-[var(--card)]" /></div>;
-}
-
-async function RequestsData({ status, project, incomplete, q, page }: { status?: string; project?: string; incomplete?: string; q?: string; page: number }) {
-  const profile = await requireActiveProfile();
-  if (profile.role === 'member') redirect('/my-requests');
-  const today = karachiDateString();
-  const [requestPage, projects] = await Promise.all([
-    getRequestsPage({ status, project_id: project, incomplete: incomplete === '1', q, page, pageSize: 50 }),
-    getProjects(),
-  ]);
-  const query = new URLSearchParams();
-  if (q) query.set('q', q);
-  if (status) query.set('status', status);
-  if (project) query.set('project', project);
-  if (incomplete === '1') query.set('incomplete', '1');
-  const buildHref = (nextPage: number) => `/requests?${new URLSearchParams([...query.entries(), ['page', String(nextPage)]])}`;
-
-  return (
-    <div className="space-y-5">
-      <form className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3 shadow-sm">
-        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_220px_180px_auto_auto]">
-          <label className="relative block"><Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" /><input name="q" defaultValue={q ?? ''} placeholder="Search website, anchor, project, assignee..." className="h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] pl-9 pr-3 text-sm outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]" /></label>
-          <select name="project" defaultValue={project ?? ''} className="h-10 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm"><option value="">All projects</option>{projects.map((item: any) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-          <select name="status" defaultValue={status ?? ''} className="h-10 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm"><option value="">All statuses</option>{['Request shared', 'Live', 'Rejected'].map((item) => <option key={item} value={item}>{item}</option>)}</select>
-          <label className="flex h-10 items-center gap-2 rounded-lg border border-[var(--border)] px-3 text-xs"><input type="checkbox" name="incomplete" value="1" defaultChecked={incomplete === '1'} /> Incomplete</label>
-          <button className="h-10 rounded-lg bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:bg-[var(--brand-dark)]">Filter</button>
-        </div>
-      </form>
-
-      <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] px-4 py-3"><p className="text-sm font-semibold text-[var(--text)]">{requestPage.total.toLocaleString()} request{requestPage.total === 1 ? '' : 's'}</p><p className="text-xs text-[var(--muted)]">Showing {requestPage.rows.length} on this page</p></div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1080px] text-sm">
-            <thead className="bg-[var(--canvas)] text-left text-xs font-medium uppercase tracking-wide text-[var(--muted)]"><tr><th className="p-3">Project</th><th className="p-3">Approved Site</th><th className="p-3">Anchor</th><th className="p-3">Assign To</th><th className="p-3">Created By</th><th className="p-3">Deadline</th><th className="p-3">Status</th><th className="p-3">Sync</th><th className="p-3">Actions</th></tr></thead>
-            <tbody>
-              {requestPage.rows.map((row: any) => {
-                const missing = getIncompleteFields(row);
-                return <tr key={row.id} className="border-t border-[var(--border)]/70 align-top">
-                  <td className="p-3 font-medium text-[var(--text)]">{row.projects ? <Link href={`/projects/${row.projects.slug}`} className="hover:text-[var(--brand)]">{row.projects.name}</Link> : '—'}{row.source !== 'app' && <span className="ml-2 rounded-full bg-[#e8f0fe] px-1.5 py-0.5 text-[10px] font-semibold text-[#174ea6]">Imported</span>}</td>
-                  <td className="max-w-52 p-3 text-[var(--muted)]"><div className="truncate" title={row.approved_site}>{row.approved_site}</div>{row.sheet_flag === 'Removed' && <span title="This request was marked Removed in the sheet; the tool status is unchanged." className="mt-1 inline-flex rounded-full bg-[#fce8e6] px-2 py-0.5 text-[10px] font-bold text-[#c5221f]">Removed in sheet</span>}{missing.length > 0 && <span title={`Missing: ${missing.join(', ')}`} className="mt-1 ml-1 inline-flex rounded-full bg-[#fef7e0] px-2 py-0.5 text-[10px] font-bold text-[#8a4b00]">Incomplete · {missing.length}</span>}</td>
-                  <td className="max-w-52 truncate p-3 text-[var(--muted)]" title={row.anchor}>{row.anchor || '—'}</td>
-                  <td className="p-3 text-[var(--muted)]">{row.assign_to || 'Unassigned'}</td>
-                  <td className="max-w-48 truncate p-3 text-xs text-[var(--muted)]" title={row.created_by_email || row.created_by_name || ''}>{row.created_by_email || row.created_by_name || '—'}</td>
-                  <td className="p-3"><DeadlineCell deadline={row.deadline} status={row.status} today={today} /></td>
-                  <td className="p-3">{profile.role === 'viewer' ? <StatusBadge status={row.status} /> : <StatusControl id={row.id} status={row.status} syncState={row.sync_state} />}</td>
-                  <td className="p-3">{row.sync_state === 'failed' ? <div><StatusBadge status={row.status} failedSync /><p className="mt-1 max-w-48 text-xs text-[#c5221f]">{row.sync_error || 'Sheet sync failed'}</p></div> : <span className="text-xs text-[var(--muted)]">{row.sync_state === 'synced' ? `${row.team_tab || 'Sheet'} · row ${row.team_row ?? '—'}` : 'Saved here only'}</span>}</td>
-                  <td className="p-3">{profile.role !== 'viewer' && <RequestActions id={row.id} />}</td>
-                </tr>;
-              })}
-              {requestPage.rows.length === 0 && <tr><td colSpan={9} className="p-10 text-center text-[var(--muted)]">No requests match these filters.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-        <Pagination page={requestPage.page} totalPages={requestPage.totalPages} buildHref={buildHref} />
-=======
 export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string; incomplete?: string }> }) {
   const profile = await requireActiveProfile();
   if (profile.role === 'member') redirect('/my-requests');
@@ -114,22 +54,7 @@ export default async function Requests({ searchParams }: { searchParams: Promise
             {rows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-[var(--muted)]">No requests match these filters.</td></tr>}
           </tbody>
         </table>
->>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
       </div>
-    </div>
-  );
-}
-
-export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string; incomplete?: string; q?: string; page?: string }> }) {
-  const params = await searchParams;
-  const page = Math.max(1, Number(params.page ?? 1) || 1);
-  return (
-    <div className="min-w-0">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div><h1 className="text-2xl font-bold text-[var(--text)]">All Requests</h1><p className="mt-1 text-sm text-[var(--muted)]">Company-wide requests and imported Guest Post Anchor history.</p></div>
-        <Link href="/requests/new" className="flex items-center gap-1.5 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--brand-dark)]"><Plus size={16} /> New Request</Link>
-      </div>
-      <Suspense fallback={<RequestsLoading />}><RequestsData status={params.status} project={params.project} incomplete={params.incomplete} q={params.q} page={page} /></Suspense>
     </div>
   );
 }
