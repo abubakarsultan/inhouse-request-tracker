@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Check, Shield, ShieldOff, UserRoundCheck, UserRoundX, RotateCcw, AlertTriangle, UsersRound } from 'lucide-react';
+import { Check, UserRoundCheck, UserRoundX, RotateCcw, AlertTriangle, UsersRound } from 'lucide-react';
 import {
   approveTeamUser,
   reassignHistoricalName,
@@ -63,7 +63,7 @@ export default function TeamAdminPanel({ data }: { data: TeamAdminData }) {
                 <div><p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Requested</p><p className="text-xs text-[var(--muted)]">{formatDate(user.requestedAt)}</p></div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button disabled={pending || !user.sheetName} onClick={() => run(() => approveTeamUser(user.id))} className="inline-flex items-center gap-2 rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><Check size={15} />Approve & link data</button>
+                <button disabled={pending || (!user.sheetName && user.role !== 'viewer')} onClick={() => run(() => approveTeamUser(user.id))} className="inline-flex items-center gap-2 rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><Check size={15} />Approve & link data</button>
                 <button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'disabled'))} className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold text-[#c5221f] disabled:opacity-50"><UserRoundX size={15} />Reject</button>
               </div>
             </div>
@@ -87,9 +87,9 @@ export default function TeamAdminPanel({ data }: { data: TeamAdminData }) {
                 <td className="p-3 text-xs text-[var(--muted)]">{formatDate(user.lastLoginAt)}</td>
                 <td className="p-3"><div className="flex max-w-72 flex-wrap gap-1.5">
                   <Link href={`/team/${user.id}`} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs">View as user</Link>
-                  {user.status === 'pending' && <><button disabled={pending || !user.sheetName} onClick={() => run(() => approveTeamUser(user.id))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><UserRoundCheck size={13} className="inline" /> Approve</button><button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'disabled'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[#c5221f]"><UserRoundX size={13} className="inline" /> Reject</button></>}
+                  {user.status === 'pending' && <><button disabled={pending || (!user.sheetName && user.role !== 'viewer')} onClick={() => run(() => approveTeamUser(user.id))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><UserRoundCheck size={13} className="inline" /> Approve</button><button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'disabled'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[#c5221f]"><UserRoundX size={13} className="inline" /> Reject</button></>}
                   {user.status === 'active' ? <button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'disabled'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><UserRoundX size={13} className="inline" /> Disable</button> : user.status === 'disabled' && <button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'active'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><UserRoundCheck size={13} className="inline" /> Enable</button>}
-                  {user.role === 'admin' ? <button disabled={pending} onClick={() => run(() => setTeamUserRole(user.id, 'member'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><ShieldOff size={13} className="inline" /> Member</button> : <button disabled={pending} onClick={() => run(() => setTeamUserRole(user.id, 'admin'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><Shield size={13} className="inline" /> Admin</button>}
+                  <select aria-label={`Change role for ${user.email}`} disabled={pending} value={user.role} onChange={(event) => { const nextRole = event.target.value as 'admin' | 'member' | 'viewer'; if (nextRole !== user.role && confirm(`Change ${user.email} role from ${user.role} to ${nextRole}?`)) run(() => setTeamUserRole(user.id, nextRole)); }} className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs"><option value="admin">Admin</option><option value="member">Member</option><option value="viewer">Viewer</option></select>
                   <button disabled={pending} onClick={() => run(() => resetTeamUserMapping(user.id))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><RotateCcw size={13} className="inline" /> Reset name</button>
                 </div></td>
               </tr>)}
@@ -125,6 +125,7 @@ export default function TeamAdminPanel({ data }: { data: TeamAdminData }) {
       </div>
 
       {validUnclaimed.length > 0 && <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)]"><div className="border-b border-[var(--border)] p-4"><h2 className="font-semibold">Approved names not yet claimed</h2><p className="text-xs text-[var(--muted)]">These rows already use a valid person name; they will link automatically when that person registers and is approved.</p></div><div className="flex flex-wrap gap-2 p-4">{validUnclaimed.map((row) => <span key={row.name} className="rounded-full bg-[var(--canvas)] px-3 py-1.5 text-xs"><strong>{row.name}</strong> · {row.rows} request(s)</span>)}</div></section>}
+      <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)]"><div className="border-b border-[var(--border)] p-4"><h2 className="font-semibold">Access change history</h2><p className="text-xs text-[var(--muted)]">Latest role and account status changes.</p></div><div className="divide-y divide-[var(--border)]">{data.auditHistory.map(item => <div key={item.id} className="grid gap-1 p-3 text-sm sm:grid-cols-[1fr_1fr_auto]"><span><strong>{item.changedUser}</strong> · {item.action}</span><span className="text-xs text-[var(--muted)]">By {item.changedBy}</span><time className="text-xs text-[var(--muted)]">{formatDate(item.createdAt)}</time></div>)}{data.auditHistory.length === 0 && <p className="p-4 text-sm text-[var(--muted)]">No access changes recorded yet.</p>}</div></section>
     </div>
   );
 }

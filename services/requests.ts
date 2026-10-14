@@ -1,11 +1,12 @@
 'use server';
 
 import { createClient } from '@/lib/supabase-server';
+import { adminClient } from '@/lib/supabase-admin';
 import { requestSchema, isRequestStatus, looksLikeHttpUrl, type RequestInput } from '@/lib/validators';
 import { karachiDateString, karachiDateOffsetString, karachiMonthBounds } from '@/lib/date';
 import { appendRequestToTeamSheet, syncRequestStatusToTeamSheet, syncRequestFullRowToTeamSheet, clearRequestFromTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { revalidatePath } from 'next/cache';
-import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
+import { requireMutableUserForAction, requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
 import { setRequestStatusCore, type SetStatusResult } from '@/services/request-status-core';
 
 export type ProjectDomainUsage = { requestId: string | null; projectSiteId: string | null; approvedSite: string; anchor: string; status: string; assignTo: string | null; createdAt: string; source: string };
@@ -60,13 +61,16 @@ async function assertProjectDomainAvailable(projectId: string, approvedSite: str
 }
 
 export async function getRequests(filters?: { status?: string; project_id?: string }) {
-  await requireAdminForAction();
-  const supabase = await createClient();
+  const profile = await requireActiveUserForAction();
+  const supabase = profile.role === 'viewer' ? adminClient : await createClient();
   let query = supabase
     .from('requests')
-    .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name)')
+    .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
+  if (profile.role === 'member') {
+    query = query.or(`assigned_user_id.eq.${profile.id},assign_to.ilike.${profile.sheet_name ?? ''}`);
+  }
   if (filters?.status) query = query.eq('status', filters.status);
   if (filters?.project_id) query = query.eq('project_id', filters.project_id);
   const { data, error } = await query;
@@ -74,23 +78,58 @@ export async function getRequests(filters?: { status?: string; project_id?: stri
   return data;
 }
 
+
+export type RequestsPageFilters = {
+  q?: string;
+  status?: string;
+  project_id?: string;
+  incomplete?: boolean;
+  page?: number;
+  pageSize?: number;
+};
+
+export type RequestsPage = {
+  rows: any[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export async function getRequestsPage(filters: RequestsPageFilters): Promise<RequestsPage> {
+  const profile = await requireActiveUserForAction();
+  if (profile.role === 'member') throw new Error('Members should use My Requests.');
+  const pageSize = Math.max(1, Math.min(Number(filters.pageSize ?? 50) || 50, 100));
+  const requestedPage = Math.max(1, Number(filters.page ?? 1) || 1);
+  const offset = (requestedPage - 1) * pageSize;
+  const projectId = filters.project_id && /^[0-9a-f-]{36}$/i.test(filters.project_id) ? filters.project_id : null;
+  const status = ['Request shared', 'Live', 'Rejected'].includes(String(filters.status ?? '')) ? String(filters.status) : null;
+  const { data, error } = await adminClient.rpc('get_all_requests_page', {
+    p_query: String(filters.q ?? '').trim() || null,
+    p_project_id: projectId,
+    p_status: status,
+    p_incomplete: Boolean(filters.incomplete),
+    p_limit: pageSize,
+    p_offset: offset,
+  });
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []).map((row: any) => ({
+    ...row,
+    projects: row.project_name ? { name: String(row.project_name), slug: String(row.project_slug ?? '') } : null,
+  }));
+  const total = Number((data?.[0] as any)?.total_count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  return { rows, total, page: Math.min(requestedPage, totalPages), pageSize, totalPages };
+}
+
 export async function getAutocompleteOptions() {
   await requireActiveUserForAction();
-  const supabase = await createClient();
-  const [{ data: rows, error }, { data: teamNames, error: teamNamesError }] = await Promise.all([
-    supabase.from('requests').select('shared_with').is('deleted_at', null).limit(5000),
-    supabase.from('team_names').select('name').eq('active', true).order('name'),
-  ]);
-  if (error) throw error;
-  if (teamNamesError) throw teamNamesError;
-  const shared = new Map<string, string>();
-  for (const row of rows ?? []) {
-    const value = String(row.shared_with ?? '').trim();
-    if (value && !shared.has(value.toLowerCase())) shared.set(value.toLowerCase(), value);
-  }
+  const { data, error } = await adminClient.rpc('get_request_autocomplete_options');
+  if (error) throw new Error(error.message);
+  const payload = (data ?? {}) as any;
   return {
-    assignTo: (teamNames ?? []).map((row: any) => String(row.name)).filter(Boolean),
-    sharedWith: [...shared.values()].sort((a, b) => a.localeCompare(b)),
+    assignTo: Array.isArray(payload.assignTo) ? payload.assignTo.map((value: unknown) => String(value)).filter(Boolean) : [],
+    sharedWith: Array.isArray(payload.sharedWith) ? payload.sharedWith.map((value: unknown) => String(value)).filter(Boolean) : [],
   };
 }
 
@@ -108,7 +147,7 @@ async function resolveAssignee(profile: Awaited<ReturnType<typeof requireActiveU
 }
 
 export async function createRequest(input: RequestInput): Promise<CreateRequestResult> {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const parsed = requestSchema.parse(input);
   const supabase = await createClient();
 
@@ -116,7 +155,7 @@ export async function createRequest(input: RequestInput): Promise<CreateRequestR
 
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id,name,slug,outreach_project_name,guest_post_tab_name,sync_enabled,active')
+    .select('id,name,slug,outreach_project_name,guest_post_tab_name,sync_enabled,active,google_sheet_id,sheet_tab_name,sheet_column_config')
     .eq('id', parsed.project_id)
     .single();
   if (projectError || !project) throw new Error(projectError?.message ?? 'Project not found');
@@ -193,6 +232,7 @@ export async function createRequest(input: RequestInput): Promise<CreateRequestR
     project_id: request.project_id,
     approved_site: request.approved_site,
     placement_page: request.placement_page,
+    target_url: request.target_url,
     anchor: request.anchor,
     assign_to: request.assign_to,
     status: request.status,
@@ -233,11 +273,11 @@ function makeCreateSummary(projectName: string, request: any, targetUrl: string)
 }
 
 export async function retryRequestSync(requestId: string) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -252,6 +292,7 @@ export async function retryRequestSync(requestId: string) {
   const currentRecord: RequestSheetRecord = {
     id: String(request.id), project_id: String(request.project_id), approved_site: String(request.approved_site),
     placement_page: request.placement_page ? String(request.placement_page) : null,
+    target_url: request.target_url ? String(request.target_url) : null,
     anchor: String(request.anchor ?? ''), assign_to: request.assign_to ? String(request.assign_to) : null,
     status: String(request.status), team_tab: request.team_tab ? String(request.team_tab) : null,
     team_row: request.team_row == null ? null : Number(request.team_row),
@@ -302,7 +343,7 @@ export async function retryRequestSync(requestId: string) {
 }
 
 export async function setRequestStatus(requestId: string, newStatus: string): Promise<SetStatusResult> {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   if (profile.role !== 'admin') {
     const { data: request, error } = await supabase
@@ -329,11 +370,11 @@ function requestOwnedByProfile(profile: Awaited<ReturnType<typeof requireActiveU
 }
 
 export async function getRequestForEdit(requestId: string) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -343,12 +384,12 @@ export async function getRequestForEdit(requestId: string) {
 }
 
 export async function updateRequest(requestId: string, input: RequestInput) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const parsed = requestSchema.parse(input);
   const supabase = await createClient();
   const { data: current, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -437,11 +478,11 @@ export async function updateRequest(requestId: string, input: RequestInput) {
 }
 
 export async function archiveRequest(requestId: string) {
-  const profile = await requireActiveUserForAction();
+  const profile = await requireMutableUserForAction();
   const supabase = await createClient();
   const { data: current, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_tab_name,sheet_column_config)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -695,6 +736,20 @@ export async function getMyRequests(name: string = ''): Promise<MyRequestsResult
     upcoming,
     requests: rows,
   };
+}
+
+export async function getViewerDashboardOverview() {
+  const profile = await requireActiveUserForAction();
+  if (profile.role !== 'viewer') throw new Error('Viewer dashboard is only for viewer accounts.');
+  const base = () => adminClient.from('requests').select('id', { count: 'exact', head: true }).is('deleted_at', null);
+  const [{ count: total }, { count: live }, { count: pending }, { count: rejected }, { count: removed }, { data: rows, error }] = await Promise.all([
+    base(), base().eq('status', 'Live'), base().eq('status', 'Request shared'), base().eq('status', 'Rejected'), base().eq('sheet_flag', 'Removed'),
+    adminClient.from('requests').select('approved_site,placement_page,target_url,anchor,assign_to,deadline').is('deleted_at', null).limit(5000),
+  ]);
+  if (error) throw new Error(error.message);
+  const { getIncompleteFields } = await import('@/lib/validators');
+  const incomplete = (rows ?? []).filter((row: any) => getIncompleteFields(row).length > 0).length;
+  return { total: total ?? 0, live: live ?? 0, pending: pending ?? 0, rejected: rejected ?? 0, removed: removed ?? 0, incomplete };
 }
 
 export async function getDashboardStats() {
