@@ -1410,6 +1410,7 @@ create trigger trg_project_categories_updated before update on public.project_ca
 -- select count(*) as projects_without_category from public.projects where category_id is null;
 -- select column_name from information_schema.columns where table_schema='public' and table_name='requests' and column_name in ('sheet_flag','sheet_flag_at');
 -- select unnest(enum_range(null::public.user_role)) as role;
+<<<<<<< HEAD
 
 
 -- INHOUSE REQUEST 008: scalable normalized request search.
@@ -2008,3 +2009,5 @@ grant execute on function public.scan_project_sites_by_host(text) to service_rol
 -- select name, slug, sort_order from public.project_categories order by sort_order;
 -- select name, category_id, sheet_source from public.projects order by name;
 -- select public.get_project_request_counts();
+=======
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad

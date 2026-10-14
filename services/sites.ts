@@ -10,6 +10,7 @@ import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
 import { appendRequestToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { requireAdminForAction, requireActiveUserForAction } from '@/lib/auth';
 
+<<<<<<< HEAD
 export type ProjectSitesPage = {
   rows: any[];
   total: number;
@@ -40,6 +41,15 @@ export async function getProjectSites(projectId: string, filters: { q?: string; 
   const total = Number((data?.[0] as any)?.total_count ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   return { rows, total, page: Math.min(requestedPage, totalPages), pageSize, totalPages };
+=======
+export async function getProjectSites(projectId: string) {
+  const profile = await requireActiveUserForAction();
+  if (profile.role === 'member') throw new Error('Project-wide site lists are available to admins and read-only viewers.');
+  const supabase = adminClient;
+  const { data, error } = await supabase.from('project_sites').select('*, requests(sheet_flag,placement_page,target_url,assign_to,deadline)').eq('project_id', projectId).is('archived_at', null).order('created_at', { ascending: false });
+  if (error) throw error;
+  return data;
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
 }
 
 export type ImportResult = { rowsImported: number; rowsSynced: number; rowsSkippedSync: number; rowsFailedSync: number; errors: string[] };

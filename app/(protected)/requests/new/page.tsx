@@ -4,6 +4,7 @@ import { getActiveProjects } from '@/services/projects';
 import { getAutocompleteOptions } from '@/services/requests';
 import { requireActiveProfile } from '@/lib/auth';
 import { redirect } from 'next/navigation';
+<<<<<<< HEAD
 
 function FormLoading() {
   return <div className="space-y-4 animate-pulse"><div className="h-24 rounded-2xl bg-[var(--card)]" /><div className="h-[520px] rounded-2xl bg-[var(--card)]" /></div>;
@@ -17,6 +18,13 @@ async function RequestFormData() {
 }
 
 export default async function NewRequest() {
+=======
+
+export default async function NewRequest() {
+  const profile = await requireActiveProfile();
+  if (profile.role === 'viewer') redirect('/requests');
+  const [projects, autocomplete] = await Promise.all([getActiveProjects(), getAutocompleteOptions()]);
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
   return (
     <div>
       <h1 className="mb-2 text-2xl font-bold text-[var(--text)]">Create Request</h1>

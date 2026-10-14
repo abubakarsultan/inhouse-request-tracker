@@ -55,6 +55,7 @@
 - `components/app/client-sheet-script.tsx` — added copyable script and simple installation steps on project pages.
 - `app/(protected)/projects/[slug]/page.tsx` — shows the client sheet setup panel to admins for projects with a configured separate sheet.
 - `tests/upgrade-009.test.mjs` — added structural checks for the client script and scrollable dialog.
+<<<<<<< HEAD
 
 ## Project management and performance refresh
 
@@ -68,3 +69,5 @@
 - Moved Settings diagnostics into a background API request and streamed Health, Projects, Requests, and Create Request data behind loading states so navigation gives immediate visual feedback.
 - Optimized Team & Approvals counts with a database aggregation RPC and optimized autocomplete loading with a database-side distinct query.
 - Added explicit project Sheet source metadata and search-document/trigram support migrations.
+=======
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad

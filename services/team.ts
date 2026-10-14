@@ -72,12 +72,19 @@ function todayKarachi() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'A
 
 export async function getTeamAdminData(): Promise<TeamAdminData> {
   await requireAdminForAction();
+<<<<<<< HEAD
   const today = todayKarachi();
   const [{ data: users, error: usersError }, { data: names, error: namesError }, { data: audits, error: auditsError }, { data: summary, error: summaryError }] = await Promise.all([
     adminClient.from('users').select('id,email,google_name,avatar_url,sheet_name,role,account_status,onboarding_completed,approved_at,last_login_at,created_at').order('created_at'),
     adminClient.from('team_names').select('id,name,badge_bg,badge_text,active').order('name'),
     adminClient.from('user_role_audit').select('id,changed_user_id,changed_by_user_id,action,old_value,new_value,created_at').order('created_at', { ascending: false }).limit(20),
     adminClient.rpc('get_team_admin_request_summary', { p_today: today }),
+=======
+  const [{ data: users, error: usersError }, { data: names, error: namesError }, { data: audits, error: auditsError }] = await Promise.all([
+    adminClient.from('users').select('id,email,google_name,avatar_url,sheet_name,role,account_status,onboarding_completed,approved_at,last_login_at,created_at').order('created_at'),
+    adminClient.from('team_names').select('id,name,badge_bg,badge_text,active').order('name'),
+    adminClient.from('user_role_audit').select('id,changed_user_id,changed_by_user_id,action,old_value,new_value,created_at').order('created_at', { ascending: false }).limit(20),
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
   ]);
   if (usersError) throw new Error(usersError.message);
   if (namesError) throw new Error(namesError.message);
@@ -109,12 +116,21 @@ export async function getTeamAdminData(): Promise<TeamAdminData> {
   const teamNames: TeamNameOption[] = (names ?? []).map((name: any) => ({ id: String(name.id), name: String(name.name), badge_bg: String(name.badge_bg), badge_text: String(name.badge_text), active: Boolean(name.active), claimedBy: claimByName.get(String(name.name).toLowerCase()) ?? null }));
   const activeRoster = new Set(teamNames.filter((n) => n.active).map((n) => n.name.trim().toLowerCase()));
   const claimedKeys = new Set(normalizedUsers.filter((u) => u.sheetName).map((u) => u.sheetName!.trim().toLowerCase()));
+<<<<<<< HEAD
   const unmatched = historicalRows
     .filter((value) => value.name)
     .map((value) => ({ ...value, invalid: !activeRoster.has(value.name.trim().toLowerCase()) || !claimedKeys.has(value.name.trim().toLowerCase()) }))
     .filter((value) => value.invalid)
     .sort((a, b) => Number(b.invalid) - Number(a.invalid) || b.rows - a.rows || a.name.localeCompare(b.name));
 
+=======
+  const historical = new Map<string, { name: string; rows: number }>();
+  for (const row of requestRows) {
+    const name = String(row.assign_to ?? '').trim(); if (!name) continue;
+    const key = name.toLowerCase(); const item = historical.get(key) ?? { name, rows: 0 }; item.rows += 1; historical.set(key, item);
+  }
+  const unmatched = [...historical.entries()].filter(([key]) => !claimedKeys.has(key) || !activeRoster.has(key)).map(([key, value]) => ({ ...value, invalid: !activeRoster.has(key) })).sort((a, b) => Number(b.invalid) - Number(a.invalid) || b.rows - a.rows || a.name.localeCompare(b.name));
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
   const emailById = new Map(normalizedUsers.map(user => [user.id, user.email]));
   const auditHistory = (audits ?? []).map((audit: any) => ({ id: String(audit.id), action: String(audit.action), changedUser: emailById.get(String(audit.changed_user_id)) ?? String(audit.changed_user_id), changedBy: emailById.get(String(audit.changed_by_user_id)) ?? 'System', createdAt: String(audit.created_at), oldValue: audit.old_value, newValue: audit.new_value }));
   return { users: normalizedUsers, names: teamNames, unmatched, auditHistory };

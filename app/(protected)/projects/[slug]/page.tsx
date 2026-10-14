@@ -5,6 +5,7 @@ import { getProjectBySlug, getProjectCounts, getProjectCategories } from '@/serv
 import { getProjectSites } from '@/services/sites';
 import StatusBadge from '@/components/status-badge';
 import StatusControl from '@/components/app/status-control';
+<<<<<<< HEAD
 import ProjectSheetSettingsDialog from '@/components/app/project-sheet-settings-dialog';
 import ProjectFormDialog from '@/components/app/project-form-dialog';
 import ProjectToggleActive from '@/components/app/project-toggle-active';
@@ -46,6 +47,30 @@ async function ProjectData({ slug, q, status, page }: { slug: string; q?: string
   if (q) query.set('q', q);
   if (status) query.set('status', status);
   const buildHref = (nextPage: number) => `/projects/${project.slug}?${new URLSearchParams([...query.entries(), ['page', String(nextPage)]])}`;
+=======
+import Link from 'next/link';
+import { UploadCloud } from 'lucide-react';
+import { requireActiveProfile } from '@/lib/auth';
+import { headers } from 'next/headers';
+import { buildOwnSheetTriggerSnippet } from '@/lib/sheet-webhook';
+import ClientSheetScript from '@/components/app/client-sheet-script';
+
+export default async function ProjectPage({ params }: { params: Promise<{ slug: string }> }) {
+  const profile = await requireActiveProfile();
+  if (profile.role === 'member') { const { redirect } = await import('next/navigation'); redirect('/dashboard'); }
+  const { slug } = await params;
+  const project = await getProjectBySlug(slug);
+  const sites = await getProjectSites(project.id);
+  const requestHeaders = await headers();
+  const host = requestHeaders.get('x-forwarded-host') || requestHeaders.get('host') || 'YOUR-VERCEL-DOMAIN';
+  const proto = requestHeaders.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
+  const ownSheetScript = profile.role === 'admin' && project.google_sheet_id && project.sheet_tab_name && process.env.SHEET_WEBHOOK_SECRET
+    ? buildOwnSheetTriggerSnippet(`${proto}://${host}`, process.env.SHEET_WEBHOOK_SECRET) : null;
+  const ownSheetUrl = project.google_sheet_id ? `https://docs.google.com/spreadsheets/d/${project.google_sheet_id}/edit` : null;
+  const liveCount = sites.filter((site: any) => site.status === 'Live').length;
+  const pendingCount = sites.filter((site: any) => site.status === 'Request shared').length;
+  const rejectedCount = sites.filter((site: any) => site.status === 'Rejected').length;
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
 
   return (
     <div className="space-y-5">
@@ -62,6 +87,7 @@ async function ProjectData({ slug, q, status, page }: { slug: string; q?: string
             {profile.role === 'admin' && <Link href={`/import?project=${project.id}`} className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm font-medium text-[var(--text)] hover:bg-[var(--canvas)]"><UploadCloud size={14} /> Import</Link>}
           </div>
         </div>
+<<<<<<< HEAD
         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
           <span className="rounded-full bg-[var(--brand-soft)] px-2.5 py-1 font-semibold text-[var(--brand-dark)]">{source === 'guest_post_anchor' ? 'Guest Post Anchor' : source === 'own_sheet' ? 'Own Google Sheet' : 'Tool only'}</span>
           {source !== 'none' && <span className="rounded-full bg-[var(--canvas)] px-2.5 py-1 text-[var(--muted)]">Tab: {source === 'guest_post_anchor' ? project.guest_post_tab_name || project.sheet_tab_name || 'Not set' : project.sheet_tab_name || 'Not set'}</span>}
@@ -107,6 +133,49 @@ async function ProjectData({ slug, q, status, page }: { slug: string; q?: string
           </table>
         </div>
         <Pagination page={sitePage.page} totalPages={sitePage.totalPages} buildHref={buildHref} />
+=======
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.sync_enabled ? 'Sync on' : 'Sync off'}</span>
+          {profile.role === 'admin' && <Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">
+            <UploadCloud size={15} /> Import sites
+          </Link>}
+        </div>
+      </div>
+
+      {ownSheetScript && ownSheetUrl && <ClientSheetScript script={ownSheetScript} sheetUrl={ownSheetUrl} tabName={project.sheet_tab_name} />}
+
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-2xl font-bold">{sites.length}</p><p className="text-xs text-[var(--muted)]">Project rows</p></div>
+        <div className="rounded-xl border border-[#c9e7d0] bg-[#e6f4ea] p-4"><p className="text-2xl font-bold text-[#188038]">{liveCount}</p><p className="text-xs text-[#188038]">Live</p></div>
+        <div className="rounded-xl border border-[#f3dfad] bg-[#fef7e0] p-4"><p className="text-2xl font-bold text-[#b06000]">{pendingCount}</p><p className="text-xs text-[#b06000]">Request shared</p></div>
+        <div className="rounded-xl border border-[#f5b5b1] bg-[#fce8e6] p-4"><p className="text-2xl font-bold text-[#c5221f]">{rejectedCount}</p><p className="text-xs text-[#c5221f]">Rejected</p></div>
+      </div>
+
+      <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+        <table className="w-full min-w-[900px] text-sm">
+          <thead className="bg-[var(--canvas)] text-left text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
+            <tr>
+              <th className="p-4">Website</th><th className="p-4">Opportunity</th><th className="p-4">Anchor</th><th className="p-4">DR</th><th className="p-4">Traffic</th><th className="p-4">Status</th><th className="p-4">Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sites.map((site: any) => (
+              <tr key={site.id} className="border-t border-[var(--border)]/70">
+                <td className="p-4 font-medium text-[var(--text)]"><div>{site.website}</div>{(Array.isArray(site.requests) ? site.requests[0]?.sheet_flag : site.requests?.sheet_flag) === 'Removed' && <span className="mt-1 inline-flex rounded-full bg-[#fce8e6] px-2 py-0.5 text-[10px] font-bold text-[#c5221f]">Removed in sheet</span>}</td>
+                <td className="p-4 text-[var(--muted)]">{site.opportunity || '—'}</td>
+                <td className="p-4 text-[var(--muted)]">{site.anchor || '—'}</td>
+                <td className="p-4 text-[var(--muted)]">{site.dr ?? '—'}</td>
+                <td className="p-4 text-[var(--muted)]">{site.traffic ?? '—'}</td>
+                <td className="p-4">
+                  {profile.role !== 'viewer' && site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} /><p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p></div>}
+                </td>
+                <td className="max-w-xs truncate p-4 text-[var(--muted)]" title={site.note}>{site.note || '—'}</td>
+              </tr>
+            ))}
+            {sites.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-[var(--muted)]">No sites yet.</td></tr>}
+          </tbody>
+        </table>
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
       </div>
     </div>
   );

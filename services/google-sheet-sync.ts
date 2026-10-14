@@ -15,7 +15,10 @@ type SyncableProject = {
   google_sheet_id?: string | null;
   sheet_tab_name?: string | null;
   sheet_column_config?: Record<string, string> | null;
+<<<<<<< HEAD
   sheet_source?: 'guest_post_anchor' | 'own_sheet' | 'none' | null;
+=======
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
 };
 
 export type RequestSheetRecord = {
@@ -340,6 +343,7 @@ async function releaseAppendLock(lockKey: string, ownerToken: string) {
 
 function syncPreflight(project: SyncableProject, tabOverride?: string | null): { state: 'ok'; tab: string; spreadsheetId: string; mode: 'own' | 'team' } | SheetSyncResult {
   if (!project.sync_enabled) return { state: 'skipped', text: '⚪ Sheet sync is disabled for this project (saved here only).' };
+<<<<<<< HEAD
 
   const configuredSource = String(project.sheet_source ?? '').trim();
   const ownSheetId = String(project.google_sheet_id ?? '').trim();
@@ -357,6 +361,12 @@ function syncPreflight(project: SyncableProject, tabOverride?: string | null): {
 
   const isOwnSheet = source === 'own_sheet';
   const tab = tabOverride?.trim() || (isOwnSheet ? ownTab : (project.guest_post_tab_name?.trim() || project.sheet_tab_name?.trim()));
+=======
+  const ownSheetId = String(project.google_sheet_id ?? '').trim();
+  const ownTab = String(project.sheet_tab_name ?? '').trim();
+  const isOwnSheet = Boolean(ownSheetId && ownTab);
+  const tab = tabOverride?.trim() || (isOwnSheet ? ownTab : project.guest_post_tab_name?.trim());
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
   if (!tab) return { state: 'skipped', text: '⚪ This project has no configured Google Sheet tab (saved here only).' };
   const spreadsheetId = isOwnSheet ? ownSheetId : getTeamSheetId();
   if (!spreadsheetId) {
@@ -401,6 +411,7 @@ async function appendRequestToOwnSheet(sheets: sheets_v4.Sheets, spreadsheetId: 
 
 function columnLetter(column: number) { let n = column; let out = ''; while (n > 0) { const r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = Math.floor((n - 1) / 26); } return out; }
 
+<<<<<<< HEAD
 async function findOwnSheetRow(
   sheets: sheets_v4.Sheets,
   spreadsheetId: string,
@@ -448,6 +459,26 @@ export async function ensureTeamSheetTab(tabName: string): Promise<{ tab: string
     await ensureCreatedByEmailHeader(sheets, spreadsheetId, tabName);
     return { tab: tabName, created: false };
   }
+=======
+
+export async function ensureTeamSheetTab(tabName: string): Promise<{ tab: string; created: boolean }> {
+  const invalid = validateSheetTabName(tabName);
+  if (invalid) throw new Error(invalid);
+  const spreadsheetId = getTeamSheetId();
+  if (!spreadsheetId) throw new Error('TEAM_SHEET_ID is not configured.');
+  const sheets = getSheetsClient();
+  const titles = await getTabTitles(sheets, spreadsheetId);
+  const expected = ['Website', 'Opportunity', 'Anchor', 'DR', 'Traffic', 'Status', 'Note', 'Created By Email'];
+  if (titles.has(tabName)) {
+    const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tabName)}!A1:H1` }));
+    const headers = (response.data.values?.[0] ?? []).map((value) => String(value ?? '').trim());
+    if (expected.slice(0, 7).some((header, index) => headers[index] !== header)) {
+      throw new Error(`A tab named “${tabName}” already exists but its headers do not match the Inhouse template. Choose another tab name or fix the existing headers first.`);
+    }
+    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tabName);
+    return { tab: tabName, created: false };
+  }
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
   const created = await withGoogleRetry(() => sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: { requests: [{ addSheet: { properties: { title: tabName, gridProperties: { frozenRowCount: 1 } } } }] },
@@ -1000,6 +1031,216 @@ export async function verifyRequestTeamRow(request: {
   }
 }
 
+<<<<<<< HEAD
+=======
+export async function applyStatusFromSheet(payload: {
+  tab: string;
+  row: number;
+  website: string;
+  anchor: string;
+  status: 'Request shared' | 'Live' | 'Rejected' | 'Removed';
+  spreadsheetId?: string;
+  liveLink?: string;
+}) {
+  // The main team sheet remains backward-compatible. For project-owned sheets,
+  // resolve the project by spreadsheet ID + tab before matching the request.
+  let data: any; let error: any;
+  if (payload.spreadsheetId) {
+    const { data: project, error: projectError } = await adminClient.from('projects').select('id,google_sheet_id,sheet_tab_name,guest_post_tab_name').eq('google_sheet_id', payload.spreadsheetId).or(`sheet_tab_name.eq.${payload.tab},guest_post_tab_name.eq.${payload.tab}`).maybeSingle();
+    if (projectError) { data = null; error = projectError; }
+    else if (project) {
+      const siteKey = String(payload.liveLink ?? payload.website ?? '').trim();
+      const { data: requestRows, error: requestError } = await adminClient.from('requests').select('id,project_id,approved_site,placement_page,anchor,status,team_tab,team_row').eq('project_id', project.id).eq('anchor', payload.anchor).is('deleted_at', null).limit(100);
+      if (requestError) { data = null; error = requestError; }
+      else {
+        const found = (requestRows ?? []).find((row: any) => String(row.placement_page ?? row.approved_site ?? '').trim() === siteKey || String(row.approved_site ?? '').trim() === siteKey);
+        data = found ? [{ request_id: found.id, match_type: 'project_sheet_identity' }] : [];
+        error = null;
+      }
+    } else { data = []; error = null; }
+  } else {
+    const rpcResult = await adminClient.rpc('find_request_from_sheet', { p_tab: payload.tab, p_website: payload.website, p_anchor: payload.anchor, p_row: payload.row });
+    data = rpcResult.data; error = rpcResult.error;
+  }
+  if (error) {
+    await logSync({ direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'error', detail: `Request lookup failed: ${error.message}` });
+    throw new Error(`Request lookup failed: ${error.message}`);
+  }
+
+  const match = Array.isArray(data) ? data[0] : null;
+  if (!match?.request_id) {
+    const reason = 'No request matched this tab + website + anchor, or the stored row fallback.';
+    await logSync({ direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'error', detail: reason });
+    return { ok: false, notFound: true, error: reason };
+  }
+
+  const requestId = String(match.request_id);
+  const { data: site } = await adminClient.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
+  if (payload.status === 'Removed') {
+    const { error: flagError } = await adminClient.from('requests').update({ sheet_flag: 'Removed', sheet_flag_at: new Date().toISOString(), team_tab: payload.tab, team_row: payload.row, sync_state: 'synced', sync_error: null }).eq('id', requestId);
+    if (flagError) throw new Error(`Could not save Removed flag: ${flagError.message}`);
+    await logSync({ requestId, projectSiteId: site?.id ?? null, direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'success', detail: 'Sheet-only Removed flag set; tool request status was preserved.' });
+    return { ok: true, requestId, flag: 'Removed', statusPreserved: true };
+  }
+  await adminClient.from('requests').update({ sheet_flag: null, sheet_flag_at: null }).eq('id', requestId);
+  const { setRequestStatusCore } = await import('@/services/request-status-core');
+  const result = await setRequestStatusCore(requestId, payload.status, 'team sheet', {
+    pushToSheet: false,
+    sheetRow: payload.row,
+  });
+
+  await adminClient.from('requests').update({
+    team_tab: payload.tab,
+    team_row: payload.row,
+    sync_state: 'synced',
+    sync_error: null,
+  }).eq('id', requestId);
+  const warning = result.ok ? null : [result.database.reason, result.projectSite.reason, result.teamSheet.reason].filter(Boolean).join(' | ');
+  await logSync({
+    requestId,
+    projectSiteId: site?.id ?? null,
+    direction: 'from_sheet',
+    sheetName: payload.tab,
+    sheetRow: payload.row,
+    status: result.ok ? 'success' : 'error',
+    detail: result.ok
+      ? `Webhook applied via ${String(match.match_type ?? 'unknown')} match`
+      : `Webhook status was applied with warnings: ${warning || 'linked step failed'}`,
+  });
+  return result.ok
+    ? { ok: true, requestId, matchType: String(match.match_type ?? ''), result }
+    : { ok: false, notFound: false, error: warning || 'Status changed with linked-step warnings.', requestId, result };
+}
+
+export type RefreshSheetStatusReport = {
+  checked: number;
+  updated: number;
+  repairedRows: number;
+  unchanged: number;
+  invalidStatuses: number;
+  failed: number;
+  errors: string[];
+  refreshedAt: string;
+};
+
+export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatusReport> {
+  await requireAdminForAction();
+  const report: RefreshSheetStatusReport = {
+    checked: 0,
+    updated: 0,
+    repairedRows: 0,
+    unchanged: 0,
+    invalidStatuses: 0,
+    failed: 0,
+    errors: [],
+    refreshedAt: new Date().toISOString(),
+  };
+
+  const requests: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await adminClient
+      .from('requests')
+      .select('id,approved_site,anchor,status,team_tab,team_row,project_sites(id)')
+      .is('deleted_at', null)
+      .not('team_tab', 'is', null)
+      .not('team_row', 'is', null)
+      .range(from, from + 999);
+    if (error) throw new Error(`Could not load requests for refresh: ${error.message}`);
+    requests.push(...(data ?? []));
+    if ((data ?? []).length < 1000) break;
+  }
+
+  const spreadsheetId = getTeamSheetId();
+  if (!spreadsheetId || !process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    throw new Error(!spreadsheetId ? 'TEAM_SHEET_ID is not configured.' : 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.');
+  }
+  const sheets = getSheetsClient();
+  const titles = await getTabTitles(sheets, spreadsheetId);
+  const rowsByTab = new Map<string, unknown[][]>();
+
+  for (const request of requests) {
+    report.checked += 1;
+    const tab = String(request.team_tab ?? '').trim();
+    const projectSiteId = Array.isArray(request.project_sites) ? request.project_sites[0]?.id ?? null : request.project_sites?.id ?? null;
+    try {
+      if (!titles.has(tab)) throw new Error(`Tab "${tab}" does not exist.`);
+      let rows = rowsByTab.get(tab);
+      if (!rows) {
+        const response = await withGoogleRetry(() =>
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:F` })
+        ) as { data: { values?: unknown[][] } };
+        rows = (response.data.values ?? []) as unknown[][];
+        rowsByTab.set(tab, rows);
+      }
+
+      const storedIndex = Number(request.team_row) - 2;
+      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor) ? storedIndex : -1;
+      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor));
+      if (index < 0) throw new Error(`No matching row for ${request.approved_site} + ${request.anchor}.`);
+      const verifiedRow = index + 2;
+      const sheetStatus = String(rows[index]?.[5] ?? '').trim();
+      const repaired = verifiedRow !== Number(request.team_row);
+      if (repaired) report.repairedRows += 1;
+
+      if (sheetStatus !== 'Request shared' && sheetStatus !== 'Live' && sheetStatus !== 'Rejected') {
+        report.invalidStatuses += 1;
+        report.errors.push(`${tab} row ${verifiedRow}: invalid status "${sheetStatus || '(blank)'}".`);
+        await adminClient.from('requests').update({ team_row: verifiedRow, sync_state: 'failed', sync_error: `Invalid team-sheet status: ${sheetStatus || '(blank)'}` }).eq('id', request.id);
+        if (projectSiteId) await adminClient.from('project_sites').update({ team_row: verifiedRow }).eq('id', projectSiteId);
+        await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'error', detail: `Invalid status: ${sheetStatus || '(blank)'}` });
+        continue;
+      }
+
+      const { setRequestStatusCore } = await import('@/services/request-status-core');
+      const statusResult = await setRequestStatusCore(request.id, sheetStatus, 'team sheet refresh', { pushToSheet: false, sheetRow: verifiedRow });
+      await adminClient.from('requests').update({ team_tab: tab, team_row: verifiedRow, sync_state: 'synced', sync_error: null }).eq('id', request.id);
+      if (request.status === sheetStatus) report.unchanged += 1;
+      else report.updated += 1;
+      if (!statusResult.ok) {
+        report.failed += 1;
+        const warning = [statusResult.database.reason, statusResult.projectSite.reason, statusResult.teamSheet.reason].filter(Boolean).join(' | ') || 'linked status step failed';
+        report.errors.push(`${tab} row ${verifiedRow}: ${warning}`);
+        await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'error', detail: `Refresh applied status with warnings: ${warning}` });
+      } else {
+        await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'success', detail: repaired ? 'Refresh reconciled status and repaired row' : 'Refresh reconciled status' });
+      }
+    } catch (error) {
+      report.failed += 1;
+      const reason = error instanceof Error ? error.message : String(error);
+      report.errors.push(`${tab || '(no tab)'}: ${reason}`);
+      await adminClient.from('requests').update({ sync_state: 'failed', sync_error: reason }).eq('id', request.id);
+      await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab || null, sheetRow: request.team_row, status: 'error', detail: reason });
+    }
+  }
+
+  await logSync({
+    direction: 'from_sheet',
+    sheetName: '__refresh__',
+    status: report.failed > 0 || report.invalidStatuses > 0 ? 'error' : 'success',
+    detail: JSON.stringify(report),
+  });
+  revalidatePath('/dashboard');
+  revalidatePath('/requests');
+  revalidatePath('/projects');
+  revalidatePath('/my-requests');
+  revalidatePath('/health');
+  return report;
+}
+
+export async function checkTeamSheetConnection() {
+  const spreadsheetId = getTeamSheetId();
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { ok: false, detail: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
+  if (!spreadsheetId) return { ok: false, detail: 'TEAM_SHEET_ID is not configured.' };
+  try {
+    const sheets = getSheetsClient();
+    const titles = await getTabTitles(sheets, spreadsheetId);
+    return { ok: true, detail: `Team sheet reachable (${titles.size} tab${titles.size === 1 ? '' : 's'} visible).` };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+>>>>>>> f3e97b6ad9f1ab3a675d8c331663e2fb637687ad
 export type TeamSheetProjectRow = {
   teamRow: number;
   website: string;
