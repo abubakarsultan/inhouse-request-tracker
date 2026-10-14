@@ -72,25 +72,23 @@ function todayKarachi() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'A
 
 export async function getTeamAdminData(): Promise<TeamAdminData> {
   await requireAdminForAction();
-  const [{ data: users, error: usersError }, { data: names, error: namesError }, { data: audits, error: auditsError }] = await Promise.all([
+  const today = todayKarachi();
+  const [{ data: users, error: usersError }, { data: names, error: namesError }, { data: audits, error: auditsError }, { data: summary, error: summaryError }] = await Promise.all([
     adminClient.from('users').select('id,email,google_name,avatar_url,sheet_name,role,account_status,onboarding_completed,approved_at,last_login_at,created_at').order('created_at'),
     adminClient.from('team_names').select('id,name,badge_bg,badge_text,active').order('name'),
     adminClient.from('user_role_audit').select('id,changed_user_id,changed_by_user_id,action,old_value,new_value,created_at').order('created_at', { ascending: false }).limit(20),
+    adminClient.rpc('get_team_admin_request_summary', { p_today: today }),
   ]);
   if (usersError) throw new Error(usersError.message);
   if (namesError) throw new Error(namesError.message);
+  if (summaryError) throw new Error(summaryError.message);
 
-  const requestRows: any[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await adminClient.from('requests').select('assigned_user_id,assign_to,status,deadline').is('deleted_at', null).range(from, from + 999);
-    if (error) throw new Error(error.message);
-    requestRows.push(...(data ?? []));
-    if ((data ?? []).length < 1000) break;
-  }
-  const today = todayKarachi();
+  const payload = (summary ?? {}) as any;
+  const countByUser = new Map<string, any>((Array.isArray(payload.counts) ? payload.counts : []).map((row: any) => [String(row.user_id), row]));
+  const historicalRows = Array.isArray(payload.historical) ? payload.historical.map((row: any) => ({ name: String(row.name ?? ''), rows: Number(row.rows ?? 0) })) : [];
+
   const normalizedUsers: TeamAdminUser[] = (users ?? []).map((user: any) => {
-    const sheetKey = String(user.sheet_name ?? '').trim().toLowerCase();
-    const assigned = requestRows.filter((row) => String(row.assigned_user_id ?? '') === String(user.id) || (sheetKey && String(row.assign_to ?? '').trim().toLowerCase() === sheetKey));
+    const counts = countByUser.get(String(user.id)) ?? {};
     return {
       id: String(user.id), email: String(user.email), googleName: user.google_name ? String(user.google_name) : null, avatarUrl: user.avatar_url ? String(user.avatar_url) : null,
       sheetName: user.sheet_name ? String(user.sheet_name) : null, role: user.role === 'admin' ? 'admin' : user.role === 'viewer' ? 'viewer' : 'member',
@@ -98,11 +96,11 @@ export async function getTeamAdminData(): Promise<TeamAdminData> {
       onboardingCompleted: Boolean(user.onboarding_completed), approvedAt: user.approved_at ? String(user.approved_at) : null,
       lastLoginAt: user.last_login_at ? String(user.last_login_at) : null, requestedAt: user.created_at ? String(user.created_at) : null,
       counts: {
-        assigned: assigned.length,
-        live: assigned.filter((row) => row.status === 'Live').length,
-        pending: assigned.filter((row) => row.status === 'Request shared').length,
-        rejected: assigned.filter((row) => row.status === 'Rejected').length,
-        overdue: assigned.filter((row) => row.status === 'Request shared' && row.deadline && String(row.deadline).slice(0, 10) < today).length,
+        assigned: Number(counts.assigned ?? 0),
+        live: Number(counts.live ?? 0),
+        pending: Number(counts.pending ?? 0),
+        rejected: Number(counts.rejected ?? 0),
+        overdue: Number(counts.overdue ?? 0),
       },
     };
   });
@@ -111,12 +109,12 @@ export async function getTeamAdminData(): Promise<TeamAdminData> {
   const teamNames: TeamNameOption[] = (names ?? []).map((name: any) => ({ id: String(name.id), name: String(name.name), badge_bg: String(name.badge_bg), badge_text: String(name.badge_text), active: Boolean(name.active), claimedBy: claimByName.get(String(name.name).toLowerCase()) ?? null }));
   const activeRoster = new Set(teamNames.filter((n) => n.active).map((n) => n.name.trim().toLowerCase()));
   const claimedKeys = new Set(normalizedUsers.filter((u) => u.sheetName).map((u) => u.sheetName!.trim().toLowerCase()));
-  const historical = new Map<string, { name: string; rows: number }>();
-  for (const row of requestRows) {
-    const name = String(row.assign_to ?? '').trim(); if (!name) continue;
-    const key = name.toLowerCase(); const item = historical.get(key) ?? { name, rows: 0 }; item.rows += 1; historical.set(key, item);
-  }
-  const unmatched = [...historical.entries()].filter(([key]) => !claimedKeys.has(key) || !activeRoster.has(key)).map(([key, value]) => ({ ...value, invalid: !activeRoster.has(key) })).sort((a, b) => Number(b.invalid) - Number(a.invalid) || b.rows - a.rows || a.name.localeCompare(b.name));
+  const unmatched = historicalRows
+    .filter((value) => value.name)
+    .map((value) => ({ ...value, invalid: !activeRoster.has(value.name.trim().toLowerCase()) || !claimedKeys.has(value.name.trim().toLowerCase()) }))
+    .filter((value) => value.invalid)
+    .sort((a, b) => Number(b.invalid) - Number(a.invalid) || b.rows - a.rows || a.name.localeCompare(b.name));
+
   const emailById = new Map(normalizedUsers.map(user => [user.id, user.email]));
   const auditHistory = (audits ?? []).map((audit: any) => ({ id: String(audit.id), action: String(audit.action), changedUser: emailById.get(String(audit.changed_user_id)) ?? String(audit.changed_user_id), changedBy: emailById.get(String(audit.changed_by_user_id)) ?? 'System', createdAt: String(audit.created_at), oldValue: audit.old_value, newValue: audit.new_value }));
   return { users: normalizedUsers, names: teamNames, unmatched, auditHistory };

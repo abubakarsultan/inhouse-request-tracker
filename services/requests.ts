@@ -78,23 +78,58 @@ export async function getRequests(filters?: { status?: string; project_id?: stri
   return data;
 }
 
+
+export type RequestsPageFilters = {
+  q?: string;
+  status?: string;
+  project_id?: string;
+  incomplete?: boolean;
+  page?: number;
+  pageSize?: number;
+};
+
+export type RequestsPage = {
+  rows: any[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export async function getRequestsPage(filters: RequestsPageFilters): Promise<RequestsPage> {
+  const profile = await requireActiveUserForAction();
+  if (profile.role === 'member') throw new Error('Members should use My Requests.');
+  const pageSize = Math.max(1, Math.min(Number(filters.pageSize ?? 50) || 50, 100));
+  const requestedPage = Math.max(1, Number(filters.page ?? 1) || 1);
+  const offset = (requestedPage - 1) * pageSize;
+  const projectId = filters.project_id && /^[0-9a-f-]{36}$/i.test(filters.project_id) ? filters.project_id : null;
+  const status = ['Request shared', 'Live', 'Rejected'].includes(String(filters.status ?? '')) ? String(filters.status) : null;
+  const { data, error } = await adminClient.rpc('get_all_requests_page', {
+    p_query: String(filters.q ?? '').trim() || null,
+    p_project_id: projectId,
+    p_status: status,
+    p_incomplete: Boolean(filters.incomplete),
+    p_limit: pageSize,
+    p_offset: offset,
+  });
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []).map((row: any) => ({
+    ...row,
+    projects: row.project_name ? { name: String(row.project_name), slug: String(row.project_slug ?? '') } : null,
+  }));
+  const total = Number((data?.[0] as any)?.total_count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  return { rows, total, page: Math.min(requestedPage, totalPages), pageSize, totalPages };
+}
+
 export async function getAutocompleteOptions() {
   await requireActiveUserForAction();
-  const supabase = await createClient();
-  const [{ data: rows, error }, { data: teamNames, error: teamNamesError }] = await Promise.all([
-    supabase.from('requests').select('shared_with').is('deleted_at', null).limit(5000),
-    supabase.from('team_names').select('name').eq('active', true).order('name'),
-  ]);
-  if (error) throw error;
-  if (teamNamesError) throw teamNamesError;
-  const shared = new Map<string, string>();
-  for (const row of rows ?? []) {
-    const value = String(row.shared_with ?? '').trim();
-    if (value && !shared.has(value.toLowerCase())) shared.set(value.toLowerCase(), value);
-  }
+  const { data, error } = await adminClient.rpc('get_request_autocomplete_options');
+  if (error) throw new Error(error.message);
+  const payload = (data ?? {}) as any;
   return {
-    assignTo: (teamNames ?? []).map((row: any) => String(row.name)).filter(Boolean),
-    sharedWith: [...shared.values()].sort((a, b) => a.localeCompare(b)),
+    assignTo: Array.isArray(payload.assignTo) ? payload.assignTo.map((value: unknown) => String(value)).filter(Boolean) : [],
+    sharedWith: Array.isArray(payload.sharedWith) ? payload.sharedWith.map((value: unknown) => String(value)).filter(Boolean) : [],
   };
 }
 

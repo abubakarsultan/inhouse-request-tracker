@@ -10,13 +10,36 @@ import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
 import { appendRequestToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { requireAdminForAction, requireActiveUserForAction } from '@/lib/auth';
 
-export async function getProjectSites(projectId: string) {
+export type ProjectSitesPage = {
+  rows: any[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export async function getProjectSites(projectId: string, filters: { q?: string; status?: string; page?: number; pageSize?: number } = {}): Promise<ProjectSitesPage> {
   const profile = await requireActiveUserForAction();
   if (profile.role === 'member') throw new Error('Project-wide site lists are available to admins and read-only viewers.');
-  const supabase = adminClient;
-  const { data, error } = await supabase.from('project_sites').select('*, requests(sheet_flag,placement_page,target_url,assign_to,deadline)').eq('project_id', projectId).is('archived_at', null).order('created_at', { ascending: false });
-  if (error) throw error;
-  return data;
+  const pageSize = Math.max(1, Math.min(Number(filters.pageSize ?? 50) || 50, 100));
+  const requestedPage = Math.max(1, Number(filters.page ?? 1) || 1);
+  const offset = (requestedPage - 1) * pageSize;
+  const status = ['Request shared', 'Live', 'Rejected'].includes(String(filters.status ?? '')) ? String(filters.status) : null;
+  const { data, error } = await adminClient.rpc('get_project_sites_page', {
+    p_project_id: projectId,
+    p_query: String(filters.q ?? '').trim() || null,
+    p_status: status,
+    p_limit: pageSize,
+    p_offset: offset,
+  });
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []).map((row: any) => ({
+    ...row,
+    requests: row.request_id ? [{ sheet_flag: row.sheet_flag, placement_page: row.opportunity, target_url: row.target_url, assign_to: row.assign_to, deadline: row.deadline }] : null,
+  }));
+  const total = Number((data?.[0] as any)?.total_count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  return { rows, total, page: Math.min(requestedPage, totalPages), pageSize, totalPages };
 }
 
 export type ImportResult = { rowsImported: number; rowsSynced: number; rowsSkippedSync: number; rowsFailedSync: number; errors: string[] };
