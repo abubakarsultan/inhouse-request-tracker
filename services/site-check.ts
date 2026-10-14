@@ -1,7 +1,6 @@
 'use server';
 
 import { createClient } from '@/lib/supabase-server';
-import { adminClient } from '@/lib/supabase-admin';
 import { extractHost } from '@/lib/domain';
 import { requireActiveUserForAction } from '@/lib/auth';
 
@@ -38,6 +37,7 @@ export type SiteCheckResult =
       notUsedCount: number;
     };
 
+
 export type ProjectSiteUsageResult =
   | { ok: false; reason: string }
   | { ok: true; projectId: string; host: string; used: boolean; matches: Array<{ status: string; anchor: string; assignTo: string | null; source: string }> };
@@ -69,29 +69,66 @@ export async function scanSiteAcrossProjects(rawInput: string): Promise<SiteChec
   if (!host) return { ok: false, reason: 'Enter a valid website or domain.' };
 
   const supabase = await createClient();
-  const [{ data: projects, error: projectsError }, { data: matches, error: matchesError }] = await Promise.all([
-    adminClient.from('projects').select('id,name,slug,sheet_source,guest_post_tab_name,google_sheet_id,sheet_tab_name').order('name'),
-    adminClient.rpc('scan_project_sites_by_host', { p_host: host }),
-  ]);
+  const { data: projects, error: projectsError } = await supabase
+    .from('projects')
+    .select('id,name,slug,guest_post_tab_name')
+    .order('name');
   if (projectsError) throw new Error(`Could not load projects: ${projectsError.message}`);
-  if (matchesError) throw new Error(`Could not scan project sites: ${matchesError.message}`);
 
-  const used: SiteCheckMatch[] = (matches ?? []).map((row: any) => ({
-    projectId: String(row.project_id),
-    project: String(row.project_name),
-    projectSlug: String(row.project_slug),
-    trackerOnly: String(row.sheet_source ?? '') === 'none',
-    status: canonicalStatus(String(row.status ?? '')),
-    anchor: String(row.anchor ?? ''),
-  }));
-  const usedProjectIds = new Set(used.map((row) => row.projectId));
+  const sites: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data: page, error: sitesError } = await supabase
+      .from('project_sites')
+      .select('id,project_id,request_id,website,anchor,status')
+      .is('archived_at', null)
+      .range(from, from + 999);
+    if (sitesError) throw new Error(`Could not scan project sites: ${sitesError.message}`);
+    sites.push(...(page ?? []));
+    if ((page ?? []).length < 1000) break;
+  }
+
+  const matchingSites = sites.filter((site: any) => extractHost(site.website) === host);
+  const requestIds = [...new Set(matchingSites.map((site: any) => site.request_id).filter(Boolean))];
+  const requestStatus = new Map<string, string>();
+
+  if (requestIds.length) {
+    for (let index = 0; index < requestIds.length; index += 200) {
+      const batch = requestIds.slice(index, index + 200);
+      const { data: requests, error: requestError } = await supabase
+        .from('requests')
+        .select('id,status')
+        .in('id', batch);
+      if (requestError) throw new Error(`Could not load linked request statuses: ${requestError.message}`);
+      for (const request of requests ?? []) requestStatus.set(String(request.id), String(request.status));
+    }
+  }
+
+  const used: SiteCheckMatch[] = [];
+  const usedProjectIds = new Set<string>();
+  const projectMap = new Map<string, any>((projects ?? []).map((project: any) => [String(project.id), project]));
+
+  for (const site of matchingSites as any[]) {
+    const project = projectMap.get(String(site.project_id));
+    if (!project) continue;
+    usedProjectIds.add(String(project.id));
+    used.push({
+      projectId: String(project.id),
+      project: String(project.name),
+      projectSlug: String(project.slug),
+      trackerOnly: !String(project.guest_post_tab_name ?? '').trim(),
+      status: site.request_id ? canonicalStatus(requestStatus.get(String(site.request_id)) ?? String(site.status ?? '')) : canonicalStatus(String(site.status ?? '')),
+      anchor: String(site.anchor ?? ''),
+    });
+  }
+
+  used.sort((a, b) => a.project.localeCompare(b.project) || a.anchor.localeCompare(b.anchor));
   const notUsed: SiteCheckProject[] = (projects ?? [])
     .filter((project: any) => !usedProjectIds.has(String(project.id)))
     .map((project: any) => ({
       projectId: String(project.id),
       project: String(project.name),
       projectSlug: String(project.slug),
-      trackerOnly: String(project.sheet_source ?? '') === 'none',
+      trackerOnly: !String(project.guest_post_tab_name ?? '').trim(),
     }));
 
   return {

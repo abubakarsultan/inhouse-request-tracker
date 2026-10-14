@@ -1,18 +1,18 @@
 'use server';
 
 import { adminClient } from '@/lib/supabase-admin';
-import { readProjectSheetRows, verifyRequestTeamRow, type TeamSheetReadResult } from '@/services/google-sheet-sync';
+import { readTeamSheetProjectRows, verifyRequestTeamRow, type TeamSheetReadResult } from '@/services/google-sheet-sync';
 import { revalidatePath } from 'next/cache';
 import { normalizeForDuplicate } from '@/lib/validators';
 import { extractHost } from '@/lib/domain';
-import { requireAdminForAction, requireActiveUserForAction } from '@/lib/auth';
+import { requireAdminForAction } from '@/lib/auth';
 
 export type HealthProblem = {
   requestId: string;
   project: string;
   projectSlug: string | null;
   website: string;
-  problemType: 'missing_project_site' | 'project_site_mismatch' | 'duplicate_project_domain' | 'team_row_mismatch' | 'team_row_missing' | 'sheet_check_failed' | 'stale_sync_failure';
+  problemType: 'missing_project_site' | 'project_site_mismatch' | 'duplicate_project_domain' | 'team_row_mismatch' | 'team_row_missing' | 'sheet_check_failed';
   details: string;
   checkedAt: string;
   canRelink: boolean;
@@ -25,13 +25,13 @@ export type HealthCheckResult = {
 };
 
 export async function runHealthCheck(): Promise<HealthCheckResult> {
-  await requireActiveUserForAction();
+  await requireAdminForAction();
   const checkedAt = new Date().toISOString();
   const requests: any[] = [];
   for (let from = 0; ; from += 500) {
     const { data, error } = await adminClient
       .from('requests')
-      .select('id,project_id,approved_site,anchor,team_tab,team_row,sync_state,status_changed_at,updated_at,created_at,projects(name,slug,sheet_source,guest_post_tab_name,google_sheet_id,sheet_tab_name,sheet_column_config,sync_enabled),project_sites(id,project_id,request_id,website,anchor,team_row)')
+      .select('id,project_id,approved_site,anchor,team_tab,team_row,projects(name,slug),project_sites(id,project_id,request_id,website,anchor,team_row)')
       .is('deleted_at', null)
       .range(from, from + 499);
     if (error) throw new Error(error.message);
@@ -40,31 +40,18 @@ export async function runHealthCheck(): Promise<HealthCheckResult> {
   }
 
   const tabCache = new Map<string, TeamSheetReadResult>();
-  async function readTab(project: any, tab: string) {
-    const source = String(project?.sheet_source ?? '').trim();
-    const spreadsheetKey = source === 'own_sheet' ? String(project?.google_sheet_id ?? '') : 'team';
-    const cacheKey = `${spreadsheetKey}:${tab}`;
-    const cached = tabCache.get(cacheKey);
+  async function readTab(tab: string) {
+    const cached = tabCache.get(tab);
     if (cached) return cached;
-    const read = await readProjectSheetRows({
-      id: String(project?.id ?? tab),
-      guest_post_tab_name: project?.guest_post_tab_name ? String(project.guest_post_tab_name) : null,
-      sync_enabled: Boolean(project?.sync_enabled),
-      google_sheet_id: project?.google_sheet_id ? String(project.google_sheet_id) : null,
-      sheet_tab_name: project?.sheet_tab_name ? String(project.sheet_tab_name) : null,
-      sheet_column_config: project?.sheet_column_config ?? null,
-      sheet_source: source === 'own_sheet' || source === 'guest_post_anchor' || source === 'none' ? source : null,
-    });
-    tabCache.set(cacheKey, read);
+    const read = await readTeamSheetProjectRows({ id: tab, name: tab, guest_post_tab_name: tab });
+    tabCache.set(tab, read);
     return read;
   }
 
   const problems: HealthProblem[] = [];
-  const staleThreshold = Date.now() - 24 * 60 * 60 * 1000;
   const domainSeen = new Map<string, string>();
   for (const request of requests) {
     const project = Array.isArray(request.projects) ? request.projects[0] : request.projects;
-    if (project && !project.id) project.id = request.project_id;
     const site = Array.isArray(request.project_sites) ? request.project_sites[0] : request.project_sites;
     const base = {
       requestId: String(request.id),
@@ -73,8 +60,6 @@ export async function runHealthCheck(): Promise<HealthCheckResult> {
       website: String(request.approved_site ?? ''),
       checkedAt,
     };
-
-    if (request.sync_state === 'failed' && new Date(request.updated_at ?? request.created_at).getTime() < staleThreshold) { problems.push({ ...base, problemType: 'stale_sync_failure', details: 'Sync has been failed for more than 24 hours.', canRelink: true }); }
 
     const host = extractHost(String(request.approved_site ?? ''));
     if (host) {
@@ -102,7 +87,7 @@ export async function runHealthCheck(): Promise<HealthCheckResult> {
 
     const tab = String(request.team_tab ?? '').trim();
     if (!tab || request.team_row == null) continue;
-    const read = await readTab({ ...project, id: request.project_id }, tab);
+    const read = await readTab(tab);
     if (read.state !== 'ok') {
       problems.push({ ...base, problemType: 'sheet_check_failed', details: read.reason, canRelink: true });
       continue;
@@ -131,13 +116,12 @@ export async function relinkHealthRequest(requestId: string) {
   await requireAdminForAction();
   const { data: request, error } = await adminClient
     .from('requests')
-    .select('id,project_id,approved_site,anchor,team_tab,team_row,projects(sheet_source,google_sheet_id,sheet_tab_name,sheet_column_config),project_sites(id)')
+    .select('id,approved_site,anchor,team_tab,team_row,project_sites(id)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
   if (error || !request) throw new Error(error?.message ?? 'Request not found');
   const site = Array.isArray(request.project_sites) ? request.project_sites[0] : request.project_sites;
-  const project = Array.isArray(request.projects) ? request.projects[0] : request.projects;
   const verified = await verifyRequestTeamRow({
     id: String(request.id),
     approved_site: String(request.approved_site ?? ''),
@@ -145,10 +129,6 @@ export async function relinkHealthRequest(requestId: string) {
     team_tab: request.team_tab ? String(request.team_tab) : null,
     team_row: request.team_row == null ? null : Number(request.team_row),
     project_site_id: site?.id ? String(site.id) : null,
-    sheet_source: project?.sheet_source === 'own_sheet' || project?.sheet_source === 'guest_post_anchor' ? project.sheet_source : null,
-    google_sheet_id: project?.google_sheet_id ? String(project.google_sheet_id) : null,
-    sheet_tab_name: project?.sheet_tab_name ? String(project.sheet_tab_name) : null,
-    sheet_column_config: project?.sheet_column_config ?? null,
   }, true);
   if (verified.state === 'failed') return { ok: false, text: verified.reason };
 

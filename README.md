@@ -150,13 +150,3 @@ Final V2's source-level test suite checks auth/domain rules, project-domain hard
 7. Test uniqueness: `Project A + example.com` once succeeds, second attempt is blocked; `Project B + example.com` is allowed.
 8. Test Edit, Rejected, Revert, Delete/archive and verify the same team-sheet row changes.
 9. Run Health Check to surface linkage or historical duplicate-domain problems.
-
-## Project categories and Sheet sources
-
-Projects are grouped into four fixed UI categories: **Inhouse**, **Client**, **On Page**, and **Others**. The current Inhouse set contains the 19 outreach projects used by the Guest Post Anchor workflow, including Get Pro Links.
-
-Sheet storage is now configured per project rather than inferred only from the category. An Inhouse project can use the central **Guest Post Anchor** spreadsheet, an **Existing Google Sheet**, a **New Google Sheet**, or **Tool Only**. Sheet and Apps Script configuration is intentionally hidden behind the **Sheet & Sync** control so normal project pages stay clean.
-
-## Navigation performance
-
-Large request/project histories are paginated and heavy diagnostics are streamed or loaded in the background. Project counts use database aggregation rather than loading every request into application memory, and Site Check uses an indexed normalized host lookup.

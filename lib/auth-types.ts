@@ -1,4 +1,4 @@
-export type AppRole = 'admin' | 'member' | 'viewer';
+export type AppRole = 'admin' | 'member';
 export type AccountStatus = 'pending' | 'active' | 'disabled';
 
 export type UserProfile = {

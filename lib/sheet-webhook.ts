@@ -1,4 +1,4 @@
-type RequestStatus = 'Request shared' | 'Live' | 'Rejected' | 'Removed';
+type RequestStatus = 'Request shared' | 'Live' | 'Rejected';
 
 function isRequestStatus(value: string): value is RequestStatus {
   return value === 'Request shared' || value === 'Live' || value === 'Rejected';
@@ -10,8 +10,6 @@ export type SheetWebhookPayload = {
   website: string;
   anchor: string;
   status: RequestStatus;
-  spreadsheetId?: string;
-  liveLink?: string;
 };
 
 export function parseSheetWebhookPayload(input: unknown):
@@ -21,23 +19,20 @@ export function parseSheetWebhookPayload(input: unknown):
   const body = input as Record<string, unknown>;
   const tab = String(body.tab ?? '').trim();
   const row = Number(body.row);
-  const website = String(body.website ?? body.liveLink ?? '').trim();
-  const spreadsheetId = String(body.spreadsheetId ?? '').trim();
+  const website = String(body.website ?? '').trim();
   const anchor = String(body.anchor ?? '').trim();
   const status = String(body.status ?? '').trim();
 
   if (!tab) return { ok: false, error: 'tab is required.' };
   if (!Number.isInteger(row) || row < 2) return { ok: false, error: 'row must be an integer >= 2.' };
+  if (!website) return { ok: false, error: 'website is required.' };
   if (!anchor) return { ok: false, error: 'anchor is required.' };
-  if (!isRequestStatus(status) && status !== 'Removed') return { ok: false, error: 'status must be "Request shared", "Live", "Rejected", or sheet-only "Removed".' };
-  if (status !== 'Removed' && !website) return { ok: false, error: 'website/liveLink is required.' };
+  if (!isRequestStatus(status)) return { ok: false, error: 'status must be "Request shared", "Live", or "Rejected".' };
 
-  return { ok: true, value: { tab, row, website, anchor, status, ...(spreadsheetId ? { spreadsheetId } : {}), ...(body.liveLink ? { liveLink: String(body.liveLink).trim() } : {}) } };
+  return { ok: true, value: { tab, row, website, anchor, status } };
 }
 
-export type ImportedSiteStatus = 'Request shared' | 'Live' | 'Rejected';
-
-export function normalizeImportedSiteStatus(value: unknown): ImportedSiteStatus {
+export function normalizeImportedSiteStatus(value: unknown): RequestStatus {
   const cleaned = String(value ?? '').trim().toLowerCase();
   if (cleaned === 'live') return 'Live';
   if (cleaned === 'rejected' || cleaned === 'reject') return 'Rejected';
@@ -85,14 +80,13 @@ function onSheetEdit(e) {
     const anchor = String(row[2] || '').trim();
     const status = String(row[5] || '').trim();
     if (!website || !anchor) return;
-    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected' && status !== 'Removed') return;
+    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected') return;
 
     const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
       method: 'post',
       contentType: 'application/json',
       headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },
       payload: JSON.stringify({
-        spreadsheetId: SpreadsheetApp.getActive().getId(),
         tab: sheet.getName(),
         row: sheetRow,
         website: website,
@@ -102,59 +96,6 @@ function onSheetEdit(e) {
       muteHttpExceptions: true
     });
 
-    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
-      console.error('INHOUSE REQUEST webhook failed', response.getResponseCode(), response.getContentText());
-    }
-  });
-}`;
-}
-
-
-/** Build the per-spreadsheet trigger used by Client/Onpage sheets. This is rendered only on an admin-only project page. */
-export function buildOwnSheetTriggerSnippet(siteUrl: string, secret: string) {
-  const base = siteUrl.replace(/\/+$/, '');
-  const safeSecret = secret.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-  return `const INHOUSE_REQUEST_WEBHOOK_URL = '${base}/api/sheet-webhook';
-const SHEET_WEBHOOK_SECRET = '${safeSecret}';
-
-function installTrigger() {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  ScriptApp.getProjectTriggers()
-    .filter(trigger => trigger.getHandlerFunction() === 'onClientSheetEdit')
-    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
-  ScriptApp.newTrigger('onClientSheetEdit').forSpreadsheet(spreadsheet).onEdit().create();
-}
-
-function onClientSheetEdit(e) {
-  if (!e || !e.range || e.range.getRow() < 2) return;
-  const sheet = e.range.getSheet();
-  const lastColumn = sheet.getLastColumn();
-  if (lastColumn < 4) return;
-  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(v => String(v || '').trim());
-  const statusColumn = headers.indexOf('Status') + 1;
-  const liveLinkColumn = headers.indexOf('Live Link') + 1;
-  const anchorColumn = headers.indexOf('Anchor') + 1;
-  if (!statusColumn || !liveLinkColumn || !anchorColumn) return;
-  if (e.range.getColumn() !== statusColumn || e.range.getNumColumns() !== 1) return;
-
-  const startRow = e.range.getRow();
-  const rowCount = e.range.getNumRows();
-  const values = sheet.getRange(startRow, 1, rowCount, lastColumn).getDisplayValues();
-  values.forEach((row, index) => {
-    const liveLink = String(row[liveLinkColumn - 1] || '').trim();
-    const anchor = String(row[anchorColumn - 1] || '').trim();
-    const status = String(row[statusColumn - 1] || '').trim();
-    if (!liveLink || !anchor) return;
-    if (!['Request shared', 'Live', 'Rejected', 'Removed'].includes(status)) return;
-    const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
-      method: 'post', contentType: 'application/json',
-      headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },
-      payload: JSON.stringify({
-        spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
-        tab: sheet.getName(), row: startRow + index,
-        liveLink: liveLink, website: liveLink, anchor: anchor, status: status
-      }), muteHttpExceptions: true
-    });
     if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
       console.error('INHOUSE REQUEST webhook failed', response.getResponseCode(), response.getContentText());
     }

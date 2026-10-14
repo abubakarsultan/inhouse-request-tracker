@@ -5,17 +5,6 @@ import { usePathname } from 'next/navigation';
 import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch, HeartPulse, UsersRound, PlusCircle, UserRound, type LucideIcon } from 'lucide-react';
 import type { AppRole } from '@/lib/auth-types';
 
-const viewerLinks = [
-  ['Dashboard', '/dashboard', LayoutDashboard],
-  ['Projects', '/projects', FolderKanban],
-  ['All Requests', '/requests', ListTodo],
-  ['Search', '/search', Search],
-  ['Site Check', '/site-check', ScanSearch],
-  ['Team', '/team', UsersRound],
-  ['Health', '/health', HeartPulse],
-  ['Profile', '/profile', UserRound],
-] as const;
-
 const memberLinks = [
   ['Dashboard', '/dashboard', LayoutDashboard],
   ['My Requests', '/my-requests', ListTodo],
@@ -55,7 +44,7 @@ export default function Sidebar({ role }: { role: AppRole }) {
       <Icon size={17} className="transition-transform duration-150 group-hover:scale-105" />{label}
     </Link>
   ));
-  const mobileLinks = role === 'admin' ? [...adminPrimaryLinks, ...adminControlLinks] : role === 'viewer' ? viewerLinks : memberLinks;
+  const mobileLinks = role === 'admin' ? [...adminPrimaryLinks, ...adminControlLinks] : memberLinks;
 
   return (
     <>
@@ -68,7 +57,7 @@ export default function Sidebar({ role }: { role: AppRole }) {
           <nav className="space-y-1">{renderLinks(adminPrimaryLinks)}</nav>
           <div className="mb-2 mt-6 flex items-center gap-2 px-3"><span className="h-px flex-1 bg-[var(--border)]" /><span className="rounded-full bg-[#e8f0fe] px-2 py-0.5 text-[9px] font-bold tracking-[0.18em] text-[#174ea6]">ADMIN</span><span className="h-px flex-1 bg-[var(--border)]" /></div>
           <nav className="space-y-1">{renderLinks(adminControlLinks)}</nav>
-        </> : role === 'viewer' ? <><p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-[var(--muted)]">Read only</p><nav className="space-y-1">{renderLinks(viewerLinks)}</nav></> : <nav className="space-y-1">{renderLinks(memberLinks)}</nav>}
+        </> : <nav className="space-y-1">{renderLinks(memberLinks)}</nav>}
       </aside>
 
       <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto border-t border-[var(--border)] bg-[var(--card)] px-1 py-1 lg:hidden" aria-label="Mobile navigation">
