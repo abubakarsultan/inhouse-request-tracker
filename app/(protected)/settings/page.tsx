@@ -3,6 +3,7 @@ import { getConnectionDiagnostics } from '@/services/diagnostics';
 import { buildInstallableTriggerSnippet } from '@/lib/sheet-webhook';
 import { requireAdminProfile } from '@/lib/auth';
 import { RANKVIZ_DOMAIN } from '@/lib/auth-rules';
+import GlobalSheetScriptDialog from '@/components/app/global-sheet-script-dialog';
 
 export default async function Settings() {
   const profile = await requireAdminProfile();
@@ -41,14 +42,10 @@ export default async function Settings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)]">
-        <div className="border-b border-[var(--border)] p-4">
-          <h2 className="font-semibold text-[var(--text)]">Team sheet → site trigger</h2>
-          <p className="mt-1 text-xs text-[var(--muted)]">Keep this installable trigger in the Guest Post Anchor sheet. It sends column F status edits back to this site.</p>
-        </div>
-        <div className="p-4">
-          <textarea readOnly value={snippet} className="h-[520px] w-full rounded-xl border border-[var(--border)] bg-[#202124] p-4 font-mono text-xs leading-5 text-white outline-none" aria-label="Installable Apps Script webhook snippet" />
-          <p className="mt-2 text-xs text-[var(--muted)]">Webhook URL: <span className="font-mono">{siteUrl}/api/sheet-webhook</span>. Existing column-F trigger behavior remains unchanged.</p>
+      <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div><h2 className="font-semibold text-[var(--text)]">Google Sheet integration</h2><p className="mt-1 text-xs text-[var(--muted)]">Technical setup stays available without keeping the full Apps Script open on the Settings screen.</p></div>
+          <GlobalSheetScriptDialog snippet={snippet} webhookUrl={`${siteUrl}/api/sheet-webhook`} />
         </div>
       </section>
     </div>

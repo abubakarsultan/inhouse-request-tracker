@@ -4,6 +4,9 @@ import StatusBadge from '@/components/status-badge';
 import StatusControl from '@/components/app/status-control';
 import Link from 'next/link';
 import { UploadCloud } from 'lucide-react';
+import { headers } from 'next/headers';
+import ProjectSheetDetails from '@/components/app/project-sheet-details';
+import { buildProjectTriggerSnippet } from '@/lib/sheet-webhook';
 import { requireAdminProfile } from '@/lib/auth';
 
 export default async function ProjectPage({ params }: { params: Promise<{ slug: string }> }) {
@@ -11,6 +14,11 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
   const { slug } = await params;
   const project = await getProjectBySlug(slug);
   const sites = await getProjectSites(project.id);
+  const requestHeaders = await headers();
+  const host = requestHeaders.get('x-forwarded-host') || requestHeaders.get('host') || 'YOUR-VERCEL-DOMAIN';
+  const proto = requestHeaders.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
+  const siteUrl = `${proto}://${host}`;
+  const appScript = buildProjectTriggerSnippet(siteUrl, project);
   const liveCount = sites.filter((site: any) => site.status === 'Live').length;
   const pendingCount = sites.filter((site: any) => site.status === 'Request shared').length;
   const rejectedCount = sites.filter((site: any) => site.status === 'Rejected').length;
@@ -20,13 +28,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[var(--text)]">{project.name}</h1>
-          <p className="text-sm text-[var(--muted)]">Outreach OS: {project.outreach_project_name || project.name} · Team tab: {project.guest_post_tab_name || '—'}</p>
+          <p className="text-sm text-[var(--muted)]">{project.category || 'Inhouse'} · Outreach OS: {project.outreach_project_name || project.name} · Tab: {project.guest_post_tab_name || '—'}</p>
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.sync_enabled ? 'Sync on' : 'Sync off'}</span>
-          <Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">
-            <UploadCloud size={15} /> Import sites
-          </Link>
+          <ProjectSheetDetails project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={appScript} />
+          <Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]"><UploadCloud size={15} /> Import sites</Link>
         </div>
       </div>
 

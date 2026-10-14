@@ -75,9 +75,13 @@ export async function createProject(input: ProjectInput) {
     name: parsed.name,
     slug,
     outreach_project_name: parsed.outreach_project_name || parsed.name,
+    category: parsed.category,
+    sheet_source: parsed.sheet_source,
     guest_post_tab_name: parsed.guest_post_tab_name || null,
+    google_sheet_id: parsed.google_sheet_id || null,
+    sheet_name: parsed.sheet_name || null,
+    column_mapping: parsed.column_mapping,
     sync_enabled: parsed.sync_enabled,
-    google_sheet_id: null,
     active: true,
   });
   if (error) throw error;
@@ -92,9 +96,13 @@ export async function updateProject(id: string, input: ProjectInput) {
   const { error } = await supabase.from('projects').update({
     name: parsed.name,
     outreach_project_name: parsed.outreach_project_name || parsed.name,
+    category: parsed.category,
+    sheet_source: parsed.sheet_source,
     guest_post_tab_name: parsed.guest_post_tab_name || null,
+    google_sheet_id: parsed.google_sheet_id || null,
+    sheet_name: parsed.sheet_name || null,
+    column_mapping: parsed.column_mapping,
     sync_enabled: parsed.sync_enabled,
-    google_sheet_id: null,
   }).eq('id', id);
   if (error) throw error;
   revalidatePath('/projects');

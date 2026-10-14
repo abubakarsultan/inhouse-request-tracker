@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { google, type sheets_v4 } from 'googleapis';
 import { adminClient } from '@/lib/supabase-admin';
 import { normalizeForDuplicate } from '@/lib/validators';
+import { normalizeColumnMapping, columnNumber, valueForField } from '@/lib/project-sheet';
 import { revalidatePath } from 'next/cache';
 import { requireAdminForAction } from '@/lib/auth';
 
@@ -11,6 +12,8 @@ type SyncableProject = {
   id: string;
   guest_post_tab_name: string | null;
   sync_enabled: boolean;
+  google_sheet_id?: string | null;
+  column_mapping?: unknown;
 };
 
 export type RequestSheetRecord = {
@@ -52,8 +55,47 @@ export type SheetSyncResult = {
 let metadataCache: { spreadsheetId: string; expiresAt: number; titles: Set<string> } | null = null;
 const METADATA_TTL_MS = 15_000;
 
-function getTeamSheetId() {
-  return (process.env.TEAM_SHEET_ID ?? '').trim();
+function getTeamSheetId(project?: SyncableProject | null) {
+  return String(project?.google_sheet_id || process.env.TEAM_SHEET_ID || '').trim();
+}
+
+function sheetLayout(project: SyncableProject) {
+  const mapping = normalizeColumnMapping(project.column_mapping);
+  const maxNumber = Math.max(...mapping.map((item) => columnNumber(item.column)), 1);
+  const maxColumn = mapping.find((item) => columnNumber(item.column) === maxNumber)?.column || 'H';
+  const indexFor = (field: string, fallback: number) => {
+    const item = mapping.find((entry) => entry.field === field);
+    return item ? columnNumber(item.column) - 1 : fallback;
+  };
+  return { mapping, maxColumn, maxNumber, websiteIndex: indexFor('approved_site', 0), anchorIndex: indexFor('anchor', 2), statusIndex: indexFor('status', 5) };
+}
+
+function mappedRow(project: SyncableProject, record: Record<string, any>, existing?: unknown[]) {
+  const layout = sheetLayout(project);
+  const row = Array.from({ length: layout.maxNumber }, (_, index) => existing?.[index] ?? '');
+  for (const item of layout.mapping) {
+    const index = columnNumber(item.column) - 1;
+    if (item.field !== 'blank') row[index] = valueForField(item.field, record);
+  }
+  return row;
+}
+
+async function ensureMappedHeaders(sheets: sheets_v4.Sheets, spreadsheetId: string, tab: string, project: SyncableProject) {
+  const layout = sheetLayout(project);
+  const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A1:${layout.maxColumn}1` })) as { data: { values?: unknown[][] } };
+  const existing = (response.data.values ?? [])[0] ?? [];
+  const headings = Array.from({ length: layout.maxNumber }, (_, index) => existing[index] ?? '');
+  let changed = false;
+  for (const item of layout.mapping) {
+    const index = columnNumber(item.column) - 1;
+    if (!String(headings[index] ?? '').trim()) { headings[index] = item.heading; changed = true; }
+  }
+  if (changed) await withGoogleRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${quoteTab(tab)}!A1:${layout.maxColumn}1`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [headings] },
+  }));
 }
 
 function getSheetsClient() {
@@ -131,11 +173,12 @@ function lastNonEmptyRow(values: unknown[][]) {
   return 0;
 }
 
-function rowMatches(row: unknown[] | undefined, website: string, anchor: string) {
+function rowMatches(row: unknown[] | undefined, website: string, anchor: string, project?: SyncableProject) {
   if (!row) return false;
+  const layout = project ? sheetLayout(project) : { websiteIndex: 0, anchorIndex: 2 };
   return (
-    normalizeForDuplicate(String(row[0] ?? '')) === normalizeForDuplicate(website) &&
-    normalizeForDuplicate(String(row[2] ?? '')) === normalizeForDuplicate(anchor)
+    normalizeForDuplicate(String(row[layout.websiteIndex] ?? '')) === normalizeForDuplicate(website) &&
+    normalizeForDuplicate(String(row[layout.anchorIndex] ?? '')) === normalizeForDuplicate(anchor)
   );
 }
 
@@ -213,7 +256,7 @@ function syncPreflight(project: SyncableProject, tabOverride?: string | null): {
   if (!tab) {
     return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).' };
   }
-  const spreadsheetId = getTeamSheetId();
+  const spreadsheetId = getTeamSheetId(project);
   if (!spreadsheetId) {
     return {
       state: 'failed',
@@ -266,11 +309,12 @@ export async function appendRequestToTeamSheet(
       return result;
     }
 
-    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
+    await ensureMappedHeaders(sheets, spreadsheetId, tab, project);
     await acquireAppendLock(lockKey, ownerToken);
     try {
+      const layout = sheetLayout(project);
       let allRows = await withGoogleRetry(() =>
-        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
       ) as { data: { values?: unknown[][] } };
       let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
 
@@ -279,7 +323,7 @@ export async function appendRequestToTeamSheet(
       let freeTargetConfirmed = false;
       for (let check = 0; check < 10; check += 1) {
         const target = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}` })
         ) as { data: { values?: unknown[][] } };
         const occupied = rowHasContent((target.data.values ?? [])[0]);
         if (!occupied) {
@@ -287,7 +331,7 @@ export async function appendRequestToTeamSheet(
           break;
         }
         allRows = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
         ) as { data: { values?: unknown[][] } };
         targetRow = Math.max(targetRow + 1, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
       }
@@ -296,19 +340,10 @@ export async function appendRequestToTeamSheet(
       await withGoogleRetry(() =>
         sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}`,
+          range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}`,
           valueInputOption: 'RAW',
           requestBody: {
-            values: [[
-              request.approved_site,
-              request.placement_page ?? '',
-              request.anchor,
-              '',
-              '',
-              request.status,
-              request.assign_to ?? '',
-              request.created_by_email ?? '',
-            ]],
+            values: [mappedRow(project, request as unknown as Record<string, any>)],
           },
         })
       );
@@ -347,22 +382,24 @@ async function findVerifiedRow(
   tab: string,
   storedRow: number | null,
   website: string,
-  anchor: string
+  anchor: string,
+  project?: SyncableProject
 ) {
+  const layout = project ? sheetLayout(project) : { maxColumn: 'H' };
   if (storedRow && storedRow >= 2) {
     const response = await withGoogleRetry(() =>
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${storedRow}:C${storedRow}` })
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${storedRow}:${layout.maxColumn}${storedRow}` })
     ) as { data: { values?: unknown[][] } };
-    if (rowMatches((response.data.values ?? [])[0] as unknown[] | undefined, website, anchor)) {
+    if (rowMatches((response.data.values ?? [])[0] as unknown[] | undefined, website, anchor, project)) {
       return { row: storedRow, repaired: false };
     }
   }
 
   const response = await withGoogleRetry(() =>
-    sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:C` })
+    sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:${layout.maxColumn}` })
   ) as { data: { values?: unknown[][] } };
   const rows = (response.data.values ?? []) as unknown[][];
-  const index = rows.findIndex((row) => rowMatches(row, website, anchor));
+  const index = rows.findIndex((row) => rowMatches(row, website, anchor, project));
   return index >= 0 ? { row: index + 2, repaired: storedRow !== index + 2 } : null;
 }
 
@@ -393,7 +430,7 @@ export async function syncRequestStatusToTeamSheet(
       return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
     }
 
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project);
     if (!verified) {
       const reason = `Could not find a row in "${tab}" matching both website "${request.approved_site}" and anchor "${request.anchor}".`;
       await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -403,7 +440,7 @@ export async function syncRequestStatusToTeamSheet(
     await withGoogleRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${quoteTab(tab)}!F${verified.row}`,
+        range: `${quoteTab(tab)}!${sheetLayout(project).mapping.find((item) => item.field === 'status')?.column || 'F'}${verified.row}`,
         valueInputOption: 'RAW',
         requestBody: { values: [[request.status]] },
       })
@@ -441,8 +478,7 @@ export async function syncRequestFullRowToTeamSheet(
       await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
       return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
     }
-    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, original.team_row, original.approved_site, original.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, original.team_row, original.approved_site, original.anchor, project);
     if (!verified) {
       const reason = `Could not find a row in "${tab}" matching the original website "${original.approved_site}" and anchor "${original.anchor}".`;
       await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -450,23 +486,14 @@ export async function syncRequestFullRowToTeamSheet(
     }
     const existingResponse = await withGoogleRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+      range: `${quoteTab(tab)}!A${verified.row}:${sheetLayout(project).maxColumn}${verified.row}`,
     })) as { data: { values?: unknown[][] } };
     const existingRow = (existingResponse.data.values ?? [])[0] ?? [];
     await withGoogleRetry(() => sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+      range: `${quoteTab(tab)}!A${verified.row}:${sheetLayout(project).maxColumn}${verified.row}`,
       valueInputOption: 'RAW',
-      requestBody: { values: [[
-        updated.approved_site,
-        updated.placement_page ?? '',
-        updated.anchor,
-        existingRow[3] ?? '',
-        existingRow[4] ?? '',
-        updated.status,
-        updated.assign_to ?? '',
-        updated.created_by_email ?? existingRow[7] ?? '',
-      ]] },
+      requestBody: { values: [mappedRow(project, updated as unknown as Record<string, any>, existingRow)] },
     }));
     await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: verified.repaired ? 'Full row updated after stored-row repair' : 'Full row updated' });
     return { state: 'synced', text: `✅ Team sheet row ${verified.row} updated in "${tab}".`, tab, row: verified.row, repairedRow: verified.repaired };
@@ -489,7 +516,7 @@ export async function clearRequestFromTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) return { state: 'skipped', text: '⚪ Mapped team tab does not exist; archived in app only.', tab };
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project);
     if (!verified) {
       const reason = `Could not find the linked team-sheet row for ${request.approved_site} + ${request.anchor}.`;
       await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -497,7 +524,7 @@ export async function clearRequestFromTeamSheet(
     }
     await withGoogleRetry(() => sheets.spreadsheets.values.clear({
       spreadsheetId,
-      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+      range: `${quoteTab(tab)}!A${verified.row}:${sheetLayout(project).maxColumn}${verified.row}`,
     }));
     await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: 'Archived request row cleared from team sheet' });
     return { state: 'synced', text: `✅ Archived and cleared team sheet row ${verified.row} in "${tab}".`, tab, row: verified.row };
@@ -535,7 +562,6 @@ export async function appendProjectSiteToTeamSheet(
       return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
     }
 
-    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
     await acquireAppendLock(lockKey, ownerToken);
     try {
       const allRows = await withGoogleRetry(() =>

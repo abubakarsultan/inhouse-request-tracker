@@ -64,7 +64,7 @@ export async function getRequests(filters?: { status?: string; project_id?: stri
   const supabase = await createClient();
   let query = supabase
     .from('requests')
-    .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name)')
+    .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name,google_sheet_id,column_mapping,sheet_source)')
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (filters?.status) query = query.eq('status', filters.status);
@@ -237,7 +237,7 @@ export async function retryRequestSync(requestId: string) {
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,column_mapping,sheet_source)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -333,7 +333,7 @@ export async function getRequestForEdit(requestId: string) {
   const supabase = await createClient();
   const { data: request, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active,google_sheet_id,column_mapping,sheet_source)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -348,7 +348,7 @@ export async function updateRequest(requestId: string, input: RequestInput) {
   const supabase = await createClient();
   const { data: current, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,active,google_sheet_id,column_mapping,sheet_source)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -441,7 +441,7 @@ export async function archiveRequest(requestId: string) {
   const supabase = await createClient();
   const { data: current, error } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,column_mapping,sheet_source)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();

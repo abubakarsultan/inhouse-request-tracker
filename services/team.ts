@@ -159,7 +159,7 @@ export async function reassignHistoricalName(fromName: string, toName: string) {
   const canonical = String(roster.name);
   const { data: owner } = await adminClient.from('users').select('id').ilike('sheet_name', canonical).eq('account_status', 'active').maybeSingle();
   const ownerId = owner?.id ? String(owner.id) : null;
-  const { data: rows, error } = await adminClient.from('requests').select('*,projects(id,name,slug,guest_post_tab_name,sync_enabled),project_sites(id)').ilike('assign_to', from).is('deleted_at', null);
+  const { data: rows, error } = await adminClient.from('requests').select('*,projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,column_mapping,sheet_source),project_sites(id)').ilike('assign_to', from).is('deleted_at', null);
   if (error) throw new Error(error.message);
 
   let synced = 0; let failed = 0;

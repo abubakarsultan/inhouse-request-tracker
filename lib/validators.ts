@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PROJECT_CATEGORIES, SHEET_DATA_FIELDS } from '@/lib/project-sheet';
 
 export const REQUEST_STATUSES = ['Request shared', 'Live', 'Rejected'] as const;
 export const REQUEST_PRIORITIES = ['High', 'Medium', 'Low'] as const;
@@ -19,10 +20,21 @@ export const requestSchema = z.object({
 });
 export type RequestInput = z.infer<typeof requestSchema>;
 
+const columnMappingSchema = z.array(z.object({
+  column: z.string().trim().min(1),
+  heading: z.string().trim().min(1, 'Heading is required'),
+  field: z.enum(SHEET_DATA_FIELDS.map((item) => item.value) as [string, ...string[]]),
+})).min(1);
+
 export const projectSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
   outreach_project_name: z.string().trim().optional().nullable(),
+  category: z.enum(PROJECT_CATEGORIES),
+  sheet_source: z.enum(['guest_post_anchor', 'custom_sheet']),
+  google_sheet_id: z.string().trim().optional().nullable(),
+  sheet_name: z.string().trim().optional().nullable(),
   guest_post_tab_name: z.string().trim().optional().nullable(),
+  column_mapping: columnMappingSchema,
   sync_enabled: z.boolean().default(true),
 });
 export type ProjectInput = z.infer<typeof projectSchema>;
