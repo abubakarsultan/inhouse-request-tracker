@@ -1,5 +1,5 @@
 import { getProjectBySlug } from '@/services/projects';
-import { getProjectSites } from '@/services/sites';
+import { getProjectSites, getProjectSiteCounts } from '@/services/sites';
 import StatusBadge from '@/components/status-badge';
 import StatusControl from '@/components/app/status-control';
 import Link from 'next/link';
@@ -9,19 +9,18 @@ import ProjectSheetDetails from '@/components/app/project-sheet-details';
 import { buildProjectTriggerSnippet } from '@/lib/sheet-webhook';
 import { requireAdminProfile } from '@/lib/auth';
 
-export default async function ProjectPage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function ProjectPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ page?: string }> }) {
   await requireAdminProfile();
-  const { slug } = await params;
+  const [{ slug }, { page: pageParam }] = await Promise.all([params, searchParams]);
+  const page = Math.max(1, Math.min(100000, Number.isSafeInteger(Number(pageParam)) ? Number(pageParam || 1) : 1));
   const project = await getProjectBySlug(slug);
-  const sites = await getProjectSites(project.id);
+  const [sites, counts] = await Promise.all([getProjectSites(project.id, page), getProjectSiteCounts(project.id)]);
   const requestHeaders = await headers();
   const host = requestHeaders.get('x-forwarded-host') || requestHeaders.get('host') || 'YOUR-VERCEL-DOMAIN';
   const proto = requestHeaders.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
   const siteUrl = `${proto}://${host}`;
   const appScript = buildProjectTriggerSnippet(siteUrl, project);
-  const liveCount = sites.filter((site: any) => site.status === 'Live').length;
-  const pendingCount = sites.filter((site: any) => site.status === 'Request shared').length;
-  const rejectedCount = sites.filter((site: any) => site.status === 'Rejected').length;
+
 
   return (
     <div>
@@ -38,11 +37,13 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
       </div>
 
       <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-2xl font-bold">{sites.length}</p><p className="text-xs text-[var(--muted)]">Project rows</p></div>
-        <div className="rounded-xl border border-[#c9e7d0] bg-[#e6f4ea] p-4"><p className="text-2xl font-bold text-[#188038]">{liveCount}</p><p className="text-xs text-[#188038]">Live</p></div>
-        <div className="rounded-xl border border-[#f3dfad] bg-[#fef7e0] p-4"><p className="text-2xl font-bold text-[#b06000]">{pendingCount}</p><p className="text-xs text-[#b06000]">Request shared</p></div>
-        <div className="rounded-xl border border-[#f5b5b1] bg-[#fce8e6] p-4"><p className="text-2xl font-bold text-[#c5221f]">{rejectedCount}</p><p className="text-xs text-[#c5221f]">Rejected</p></div>
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-2xl font-bold">{counts.total}</p><p className="text-xs text-[var(--muted)]">Project rows</p></div>
+        <div className="rounded-xl border border-[#c9e7d0] bg-[#e6f4ea] p-4"><p className="text-2xl font-bold text-[#188038]">{counts.live}</p><p className="text-xs text-[#188038]">Live</p></div>
+        <div className="rounded-xl border border-[#f3dfad] bg-[#fef7e0] p-4"><p className="text-2xl font-bold text-[#b06000]">{counts.pending}</p><p className="text-xs text-[#b06000]">Request shared</p></div>
+        <div className="rounded-xl border border-[#f5b5b1] bg-[#fce8e6] p-4"><p className="text-2xl font-bold text-[#c5221f]">{counts.rejected}</p><p className="text-xs text-[#c5221f]">Rejected</p></div>
       </div>
+
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-[var(--muted)]">Showing {sites.length ? (page - 1) * 100 + 1 : 0}–{Math.min(page * 100, counts.total)} of {counts.total} project rows</p><div className="flex gap-2">{page > 1 && <Link href={`/projects/${project.slug}?page=${page - 1}`} className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">Previous</Link>}{page * 100 < counts.total && <Link href={`/projects/${project.slug}?page=${page + 1}`} className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">Next</Link>}</div></div>
 
       <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
         <table className="w-full min-w-[900px] text-sm">

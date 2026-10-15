@@ -10,13 +10,15 @@ import DeadlineCell from '@/components/deadline-cell';
 import { karachiDateString } from '@/lib/date';
 import { requireActiveProfile } from '@/lib/auth';
 
-export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string }> }) {
+export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string; page?: string }> }) {
   const profile = await requireActiveProfile();
   if (profile.role !== 'admin') redirect('/my-requests');
 
-  const { status, project } = await searchParams;
+  const { status, project, page: pageParam } = await searchParams;
+  const page = Math.max(1, Math.min(100000, Number.isSafeInteger(Number(pageParam)) ? Number(pageParam || 1) : 1));
+  const pageUrl = (target: number) => { const params = new URLSearchParams(); if (status) params.set('status', status); if (project) params.set('project', project); params.set('page', String(target)); return `/requests?${params.toString()}`; };
   const today = karachiDateString();
-  const [rows, projects] = await Promise.all([getRequests({ status, project_id: project }), getProjects()]);
+  const [{ rows, total }, projects] = await Promise.all([getRequests({ status, project_id: project }, page), getProjects()]);
 
   return (
     <div className="min-w-0">
@@ -30,6 +32,8 @@ export default async function Requests({ searchParams }: { searchParams: Promise
         <select name="status" defaultValue={status ?? ''} className="h-10 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm text-[var(--text)]"><option value="">All statuses</option>{['Request shared', 'Live', 'Rejected'].map((item) => <option key={item} value={item}>{item}</option>)}</select>
         <button className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">Filter</button>
       </form>
+
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-[var(--muted)]">Showing {rows.length ? (page - 1) * 50 + 1 : 0}–{Math.min(page * 50, total)} of {total} requests</p><div className="flex gap-2">{page > 1 && <Link href={pageUrl(page - 1)} className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">Previous</Link>}{page * 50 < total && <Link href={pageUrl(page + 1)} className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">Next</Link>}</div></div>
 
       <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
         <table className="w-full min-w-[1080px] text-sm">

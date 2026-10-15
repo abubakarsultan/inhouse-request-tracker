@@ -5,11 +5,13 @@ import ProjectToggleActive from '@/components/app/project-toggle-active';
 import { ArrowRight, Database, Link2, Clock, XCircle, Sheet } from 'lucide-react';
 import { requireAdminProfile } from '@/lib/auth';
 import { PROJECT_CATEGORIES } from '@/lib/project-sheet';
+import { getServiceAccountEmail } from '@/lib/google-sheet-setup';
 
 export default async function Projects({ searchParams }: { searchParams: Promise<{ q?: string; category?: string }> }) {
   await requireAdminProfile();
   const { q, category } = await searchParams;
   const projects = await getProjectsWithCounts(q);
+  const serviceAccountEmail = getServiceAccountEmail();
   const activeCategory = PROJECT_CATEGORIES.includes(category as any) ? category! : 'Inhouse';
   const visibleProjects = projects.filter((project: any) => (project.category || 'Inhouse') === activeCategory);
 
@@ -20,7 +22,7 @@ export default async function Projects({ searchParams }: { searchParams: Promise
           <h1 className="text-2xl font-bold text-[var(--text)]">Projects</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">Projects are grouped by workflow, with Sheet configuration kept inside each project.</p>
         </div>
-        <ProjectFormDialog />
+        <ProjectFormDialog serviceAccountEmail={serviceAccountEmail} />
       </div>
 
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -41,7 +43,7 @@ export default async function Projects({ searchParams }: { searchParams: Promise
           <article key={project.id} className="flex min-h-64 flex-col rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0"><h2 className="truncate text-lg font-bold text-[var(--text)]" title={project.name}>{project.name}</h2><p className="mt-1 truncate text-xs text-[var(--muted)]" title={project.guest_post_tab_name || ''}>{project.sheet_source === 'custom_sheet' ? (project.sheet_name || 'Custom Sheet') : 'Guest Post Anchor'} · {project.guest_post_tab_name || 'No tab mapped'}</p></div>
-              <div className="flex shrink-0 items-center gap-1"><ProjectFormDialog project={project} /><ProjectToggleActive id={project.id} active={project.active} /></div>
+              <div className="flex shrink-0 items-center gap-1"><ProjectFormDialog project={project} serviceAccountEmail={serviceAccountEmail} /><ProjectToggleActive id={project.id} active={project.active} /></div>
             </div>
 
             <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -52,7 +54,7 @@ export default async function Projects({ searchParams }: { searchParams: Promise
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2 text-xs">
-              <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}><Sheet size={12}/>{project.sync_enabled ? 'Sheet connected' : 'Sync off'}</span>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}><Sheet size={12}/>{project.sync_enabled ? 'Sync enabled' : 'Sync off'}</span>
               <span className={`rounded-full px-2.5 py-1 font-medium ${project.active ? 'bg-[#e6f4ea] text-[#188038]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.active ? 'Active' : 'Disabled'}</span>
             </div>
 

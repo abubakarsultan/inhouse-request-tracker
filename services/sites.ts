@@ -9,12 +9,29 @@ import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
 import { appendRequestToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 import { requireAdminForAction } from '@/lib/auth';
 
-export async function getProjectSites(projectId: string) {
+/** Read one page, not the entire history of a project. */
+export async function getProjectSites(projectId: string, page = 1, pageSize = 100) {
   await requireAdminForAction();
   const supabase = await createClient();
-  const { data, error } = await supabase.from('project_sites').select('*').eq('project_id', projectId).is('archived_at', null).order('created_at', { ascending: false });
+  const safePage = Number.isSafeInteger(page) && page > 0 ? page : 1;
+  const size = Math.min(Math.max(pageSize, 1), 100);
+  const from = (safePage - 1) * size;
+  const { data, error } = await supabase.from('project_sites')
+    .select('id,website,opportunity,anchor,dr,traffic,status,note,request_id')
+    .eq('project_id', projectId).is('archived_at', null)
+    .order('created_at', { ascending: false }).range(from, from + size - 1);
   if (error) throw error;
-  return data;
+  return data ?? [];
+}
+
+export async function getProjectSiteCounts(projectId: string) {
+  await requireAdminForAction();
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc('project_site_status_counts', { p_project_id: projectId });
+  if (error) throw new Error(`Project counts are unavailable. Run migration 008. ${error.message}`);
+  const stats = data?.[0];
+  return { total: Number(stats?.total || 0), live: Number(stats?.live || 0),
+    pending: Number(stats?.pending || 0), rejected: Number(stats?.rejected || 0) };
 }
 
 export type ImportResult = { rowsImported: number; rowsSynced: number; rowsSkippedSync: number; rowsFailedSync: number; errors: string[] };
@@ -206,7 +223,7 @@ export async function importFromTeamSheet(): Promise<TeamSheetImportReport> {
   await requireAdminForAction();
   const { readTeamSheetProjectRows } = await import('@/services/google-sheet-sync');
   const supabase = await createClient();
-  const { data: projects, error: projectsError } = await supabase.from('projects').select('id,name,guest_post_tab_name,sync_enabled').order('name');
+  const { data: projects, error: projectsError } = await supabase.from('projects').select('id,name,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_source,column_mapping').order('name');
   if (projectsError) throw new Error(`Could not load projects: ${projectsError.message}`);
   const known = await loadKnownProjectDomains(supabase);
   const owners = await loadOwnerMap(supabase);

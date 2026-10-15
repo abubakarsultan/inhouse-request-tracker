@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTrigger } from '@/components/ui/dialog';
 import { ExternalLink, FileCode2, Sheet, Copy } from 'lucide-react';
 import { normalizeColumnMapping } from '@/lib/project-sheet';
+import { buildGoogleSheetUrl } from '@/lib/google-sheet-url';
 
 type Props = {
   project: any;
@@ -15,7 +16,7 @@ type Props = {
 export default function ProjectSheetDetails({ project, teamSheetId, appScript }: Props) {
   const [copied, setCopied] = useState(false);
   const sheetId = project.google_sheet_id || teamSheetId || '';
-  const sheetUrl = sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit${project.guest_post_tab_name ? `#gid=0` : ''}` : '';
+  const sheetUrl = sheetId ? buildGoogleSheetUrl(sheetId, project.sheet_source === 'custom_sheet' ? project.google_sheet_gid : null) : '';
   const mapping = normalizeColumnMapping(project.column_mapping);
 
   async function copyScript() {

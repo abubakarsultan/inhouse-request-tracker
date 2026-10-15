@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PROJECT_CATEGORIES, SHEET_DATA_FIELDS } from '@/lib/project-sheet';
+import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 
 export const REQUEST_STATUSES = ['Request shared', 'Live', 'Rejected'] as const;
 export const REQUEST_PRIORITIES = ['High', 'Medium', 'Low'] as const;
@@ -21,18 +22,26 @@ export const requestSchema = z.object({
 export type RequestInput = z.infer<typeof requestSchema>;
 
 const columnMappingSchema = z.array(z.object({
-  column: z.string().trim().min(1),
+  column: z.string().trim().toUpperCase().regex(/^[A-Z]$/, 'Use a column from A to Z'),
   heading: z.string().trim().min(1, 'Heading is required'),
   field: z.enum(SHEET_DATA_FIELDS.map((item) => item.value) as [string, ...string[]]),
-})).min(1);
+})).min(1).max(26).superRefine((columns, ctx) => {
+  const seen = new Set<string>();
+  for (const [index, item] of columns.entries()) {
+    if (seen.has(item.column)) ctx.addIssue({ code: 'custom', path: [index, 'column'], message: 'Each Sheet column can only be mapped once.' });
+    seen.add(item.column);
+  }
+});
 
 export const projectSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
   outreach_project_name: z.string().trim().optional().nullable(),
   category: z.enum(PROJECT_CATEGORIES),
   sheet_source: z.enum(['guest_post_anchor', 'custom_sheet']),
-  google_sheet_id: z.string().trim().optional().nullable(),
-  sheet_name: z.string().trim().optional().nullable(),
+  sheet_url: z.string().trim().optional().nullable().superRefine((value, ctx) => {
+    if (!value) return;
+    try { parseGoogleSheetUrl(value); } catch (error) { ctx.addIssue({ code: 'custom', message: (error as Error).message }); }
+  }),
   guest_post_tab_name: z.string().trim().optional().nullable(),
   column_mapping: columnMappingSchema,
   sync_enabled: z.boolean().default(true),

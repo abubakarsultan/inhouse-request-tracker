@@ -31,7 +31,7 @@ export async function runHealthCheck(): Promise<HealthCheckResult> {
   for (let from = 0; ; from += 500) {
     const { data, error } = await adminClient
       .from('requests')
-      .select('id,project_id,approved_site,anchor,team_tab,team_row,projects(name,slug),project_sites(id,project_id,request_id,website,anchor,team_row)')
+      .select('id,project_id,approved_site,anchor,team_tab,team_row,projects(id,name,slug,google_sheet_id,sheet_source,column_mapping,guest_post_tab_name),project_sites(id,project_id,request_id,website,anchor,team_row)')
       .is('deleted_at', null)
       .range(from, from + 499);
     if (error) throw new Error(error.message);
@@ -40,11 +40,17 @@ export async function runHealthCheck(): Promise<HealthCheckResult> {
   }
 
   const tabCache = new Map<string, TeamSheetReadResult>();
-  async function readTab(tab: string) {
-    const cached = tabCache.get(tab);
+  async function readTab(tab: string, project: any) {
+    const key = `${project?.google_sheet_id || process.env.TEAM_SHEET_ID || ''}\u0000${tab}`;
+    const cached = tabCache.get(key);
     if (cached) return cached;
-    const read = await readTeamSheetProjectRows({ id: tab, name: tab, guest_post_tab_name: tab });
-    tabCache.set(tab, read);
+    const read = await readTeamSheetProjectRows({
+      id: String(project?.id || tab), name: String(project?.name || tab), guest_post_tab_name: tab,
+      google_sheet_id: project?.google_sheet_id || null,
+      sheet_source: project?.sheet_source || 'guest_post_anchor',
+      column_mapping: project?.column_mapping,
+    });
+    tabCache.set(key, read);
     return read;
   }
 
@@ -87,7 +93,7 @@ export async function runHealthCheck(): Promise<HealthCheckResult> {
 
     const tab = String(request.team_tab ?? '').trim();
     if (!tab || request.team_row == null) continue;
-    const read = await readTab(tab);
+    const read = await readTab(tab, project);
     if (read.state !== 'ok') {
       problems.push({ ...base, problemType: 'sheet_check_failed', details: read.reason, canRelink: true });
       continue;
@@ -116,7 +122,7 @@ export async function relinkHealthRequest(requestId: string) {
   await requireAdminForAction();
   const { data: request, error } = await adminClient
     .from('requests')
-    .select('id,approved_site,anchor,team_tab,team_row,project_sites(id)')
+    .select('id,approved_site,anchor,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping,guest_post_tab_name),project_sites(id)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -129,6 +135,7 @@ export async function relinkHealthRequest(requestId: string) {
     team_tab: request.team_tab ? String(request.team_tab) : null,
     team_row: request.team_row == null ? null : Number(request.team_row),
     project_site_id: site?.id ? String(site.id) : null,
+    project: Array.isArray(request.projects) ? request.projects[0] : request.projects,
   }, true);
   if (verified.state === 'failed') return { ok: false, text: verified.reason };
 

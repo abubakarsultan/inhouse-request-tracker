@@ -32,15 +32,13 @@ const adminControlLinks = [
 
 type LinkTuple = readonly [string, string, LucideIcon];
 
-function signalNavigation() {
-  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('rankviz:navigation-start'));
-}
+const quickPrefetch = new Set(['/dashboard', '/projects', '/requests', '/my-requests', '/requests/new']);
 
 export default function Sidebar({ role }: { role: AppRole }) {
   const pathname = usePathname();
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const renderLinks = (links: readonly LinkTuple[]) => links.map(([label, href, Icon]) => (
-    <Link onClick={signalNavigation} key={href} href={href} className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-150 active:scale-[0.98] ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)] hover:bg-[var(--canvas)] hover:text-[var(--text)]'}`}>
+    <Link prefetch={quickPrefetch.has(href)} key={href} href={href} className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-150 active:scale-[0.98] ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)] hover:bg-[var(--canvas)] hover:text-[var(--text)]'}`}>
       <Icon size={17} className="transition-transform duration-150 group-hover:scale-105" />{label}
     </Link>
   ));
@@ -62,7 +60,7 @@ export default function Sidebar({ role }: { role: AppRole }) {
 
       <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto border-t border-[var(--border)] bg-[var(--card)] px-1 py-1 lg:hidden" aria-label="Mobile navigation">
         {mobileLinks.map(([label, href, Icon]) => (
-          <Link onClick={signalNavigation} key={href} href={href} className={`flex min-w-[76px] flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition active:scale-95 ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)]'}`}>
+          <Link prefetch={quickPrefetch.has(href)} key={href} href={href} className={`flex min-w-[76px] flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition active:scale-95 ${isActive(href) ? 'bg-[var(--brand-soft)] text-[var(--brand-dark)]' : 'text-[var(--muted)]'}`}>
             <Icon size={17} /><span className="whitespace-nowrap">{label}</span>
           </Link>
         ))}

@@ -6,6 +6,7 @@ function isRequestStatus(value: string): value is RequestStatus {
 
 export type SheetWebhookPayload = {
   tab: string;
+  spreadsheetId?: string;
   row: number;
   website: string;
   anchor: string;
@@ -19,17 +20,19 @@ export function parseSheetWebhookPayload(input: unknown):
   const body = input as Record<string, unknown>;
   const tab = String(body.tab ?? '').trim();
   const row = Number(body.row);
+  const spreadsheetId = body.spreadsheetId == null ? undefined : String(body.spreadsheetId).trim();
   const website = String(body.website ?? '').trim();
   const anchor = String(body.anchor ?? '').trim();
   const status = String(body.status ?? '').trim();
 
   if (!tab) return { ok: false, error: 'tab is required.' };
+  if (spreadsheetId != null && !/^[A-Za-z0-9_-]{10,}$/.test(spreadsheetId)) return { ok: false, error: 'Invalid spreadsheetId.' };
   if (!Number.isInteger(row) || row < 2) return { ok: false, error: 'row must be an integer >= 2.' };
   if (!website) return { ok: false, error: 'website is required.' };
   if (!anchor) return { ok: false, error: 'anchor is required.' };
   if (!isRequestStatus(status)) return { ok: false, error: 'status must be "Request shared", "Live", or "Rejected".' };
 
-  return { ok: true, value: { tab, row, website, anchor, status } };
+  return { ok: true, value: { tab, spreadsheetId, row, website, anchor, status } };
 }
 
 export function normalizeImportedSiteStatus(value: unknown): RequestStatus {
@@ -103,7 +106,7 @@ function onSheetEdit(e) {
 }`;
 }
 
-export function buildProjectTriggerSnippet(siteUrl: string, project: { guest_post_tab_name?: string | null; column_mapping?: unknown }) {
+export function buildProjectTriggerSnippet(siteUrl: string, project: { guest_post_tab_name?: string | null; google_sheet_id?: string | null; sheet_source?: string | null; column_mapping?: unknown }) {
   const base = siteUrl.replace(/\/+$/, '');
   const mapping = Array.isArray(project.column_mapping) ? project.column_mapping as Array<{ column?: string; field?: string }> : [];
   const colNum = (field: string, fallback: number) => {
@@ -116,5 +119,6 @@ export function buildProjectTriggerSnippet(siteUrl: string, project: { guest_pos
   const anchorCol = colNum('anchor', 3);
   const statusCol = colNum('status', 6);
   const tab = String(project.guest_post_tab_name || '').replace(/'/g, "\\'");
-  return `const INHOUSE_REQUEST_WEBHOOK_URL = '${base}/api/sheet-webhook';\nconst SHEET_WEBHOOK_SECRET = 'PASTE_THE_SAME_SHEET_WEBHOOK_SECRET_HERE';\nconst PROJECT_TAB = '${tab}';\nconst WEBSITE_COLUMN = ${websiteCol};\nconst ANCHOR_COLUMN = ${anchorCol};\nconst STATUS_COLUMN = ${statusCol};\n\nfunction installTrigger() {\n  const spreadsheet = SpreadsheetApp.getActive();\n  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'onSheetEdit').forEach(t => ScriptApp.deleteTrigger(t));\n  ScriptApp.newTrigger('onSheetEdit').forSpreadsheet(spreadsheet).onEdit().create();\n}\n\nfunction onSheetEdit(e) {\n  if (!e || !e.range) return;\n  const range = e.range;\n  const sheet = range.getSheet();\n  if (sheet.getName() !== PROJECT_TAB || range.getColumn() !== STATUS_COLUMN || range.getNumColumns() !== 1) return;\n  const startRow = range.getRow();\n  const rowCount = range.getNumRows();\n  for (let i = 0; i < rowCount; i++) {\n    const sheetRow = startRow + i;\n    if (sheetRow <= 1) continue;\n    const website = String(sheet.getRange(sheetRow, WEBSITE_COLUMN).getDisplayValue() || '').trim();\n    const anchor = String(sheet.getRange(sheetRow, ANCHOR_COLUMN).getDisplayValue() || '').trim();\n    const status = String(sheet.getRange(sheetRow, STATUS_COLUMN).getDisplayValue() || '').trim();\n    if (!website || !anchor || !['Request shared','Live','Rejected'].includes(status)) continue;\n    const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {\n      method: 'post', contentType: 'application/json', headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },\n      payload: JSON.stringify({ tab: sheet.getName(), row: sheetRow, website, anchor, status }), muteHttpExceptions: true\n    });\n    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) console.error('INHOUSE REQUEST webhook failed', response.getResponseCode(), response.getContentText());\n  }\n}`;
+  const spreadsheetId = project.sheet_source === 'custom_sheet' ? String(project.google_sheet_id || '') : '';
+  return `const INHOUSE_REQUEST_WEBHOOK_URL = '${base}/api/sheet-webhook';\nconst SHEET_WEBHOOK_SECRET = 'PASTE_THE_SAME_SHEET_WEBHOOK_SECRET_HERE';\nconst PROJECT_TAB = '${tab}';\nconst PROJECT_SPREADSHEET_ID = '${spreadsheetId}';\nconst WEBSITE_COLUMN = ${websiteCol};\nconst ANCHOR_COLUMN = ${anchorCol};\nconst STATUS_COLUMN = ${statusCol};\n\nfunction installTrigger() {\n  const spreadsheet = SpreadsheetApp.getActive();\n  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'onSheetEdit').forEach(t => ScriptApp.deleteTrigger(t));\n  ScriptApp.newTrigger('onSheetEdit').forSpreadsheet(spreadsheet).onEdit().create();\n}\n\nfunction onSheetEdit(e) {\n  if (!e || !e.range) return;\n  const range = e.range;\n  const sheet = range.getSheet();\n  if (sheet.getName() !== PROJECT_TAB || range.getColumn() !== STATUS_COLUMN || range.getNumColumns() !== 1) return;\n  const startRow = range.getRow();\n  const rowCount = range.getNumRows();\n  for (let i = 0; i < rowCount; i++) {\n    const sheetRow = startRow + i;\n    if (sheetRow <= 1) continue;\n    const website = String(sheet.getRange(sheetRow, WEBSITE_COLUMN).getDisplayValue() || '').trim();\n    const anchor = String(sheet.getRange(sheetRow, ANCHOR_COLUMN).getDisplayValue() || '').trim();\n    const status = String(sheet.getRange(sheetRow, STATUS_COLUMN).getDisplayValue() || '').trim();\n    if (!website || !anchor || !['Request shared','Live','Rejected'].includes(status)) continue;\n    const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {\n      method: 'post', contentType: 'application/json', headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },\n      payload: JSON.stringify({ tab: sheet.getName(), spreadsheetId: PROJECT_SPREADSHEET_ID || undefined, row: sheetRow, website, anchor, status }), muteHttpExceptions: true\n    });\n    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) console.error('INHOUSE REQUEST webhook failed', response.getResponseCode(), response.getContentText());\n  }\n}`;
 }

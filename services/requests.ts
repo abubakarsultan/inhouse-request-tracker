@@ -59,19 +59,22 @@ async function assertProjectDomainAvailable(projectId: string, approvedSite: str
   }
 }
 
-export async function getRequests(filters?: { status?: string; project_id?: string }) {
+export async function getRequests(filters?: { status?: string; project_id?: string }, page = 1, pageSize = 50) {
   await requireAdminForAction();
   const supabase = await createClient();
+  const safePage = Number.isSafeInteger(page) && page > 0 ? page : 1;
+  const size = Math.min(Math.max(pageSize, 1), 100);
   let query = supabase
     .from('requests')
-    .select('*, projects(id,name,slug,sync_enabled,guest_post_tab_name,outreach_project_name,google_sheet_id,column_mapping,sheet_source)')
+    .select('id,project_id,approved_site,anchor,assign_to,created_by_email,created_by_name,deadline,status,sync_state,sync_error,team_tab,team_row,source,created_at,projects(id,name,slug)', { count: 'exact' })
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (filters?.status) query = query.eq('status', filters.status);
   if (filters?.project_id) query = query.eq('project_id', filters.project_id);
-  const { data, error } = await query;
+  const from = (safePage - 1) * size;
+  const { data, error, count } = await query.range(from, from + size - 1);
   if (error) throw error;
-  return data;
+  return { rows: data || [], total: count || 0 };
 }
 
 export async function getAutocompleteOptions() {

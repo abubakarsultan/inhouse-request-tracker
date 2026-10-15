@@ -13,6 +13,7 @@ type SyncableProject = {
   guest_post_tab_name: string | null;
   sync_enabled: boolean;
   google_sheet_id?: string | null;
+  sheet_source?: string | null;
   column_mapping?: unknown;
 };
 
@@ -52,10 +53,11 @@ export type SheetSyncResult = {
   repairedRow?: boolean;
 };
 
-let metadataCache: { spreadsheetId: string; expiresAt: number; titles: Set<string> } | null = null;
+const metadataCache = new Map<string, { expiresAt: number; titles: Set<string> }>();
 const METADATA_TTL_MS = 15_000;
 
 function getTeamSheetId(project?: SyncableProject | null) {
+  if (project?.sheet_source === 'custom_sheet') return String(project.google_sheet_id || '').trim();
   return String(project?.google_sheet_id || process.env.TEAM_SHEET_ID || '').trim();
 }
 
@@ -146,9 +148,8 @@ async function withGoogleRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T
 }
 
 async function getTabTitles(sheets: sheets_v4.Sheets, spreadsheetId: string) {
-  if (metadataCache && metadataCache.spreadsheetId === spreadsheetId && metadataCache.expiresAt > Date.now()) {
-    return metadataCache.titles;
-  }
+  const cached = metadataCache.get(spreadsheetId);
+  if (cached && cached.expiresAt > Date.now()) return cached.titles;
 
   const response = await withGoogleRetry(() =>
     sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties.title' })
@@ -158,7 +159,8 @@ async function getTabTitles(sheets: sheets_v4.Sheets, spreadsheetId: string) {
       .map((sheet) => sheet.properties?.title)
       .filter((title): title is string => Boolean(title))
   );
-  metadataCache = { spreadsheetId, expiresAt: Date.now() + METADATA_TTL_MS, titles };
+  metadataCache.set(spreadsheetId, { expiresAt: Date.now() + METADATA_TTL_MS, titles });
+  if (metadataCache.size > 100) metadataCache.delete(metadataCache.keys().next().value!);
   return titles;
 }
 
@@ -630,28 +632,30 @@ export async function verifyRequestTeamRow(request: {
   team_tab: string | null;
   team_row: number | null;
   project_site_id?: string | null;
+  project?: SyncableProject | null;
 }, persistRepair = false): Promise<VerifiedTeamRowResult> {
   const tab = request.team_tab?.trim();
   if (!tab) return { state: 'failed', reason: 'Request has no stored team_tab.' };
-  const spreadsheetId = getTeamSheetId();
+  const spreadsheetId = getTeamSheetId(request.project);
   if (!spreadsheetId) return { state: 'failed', tab, reason: 'TEAM_SHEET_ID is not configured.' };
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { state: 'failed', tab, reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
 
   try {
+    const layout = request.project ? sheetLayout(request.project) : { maxColumn: 'F', statusIndex: 5 };
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) return { state: 'failed', tab, reason: `Team-sheet tab "${tab}" does not exist.` };
 
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, request.project || undefined);
     if (!verified) {
       return { state: 'failed', tab, reason: `No row in "${tab}" matches both website "${request.approved_site}" and anchor "${request.anchor}".` };
     }
 
     const response = await withGoogleRetry(() =>
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${verified.row}:F${verified.row}` })
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${verified.row}:${layout.maxColumn}${verified.row}` })
     ) as { data: { values?: unknown[][] } };
     const row = (response.data.values ?? [])[0] ?? [];
-    if (!rowMatches(row as unknown[], request.approved_site, request.anchor)) {
+    if (!rowMatches(row as unknown[], request.approved_site, request.anchor, request.project || undefined)) {
       return { state: 'failed', tab, reason: `Verified row ${verified.row} changed before it could be read again.` };
     }
 
@@ -661,7 +665,7 @@ export async function verifyRequestTeamRow(request: {
       await logSync({ requestId: request.id, projectSiteId: request.project_site_id, direction: 'from_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: 'Stored row repaired by verify-and-search' });
     }
 
-    return { state: 'ok', tab, row: verified.row, repaired: verified.repaired, sheetStatus: String(row[5] ?? '').trim() };
+    return { state: 'ok', tab, row: verified.row, repaired: verified.repaired, sheetStatus: String(row[layout.statusIndex] ?? '').trim() };
   } catch (error) {
     return { state: 'failed', tab, reason: error instanceof Error ? error.message : String(error) };
   }
@@ -669,16 +673,18 @@ export async function verifyRequestTeamRow(request: {
 
 export async function applyStatusFromSheet(payload: {
   tab: string;
+  spreadsheetId?: string;
   row: number;
   website: string;
   anchor: string;
   status: 'Request shared' | 'Live' | 'Rejected';
 }) {
-  const { data, error } = await adminClient.rpc('find_request_from_sheet', {
+  const { data, error } = await adminClient.rpc('find_request_from_sheet_scoped', {
     p_tab: payload.tab,
     p_website: payload.website,
     p_anchor: payload.anchor,
     p_row: payload.row,
+    p_sheet_id: payload.spreadsheetId || null,
   });
   if (error) {
     await logSync({ direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'error', detail: `Request lookup failed: ${error.message}` });
@@ -751,7 +757,7 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
   for (let from = 0; ; from += 1000) {
     const { data, error } = await adminClient
       .from('requests')
-      .select('id,approved_site,anchor,status,team_tab,team_row,project_sites(id)')
+      .select('id,approved_site,anchor,status,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping),project_sites(id)')
       .is('deleted_at', null)
       .not('team_tab', 'is', null)
       .not('team_row', 'is', null)
@@ -761,35 +767,37 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
     if ((data ?? []).length < 1000) break;
   }
 
-  const spreadsheetId = getTeamSheetId();
-  if (!spreadsheetId || !process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    throw new Error(!spreadsheetId ? 'TEAM_SHEET_ID is not configured.' : 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.');
-  }
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not configured.');
   const sheets = getSheetsClient();
-  const titles = await getTabTitles(sheets, spreadsheetId);
   const rowsByTab = new Map<string, unknown[][]>();
 
   for (const request of requests) {
     report.checked += 1;
     const tab = String(request.team_tab ?? '').trim();
+    const project = request.projects as SyncableProject | null;
+    const spreadsheetId = getTeamSheetId(project);
+    const projectLayout = project ? sheetLayout(project) : null;
+    const tabKey = `${spreadsheetId}\u0000${tab}`;
     const projectSiteId = Array.isArray(request.project_sites) ? request.project_sites[0]?.id ?? null : request.project_sites?.id ?? null;
     try {
-      if (!titles.has(tab)) throw new Error(`Tab "${tab}" does not exist.`);
-      let rows = rowsByTab.get(tab);
+      if (!spreadsheetId || !projectLayout || !project) throw new Error('Project Google Sheet is not configured.');
+      const titles = await getTabTitles(sheets, spreadsheetId);
+      if (!titles.has(tab)) throw new Error(`Tab "${tab}" does not exist in this project Sheet.`);
+      let rows = rowsByTab.get(tabKey);
       if (!rows) {
         const response = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:F` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:${projectLayout.maxColumn}` })
         ) as { data: { values?: unknown[][] } };
         rows = (response.data.values ?? []) as unknown[][];
-        rowsByTab.set(tab, rows);
+        rowsByTab.set(tabKey, rows);
       }
 
       const storedIndex = Number(request.team_row) - 2;
-      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor) ? storedIndex : -1;
-      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor));
+      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor, project) ? storedIndex : -1;
+      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor, project));
       if (index < 0) throw new Error(`No matching row for ${request.approved_site} + ${request.anchor}.`);
       const verifiedRow = index + 2;
-      const sheetStatus = String(rows[index]?.[5] ?? '').trim();
+      const sheetStatus = String(rows[index]?.[projectLayout.statusIndex] ?? '').trim();
       const repaired = verifiedRow !== Number(request.team_row);
       if (repaired) report.repairedRows += 1;
 
@@ -874,23 +882,31 @@ export async function readTeamSheetProjectRows(project: {
   id: string;
   name: string;
   guest_post_tab_name: string | null;
+  google_sheet_id?: string | null;
+  sheet_source?: string | null;
+  column_mapping?: unknown;
+  sync_enabled?: boolean;
 }): Promise<TeamSheetReadResult> {
   const tab = project.guest_post_tab_name?.trim();
-  if (!tab) return { state: 'skipped', rows: [], reason: 'Project has no team-sheet tab mapping.' };
-
-  const spreadsheetId = getTeamSheetId();
-  if (!spreadsheetId) return { state: 'failed', tab, rows: [], reason: 'TEAM_SHEET_ID is not configured.' };
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return { state: 'failed', tab, rows: [], reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
-  }
+  if (!tab) return { state: 'skipped', rows: [], reason: 'Project has no Sheet tab mapping.' };
+  const syncProject: SyncableProject = { ...project, sync_enabled: true };
+  const spreadsheetId = getTeamSheetId(syncProject);
+  if (!spreadsheetId) return { state: 'failed', tab, rows: [], reason: 'Project Google Sheet ID is missing.' };
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { state: 'failed', tab, rows: [], reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
 
   try {
+    const layout = sheetLayout(syncProject);
+    const fieldIndex = (field: string, fallback: number) => {
+      const item = layout.mapping.find((entry) => entry.field === field);
+      return item ? columnNumber(item.column) - 1 : fallback;
+    };
+    const readCell = (row: unknown[], field: string, fallback: number) => String(row[fieldIndex(field, fallback)] ?? '').trim();
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
-    if (!titles.has(tab)) return { state: 'skipped', tab, rows: [], reason: 'Mapped tab does not exist in the team sheet.' };
+    if (!titles.has(tab)) return { state: 'skipped', tab, rows: [], reason: 'Mapped tab does not exist in this project Sheet.' };
 
     const response = await withGoogleRetry(() =>
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:H` })
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:${layout.maxColumn}` })
     ) as { data: { values?: unknown[][] } };
 
     const rows: TeamSheetProjectRow[] = [];
@@ -899,14 +915,14 @@ export async function readTeamSheetProjectRows(project: {
       if (!rowHasContent(row)) continue;
       rows.push({
         teamRow: index + 2,
-        website: String(row[0] ?? '').trim(),
-        opportunity: String(row[1] ?? '').trim(),
-        anchor: String(row[2] ?? '').trim(),
+        website: readCell(row, 'approved_site', 0),
+        opportunity: readCell(row, 'placement_page', 1),
+        anchor: readCell(row, 'anchor', 2),
         dr: row[3] == null || String(row[3]).trim() === '' ? null : String(row[3]).trim(),
         traffic: row[4] == null || String(row[4]).trim() === '' ? null : String(row[4]).trim(),
-        status: String(row[5] ?? '').trim(),
-        note: String(row[6] ?? '').trim(),
-        createdByEmail: String(row[7] ?? '').trim(),
+        status: readCell(row, 'status', 5),
+        note: readCell(row, 'assign_to', 6),
+        createdByEmail: readCell(row, 'created_by_email', 7),
       });
     }
     return { state: 'ok', tab, rows };

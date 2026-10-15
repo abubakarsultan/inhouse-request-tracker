@@ -92,13 +92,14 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
   return normalizeProfile(data);
 }
 
-/** Request-scoped cached auth lookup. Layout + page can share this call. */
-export const getSessionUser = cache(async () => {
+/** Request-scoped signed JWT verification without a remote /user call on each page. */
+export const getSessionUser = cache(async (): Promise<{ id: string; email: string } | null> => {
   const supabase = await createAuthServerClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user) return null;
-  if (!isRankvizEmail(user.email)) return null;
-  return user;
+  const { data, error } = await supabase.auth.getClaims();
+  if (error || !data?.claims?.sub) return null;
+  const email = String(data.claims.email || '').trim().toLowerCase();
+  if (!isRankvizEmail(email)) return null;
+  return { id: String(data.claims.sub), email };
 });
 
 /** Request-scoped cached profile lookup; no write on normal navigation. */
@@ -112,7 +113,13 @@ export const getCurrentProfile = cache(async (): Promise<UserProfile | null> => 
     .eq('id', user.id)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  if (!data) return ensureUserProfile(user);
+  if (!data) {
+    // Only the rare missing-profile fallback needs the full Auth user record.
+    const supabase = await createAuthServerClient();
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user || authData.user.id !== user.id) return null;
+    return ensureUserProfile(authData.user);
+  }
   return normalizeProfile(data);
 });
 

@@ -12,9 +12,10 @@ test('auth rollout migration seeds requested Guest Post Anchor names', () => {
   assert.match(sql, /with historical_names as/);
 });
 
-test('team sheet mirror stores creator email in column H', () => {
+test('team sheet mirror preserves creator email through saved column mapping', () => {
   const source = fs.readFileSync(new URL('../services/google-sheet-sync.ts', import.meta.url), 'utf8');
-  assert.match(source, /Created By Email/);
-  assert.match(source, /A\$\{targetRow\}:H\$\{targetRow\}/);
-  assert.match(source, /request\.created_by_email/);
+  const columns = fs.readFileSync(new URL('../lib/project-sheet.ts', import.meta.url), 'utf8');
+  assert.match(columns, /heading: 'Created By Email', field: 'created_by_email'/);
+  assert.match(source, /mappedRow\(project, request/);
+  assert.match(source, /valueForField\(item.field, record\)/);
 });
