@@ -45,3 +45,10 @@ test('navigation speeds do not scan all request rows', () => {
   assert.match(migration, /find_request_from_sheet_scoped/);
   assert.match(migration, /p\.google_sheet_id = p_sheet_id/);
 });
+
+
+test('health relink supplies required sync_enabled to SyncableProject', () => {
+  const health = read('services/health.ts');
+  assert.ok(health.includes(".select('id,approved_site,anchor,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping,guest_post_tab_name,sync_enabled),project_sites(id)')"));
+  assert.match(read('services/google-sheet-sync.ts'), /type SyncableProject = \{[\s\S]*?sync_enabled: boolean;/);
+});

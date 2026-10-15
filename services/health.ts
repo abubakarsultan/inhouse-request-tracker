@@ -122,7 +122,7 @@ export async function relinkHealthRequest(requestId: string) {
   await requireAdminForAction();
   const { data: request, error } = await adminClient
     .from('requests')
-    .select('id,approved_site,anchor,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping,guest_post_tab_name),project_sites(id)')
+    .select('id,approved_site,anchor,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping,guest_post_tab_name,sync_enabled),project_sites(id)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
