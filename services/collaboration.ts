@@ -42,11 +42,12 @@ export async function getCollaborationPartner(id:string){
     adminClient.from('collaboration_links').select('*').eq('partner_id',id).order('created_at',{ascending:false}).limit(500),
     adminClient.from('collaboration_sync_log').select('id,action,state,details,created_at').eq('partner_id',id).order('created_at',{ascending:false}).limit(15),
   ]);
-  check(partner,pError,'Partner not found');if(dError||lError)throw new Error(dError?.message||lError?.message);
+  const validPartner = check(partner,pError,'Partner not found');
+  if(dError||lError)throw new Error(dError?.message||lError?.message);
   const {data:fullMetrics,error:metricsError}=await adminClient.rpc('collaboration_partner_stats',{p_partner_id:id});
   if(metricsError)console.warn('[collaboration] Aggregate RPC unavailable; check migration 010:',metricsError.message);
   const metrics=fullMetrics && !metricsError ? fullMetrics as ReturnType<typeof partnerMetrics> : partnerMetrics(deals||[],links||[]);
-  return {partner, deals:deals||[],links:links||[],logs:logs||[],metrics,truncated:(deals||[]).length>=250||(links||[]).length>=500,statsUnavailable:Boolean(metricsError)};
+  return {partner:validPartner, deals:deals||[],links:links||[],logs:logs||[],metrics,truncated:(deals||[]).length>=250||(links||[]).length>=500,statsUnavailable:Boolean(metricsError)};
 }
 export async function createCollaborationPartner(raw:z.input<typeof partnerInput>){
   const profile=await requireAdminForAction();const input=partnerInput.parse(raw);
@@ -54,7 +55,7 @@ export async function createCollaborationPartner(raw:z.input<typeof partnerInput
     name:input.name,email:input.email||null,website:input.website||null,notes:input.notes||null,
     default_give_qty:input.give,default_receive_qty:input.receive,created_by:profile.id,
   }).select('*').single();
-  check(partner,error,'Could not save partner');
+  const savedPartner = check(partner,error,'Could not save partner');
   let setupMessage='Partner saved. Connect a Google Sheet when ready.';
   if(input.setup!=='later'){
     try{
@@ -62,22 +63,23 @@ export async function createCollaborationPartner(raw:z.input<typeof partnerInput
       const details=input.setup==='automatic'
         ?await autoCreateCollaborationSheet(input.name,profile.email)
         :await connectCollaborationSheet(input.sheetUrl||'',input.name);
-      const {error:connError}=await adminClient.from('collaboration_partners').update({...details,sheet_setup_state:'connected',sheet_setup_error:null,sync_enabled:true}).eq('id',partner.id);
+      const {error:connError}=await adminClient.from('collaboration_partners').update({...details,sheet_setup_state:'connected',sheet_setup_error:null,sync_enabled:true}).eq('id',savedPartner.id);
       if(connError)throw new Error(connError.message);
       setupMessage='Partner created and Google Sheet connected. Install the Apps Script for Sheet-to-app updates.';
-      try{await refreshCollaborationSummary(partner.id);}catch(e){console.warn('[collab] initial summary failed:',e);}
+      try{await refreshCollaborationSummary(savedPartner.id);}catch(e){console.warn('[collab] initial summary failed:',e);}
     }catch(e){
       setupMessage=`Partner saved, but Sheet setup needs attention: ${e instanceof Error?e.message:String(e)}`;
-      await adminClient.from('collaboration_partners').update({sheet_setup_state:'error',sheet_setup_error:setupMessage,sync_enabled:false}).eq('id',partner.id);
+      await adminClient.from('collaboration_partners').update({sheet_setup_state:'error',sheet_setup_error:setupMessage,sync_enabled:false}).eq('id',savedPartner.id);
     }
   }
-  refresh(partner.id);
-  return {id:String(partner.id),setupMessage};
+  refresh(savedPartner.id);
+  return {id:String(savedPartner.id),setupMessage};
 }
 export async function connectPartnerSheet(partnerId:string,url:string){
   await requireAdminForAction();uuid.parse(partnerId);
-  const {data:partner,error}=await adminClient.from('collaboration_partners').select('*').eq('id',partnerId).single();check(partner,error,'Partner not found');
-  const connection=await connectCollaborationSheet(url,String(partner.name));
+  const {data:partner,error}=await adminClient.from('collaboration_partners').select('*').eq('id',partnerId).single();
+  const validPartner = check(partner,error,'Partner not found');
+  const connection=await connectCollaborationSheet(url,String(validPartner.name));
   const {data:duplicate}=await adminClient.from('collaboration_partners').select('name').eq('spreadsheet_id',connection.spreadsheet_id).neq('id',partnerId).maybeSingle();
   if(duplicate)throw new Error(`That spreadsheet is already connected to ${duplicate.name}. Each partner needs a separate Sheet.`);
   const {error:saveError}=await adminClient.from('collaboration_partners').update({...connection,sheet_setup_state:'connected',sheet_setup_error:null,sync_enabled:true}).eq('id',partnerId);
@@ -93,7 +95,9 @@ export async function createCollaborationDeal(raw:z.input<typeof dealInput>){
   const {data:p,error:pError}=await adminClient.from('collaboration_partners').select('id').eq('id',input.partnerId).eq('active',true).single();check(p,pError,'Partner not found');
   const dealRef=`EX-${randomUUID().replace(/-/g,'').slice(0,10).toUpperCase()}`;
   const {data,error}=await adminClient.from('collaboration_deals').insert({partner_id:input.partnerId,deal_ref:dealRef,give_required:input.give,receive_required:input.receive,notes:input.notes||null,created_by:profile.id}).select('id').single();
-  check(data,error,'Could not create deal');refresh(input.partnerId);return String(data.id);
+  const savedDeal = check(data,error,'Could not create deal');
+  refresh(input.partnerId);
+  return String(savedDeal.id);
 }
 export async function addCollaborationLink(raw:z.input<typeof linkInput>){
   const profile=await requireActiveUserForAction();const input=linkInput.parse(raw);
@@ -102,27 +106,30 @@ export async function addCollaborationLink(raw:z.input<typeof linkInput>){
     partner_id:input.partnerId,deal_id:input.dealId||null,direction:input.direction,
     website:input.website,placement_page:input.placementPage,anchor:input.anchor,target_url:input.targetUrl,
     status:input.status,created_by:profile.id,
-  }).select('id').single();check(data,error,'Could not add link');
+  }).select('id').single();
+  const savedLink = check(data,error,'Could not add link');
   let message='Link saved.';
-  const sync=await syncCollaborationLink(data.id);
+  const sync=await syncCollaborationLink(savedLink.id);
   if(sync.state==='failed')message+=` Sheet sync failed (retry available): ${sync.text}`;
   else if(sync.state==='disabled')message+=` ${sync.text}`;
   else message+=' Google Sheet synced.';
-  refresh(input.partnerId);return {id:data.id,message};
+  refresh(input.partnerId);return {id:savedLink.id,message};
 }
 export async function updateCollaborationLinkStatus(linkId:string,newStatus:CollabStatus){
   await requireActiveUserForAction();uuid.parse(linkId);if(!COLLAB_STATUSES.includes(newStatus))throw new Error('Invalid status');
-  const {data,error}=await adminClient.from('collaboration_links').update({status:newStatus,sync_state:'pending'}).eq('id',linkId).select('partner_id').single();check(data,error,'Link not found');
+  const {data,error}=await adminClient.from('collaboration_links').update({status:newStatus,sync_state:'pending'}).eq('id',linkId).select('partner_id').single();
+  const updatedLink = check(data,error,'Link not found');
   const sync=await syncCollaborationLink(linkId);
   try{await updateRequestFromCollaboration(linkId,newStatus);}catch(e){console.warn('[collaboration] linked request update failed:',e);}
-  refresh(data.partner_id);return sync;
+  refresh(updatedLink.partner_id);return sync;
 }
 export async function retryCollaborationLinkSync(linkId:string){
   await requireActiveUserForAction();uuid.parse(linkId);
-  const {data,error}=await adminClient.from('collaboration_links').select('partner_id').eq('id',linkId).single();check(data,error,'Link not found');
+  const {data,error}=await adminClient.from('collaboration_links').select('partner_id,status').eq('id',linkId).single();
+  const link = check(data,error,'Link not found');
   const sync=await syncCollaborationLink(linkId);
-  try{await updateRequestFromCollaboration(linkId,newStatus);}catch(e){console.warn('[collaboration] linked request update failed:',e);}
-  refresh(data.partner_id);return sync;
+  try{await updateRequestFromCollaboration(linkId,String(link.status));}catch(e){console.warn('[collaboration] linked request update failed:',e);}
+  refresh(link.partner_id);return sync;
 }
 export async function allocatePreviouslyGivenLink(partnerId:string,dealId:string,linkId:string){
   await requireActiveUserForAction();uuid.parse(partnerId);uuid.parse(dealId);uuid.parse(linkId);
@@ -139,8 +146,9 @@ const requestCollab=z.object({
 export async function attachRequestToCollaboration(raw:z.input<typeof requestCollab>){
   const profile=await requireActiveUserForAction();const input=requestCollab.parse(raw);
   // Members can only link their own requests; admins may link team requests.
-  const {data:request,error:rError}=await adminClient.from('requests').select('id,created_by_user_id,approved_site,anchor,status').eq('id',input.requestId).is('deleted_at',null).single();check(request,rError,'Request not found');
-  if(profile.role!=='admin' && request.created_by_user_id!==profile.id)throw new Error('You can only attach your own requests.');
+  const {data:request,error:rError}=await adminClient.from('requests').select('id,created_by_user_id,approved_site,anchor,status').eq('id',input.requestId).is('deleted_at',null).single();
+  const linkedRequest = check(request,rError,'Request not found');
+  if(profile.role!=='admin' && linkedRequest.created_by_user_id!==profile.id)throw new Error('You can only attach your own requests.');
   if(input.mode==='direct'&&!input.offer)throw new Error('The link you are offering is required.');
   if(input.mode==='previous'&&!input.previousLinkId)throw new Error('Select a previously given live link.');
   const {data:rows,error}=await adminClient.rpc('create_collaboration_from_request',{
