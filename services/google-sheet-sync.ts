@@ -921,7 +921,7 @@ export async function readTeamSheetProjectRows(project: {
         dr: readCell(row, 'dr', 3) || null,
         traffic: readCell(row, 'traffic', 4) || null,
         status: readCell(row, 'status', 5),
-        note: readCell(row, 'note', fieldIndex('assign_to', 6)) || null,
+        note: readCell(row, 'note', fieldIndex('assign_to', 6)),
         createdByEmail: readCell(row, 'created_by_email', 7),
       });
     }
