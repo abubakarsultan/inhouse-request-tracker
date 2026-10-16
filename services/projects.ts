@@ -9,6 +9,7 @@ import { resolveGoogleSheetUrl, inspectProjectSpreadsheet, inspectProjectTab, cr
 import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 import { adminClient } from '@/lib/supabase-admin';
 import { describeProjectSaveError } from '@/lib/project-save-error';
+import { projectCategorySlug } from '@/lib/project-category-slugs';
 
 export async function getProjects(search?: string, activeOnly = false) {
   const supabase = await createClient();
@@ -122,10 +123,33 @@ async function resolveProjectSheet(input: ProjectInput, existing?: any, adminEma
   return { ...sheet, column_mapping: input.column_mapping };
 }
 
+/** Resolve the required UUID FK against existing categories. Never hard-code IDs:
+ * each Supabase environment may have different UUIDs. A missing category is
+ * an explicit setup error, not a reason to insert an arbitrary ID.
+ */
+async function resolveProjectCategoryId(category: ProjectInput['category']): Promise<string> {
+  const slug = projectCategorySlug(category);
+  const { data, error } = await adminClient.from('project_categories')
+    .select('id')
+    .eq('slug', slug)
+    .eq('active', true)
+    .maybeSingle();
+  if (error) {
+    console.error('[projects] Category lookup failed:', { slug, code: error.code, message: error.message });
+    throw new Error('Project categories could not be loaded. Check project category migration 009 and Supabase permissions.');
+  }
+  if (!data?.id) {
+    throw new Error(`The ${category} category is missing or inactive. Apply project category migration 009 and try again.`);
+  }
+  return String(data.id);
+}
+
 export async function createProject(input: ProjectInput) {
   const profile = await requireAdminForAction();
   const parsed = projectSchema.parse(input);
   const supabase = await createClient();
+  // Validate the FK before creating a Google spreadsheet (no orphan sheets).
+  const categoryId = await resolveProjectCategoryId(parsed.category);
   if (parsed.sheet_source === 'guest_post_anchor') {
     const { data: duplicate, error: duplicateError } = await supabase.from('projects')
       .select('id,name').eq('sheet_source', 'guest_post_anchor')
@@ -156,6 +180,7 @@ export async function createProject(input: ProjectInput) {
     slug,
     outreach_project_name: parsed.outreach_project_name || parsed.name,
     category: parsed.category,
+    category_id: categoryId,
     sheet_source: parsed.sheet_source,
     ...sheet,
     sync_enabled: parsed.sync_enabled,
@@ -170,6 +195,7 @@ export async function updateProject(id: string, input: ProjectInput) {
   await requireAdminForAction();
   const parsed = projectSchema.parse(input);
   const supabase = await createClient();
+  const categoryId = await resolveProjectCategoryId(parsed.category);
   const { data: existing, error: lookupError } = await supabase.from('projects').select('google_sheet_id,google_sheet_gid,guest_post_tab_name,sheet_source,column_mapping').eq('id', id).single();
   if (lookupError || !existing) throw new Error(lookupError?.message || 'Project not found');
   if (parsed.create_new_sheet) throw new Error('Create a new Google Sheet only while adding a project. Connect an existing Sheet URL to change this project.');
@@ -196,6 +222,7 @@ export async function updateProject(id: string, input: ProjectInput) {
     name: parsed.name,
     outreach_project_name: parsed.outreach_project_name || parsed.name,
     category: parsed.category,
+    category_id: categoryId,
     sheet_source: parsed.sheet_source,
     ...sheet,
     sync_enabled: parsed.sync_enabled,

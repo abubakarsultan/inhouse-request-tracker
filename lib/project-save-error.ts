@@ -56,6 +56,8 @@ export function describeProjectSaveError(error: unknown): string {
     /^Please sign in again\./,
     /^Your account is (disabled|waiting for admin approval)\./,
     /^Complete your profile first\./,
+    /^The (Inhouse|Client|On Page|Others) category is missing or inactive\./,
+    /^Project categories could not be loaded\./,
     /^TEAM_SHEET_ID is missing in Vercel\./,
     /^Google Sheets is not configured\./,
     /^Invalid GOOGLE_SERVICE_ACCOUNT_JSON\./,
