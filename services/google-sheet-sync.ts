@@ -77,7 +77,14 @@ function mappedRow(project: SyncableProject, record: Record<string, any>, existi
   const row = Array.from({ length: layout.maxNumber }, (_, index) => existing?.[index] ?? '');
   for (const item of layout.mapping) {
     const index = columnNumber(item.column) - 1;
-    if (item.field !== 'blank') row[index] = valueForField(item.field, record);
+    if (item.field !== 'blank') {
+      const value = valueForField(item.field, record, item.static_value);
+      // When editing a request, do not erase Sheet-managed metrics or values
+      // that were never present in the request model.
+      const preserveMissing = existing && value === '' &&
+        !['approved_site', 'anchor', 'placement_page', 'opportunity', 'status', 'assign_to', 'note', 'static'].includes(item.field);
+      if (!preserveMissing) row[index] = value;
+    }
   }
   return row;
 }
@@ -566,21 +573,23 @@ export async function appendProjectSiteToTeamSheet(
 
     await acquireAppendLock(lockKey, ownerToken);
     try {
+      const layout = sheetLayout(project);
+      await ensureMappedHeaders(sheets, spreadsheetId, tab, project);
       const allRows = await withGoogleRetry(() =>
-        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
       ) as { data: { values?: unknown[][] } };
       let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
       let freeTargetConfirmed = false;
       for (let check = 0; check < 10; check += 1) {
         const target = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}` })
         ) as { data: { values?: unknown[][] } };
         if (!rowHasContent((target.data.values ?? [])[0])) {
           freeTargetConfirmed = true;
           break;
         }
         const reread = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
         ) as { data: { values?: unknown[][] } };
         targetRow = Math.max(targetRow + 1, lastNonEmptyRow((reread.data.values ?? []) as unknown[][]) + 2);
       }
@@ -589,18 +598,9 @@ export async function appendProjectSiteToTeamSheet(
       await withGoogleRetry(() =>
         sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}`,
+          range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}`,
           valueInputOption: 'RAW',
-          requestBody: { values: [[
-            site.website,
-            site.opportunity ?? '',
-            site.anchor ?? '',
-            site.dr ?? '',
-            site.traffic ?? '',
-            site.status,
-            site.note ?? '',
-            site.created_by_email ?? '',
-          ]] },
+          requestBody: { values: [mappedRow(project, site as unknown as Record<string, any>)] },
         })
       );
       await logSync({ projectSiteId: site.id, direction: 'to_sheet', sheetName: tab, sheetRow: targetRow, status: 'success', detail: 'Imported project-site row pushed to team sheet' });
@@ -918,10 +918,10 @@ export async function readTeamSheetProjectRows(project: {
         website: readCell(row, 'approved_site', 0),
         opportunity: readCell(row, 'placement_page', 1),
         anchor: readCell(row, 'anchor', 2),
-        dr: row[3] == null || String(row[3]).trim() === '' ? null : String(row[3]).trim(),
-        traffic: row[4] == null || String(row[4]).trim() === '' ? null : String(row[4]).trim(),
+        dr: readCell(row, 'dr', 3) || null,
+        traffic: readCell(row, 'traffic', 4) || null,
         status: readCell(row, 'status', 5),
-        note: readCell(row, 'assign_to', 6),
+        note: readCell(row, 'note', fieldIndex('assign_to', 6)) || null,
         createdByEmail: readCell(row, 'created_by_email', 7),
       });
     }

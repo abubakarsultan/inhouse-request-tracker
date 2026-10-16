@@ -1,4 +1,16 @@
-# INHOUSE REQUEST — Final V2
+## V7 setup (important)
+
+- Projects now have four categories: **Inhouse, Client, On Page, Others**. Migration 007 defaults all existing projects (including a pre-existing Get Pro Links record) to Inhouse, without modifying Sheet rows.
+- Admins create projects with the four-step wizard: Basic Info → Sheet Source → Column Mapping → Preview & Save. Select shared Guest Post Anchor, connect by Google Sheet URL (no manual ID), or request creation of a new Sheet.
+- All existing Guest Post Anchor mappings and tabs are locked during edits; historic A:H positions, statuses, and Sheet contents are not migrated or rewritten.
+- The Google service account's email must be an **Editor** on any existing custom Sheet. For new Sheet creation the service account requires Google Drive permissions. Some personal/free Drive accounts do not permit service accounts to create files; in that case use Connect Google Sheet URL.
+- Per-project Sheet Details show actual tab, Open Sheet, mapping, and the project-specific Apps Script. Admin must set `SHEET_WEBHOOK_SECRET` in Apps Script and run the generated `installProjectTrigger_xxx` once to authorize it. **Never add duplicate generated triggers to the legacy shared Guest Post Anchor workbook.**
+- Apply the **database/migrations/007_project_categories_sheet_mapping.sql** and **database/migrations/008_project_url_speed.sql** SQL files if they have not already been applied, then deploy this code to Vercel. The migrations are designed not to delete existing requests or Sheet rows.
+- See **RELEASE_V7_PROJECT_WIZARD.md** for step-by-step deployment, mapping examples, and current testing limitations.
+
+---
+
+# INHOUSE REQUEST — V7 Project Setup Upgrade
 
 Internal Rankviz outreach-request app built with Next.js App Router, TypeScript, Supabase/Postgres, Google Sheets API and Vercel.
 
@@ -77,7 +89,7 @@ G Note / Assign To
 H Created By Email
 ```
 
-Sheet status edits support `Request shared`, `Live`, and `Rejected`. The Apps Script must use the installable `onSheetEdit` trigger from `apps-script/SheetStatusWebhook.gs` (or the generated Settings snippet).
+Sheet status edits support `Request shared`, `Live`, and `Rejected`. The Apps Script must use the installable `onSheetEdit` trigger from `apps-script/SheetStatusWebhook.gs` (or the project-specific code in Projects → Sheet Details).
 
 The service account remains the technical Sheets API writer; column H stores the real signed-in employee email for business auditing.
 

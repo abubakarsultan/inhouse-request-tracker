@@ -17,5 +17,5 @@ test('team sheet mirror preserves creator email through saved column mapping', (
   const columns = fs.readFileSync(new URL('../lib/project-sheet.ts', import.meta.url), 'utf8');
   assert.match(columns, /heading: 'Created By Email', field: 'created_by_email'/);
   assert.match(source, /mappedRow\(project, request/);
-  assert.match(source, /valueForField\(item.field, record\)/);
+  assert.match(source, /valueForField\(item.field, record(?:, item.static_value)?\)/);
 });

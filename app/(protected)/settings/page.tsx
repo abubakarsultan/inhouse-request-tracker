@@ -1,18 +1,11 @@
-import { headers } from 'next/headers';
 import { getConnectionDiagnostics } from '@/services/diagnostics';
-import { buildInstallableTriggerSnippet } from '@/lib/sheet-webhook';
 import { requireAdminProfile } from '@/lib/auth';
 import { RANKVIZ_DOMAIN } from '@/lib/auth-rules';
-import GlobalSheetScriptDialog from '@/components/app/global-sheet-script-dialog';
 
 export default async function Settings() {
   const profile = await requireAdminProfile();
   const diagnostics = await getConnectionDiagnostics();
-  const requestHeaders = await headers();
-  const host = requestHeaders.get('x-forwarded-host') || requestHeaders.get('host') || 'YOUR-VERCEL-DOMAIN';
-  const proto = requestHeaders.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
-  const siteUrl = `${proto}://${host}`;
-  const snippet = buildInstallableTriggerSnippet(siteUrl);
+
 
   return (
     <div className="space-y-6">
@@ -42,12 +35,7 @@ export default async function Settings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div><h2 className="font-semibold text-[var(--text)]">Google Sheet integration</h2><p className="mt-1 text-xs text-[var(--muted)]">Technical setup stays available without keeping the full Apps Script open on the Settings screen.</p></div>
-          <GlobalSheetScriptDialog snippet={snippet} webhookUrl={`${siteUrl}/api/sheet-webhook`} />
-        </div>
-      </section>
+
     </div>
   );
 }

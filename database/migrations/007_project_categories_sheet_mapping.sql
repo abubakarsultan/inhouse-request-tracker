@@ -9,7 +9,7 @@ alter table projects add column if not exists column_mapping jsonb not null defa
   {"column":"D","heading":"DR","field":"blank"},
   {"column":"E","heading":"Traffic","field":"blank"},
   {"column":"F","heading":"Status","field":"status"},
-  {"column":"G","heading":"Note / Assigned To","field":"assign_to"},
+  {"column":"G","heading":"Note","field":"assign_to"},
   {"column":"H","heading":"Created By Email","field":"created_by_email"}
 ]'::jsonb;
 

@@ -106,19 +106,92 @@ function onSheetEdit(e) {
 }`;
 }
 
-export function buildProjectTriggerSnippet(siteUrl: string, project: { guest_post_tab_name?: string | null; google_sheet_id?: string | null; sheet_source?: string | null; column_mapping?: unknown }) {
+/**
+ * Each project gets its own named edit handler. This allows multiple project
+ * tabs to live in the same Apps Script project without deleting another
+ * project's installed trigger. The legacy Guest Post Anchor handler stays put.
+ */
+export function buildProjectTriggerSnippet(siteUrl: string, project: {
+  id?: string | null;
+  guest_post_tab_name?: string | null;
+  google_sheet_id?: string | null;
+  sheet_source?: string | null;
+  column_mapping?: unknown;
+}) {
   const base = siteUrl.replace(/\/+$/, '');
   const mapping = Array.isArray(project.column_mapping) ? project.column_mapping as Array<{ column?: string; field?: string }> : [];
   const colNum = (field: string, fallback: number) => {
     const item = mapping.find((entry) => entry.field === field);
     const col = String(item?.column || '').toUpperCase();
-    if (!col) return fallback;
-    let n = 0; for (const c of col) n = n * 26 + c.charCodeAt(0) - 64; return n || fallback;
+    if (!/^[A-Z]$/.test(col)) return fallback;
+    return col.charCodeAt(0) - 64;
   };
   const websiteCol = colNum('approved_site', 1);
   const anchorCol = colNum('anchor', 3);
   const statusCol = colNum('status', 6);
-  const tab = String(project.guest_post_tab_name || '').replace(/'/g, "\\'");
+  const tab = String(project.guest_post_tab_name || '');
   const spreadsheetId = project.sheet_source === 'custom_sheet' ? String(project.google_sheet_id || '') : '';
-  return `const INHOUSE_REQUEST_WEBHOOK_URL = '${base}/api/sheet-webhook';\nconst SHEET_WEBHOOK_SECRET = 'PASTE_THE_SAME_SHEET_WEBHOOK_SECRET_HERE';\nconst PROJECT_TAB = '${tab}';\nconst PROJECT_SPREADSHEET_ID = '${spreadsheetId}';\nconst WEBSITE_COLUMN = ${websiteCol};\nconst ANCHOR_COLUMN = ${anchorCol};\nconst STATUS_COLUMN = ${statusCol};\n\nfunction installTrigger() {\n  const spreadsheet = SpreadsheetApp.getActive();\n  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'onSheetEdit').forEach(t => ScriptApp.deleteTrigger(t));\n  ScriptApp.newTrigger('onSheetEdit').forSpreadsheet(spreadsheet).onEdit().create();\n}\n\nfunction onSheetEdit(e) {\n  if (!e || !e.range) return;\n  const range = e.range;\n  const sheet = range.getSheet();\n  if (sheet.getName() !== PROJECT_TAB || range.getColumn() !== STATUS_COLUMN || range.getNumColumns() !== 1) return;\n  const startRow = range.getRow();\n  const rowCount = range.getNumRows();\n  for (let i = 0; i < rowCount; i++) {\n    const sheetRow = startRow + i;\n    if (sheetRow <= 1) continue;\n    const website = String(sheet.getRange(sheetRow, WEBSITE_COLUMN).getDisplayValue() || '').trim();\n    const anchor = String(sheet.getRange(sheetRow, ANCHOR_COLUMN).getDisplayValue() || '').trim();\n    const status = String(sheet.getRange(sheetRow, STATUS_COLUMN).getDisplayValue() || '').trim();\n    if (!website || !anchor || !['Request shared','Live','Rejected'].includes(status)) continue;\n    const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {\n      method: 'post', contentType: 'application/json', headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },\n      payload: JSON.stringify({ tab: sheet.getName(), spreadsheetId: PROJECT_SPREADSHEET_ID || undefined, row: sheetRow, website, anchor, status }), muteHttpExceptions: true\n    });\n    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) console.error('INHOUSE REQUEST webhook failed', response.getResponseCode(), response.getContentText());\n  }\n}`;
+  // Stable short identifier, independent of Google tab names / special characters.
+  const key = String(project.id || `${spreadsheetId}:${tab}`);
+  let hash = 2166136261;
+  for (const char of key) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619) >>> 0;
+  const suffix = hash.toString(16).padStart(8, '0');
+  const handler = `onProjectSheetEdit_${suffix}`;
+  const installer = `installProjectTrigger_${suffix}`;
+  const urlLiteral = JSON.stringify(`${base}/api/sheet-webhook`);
+  const tabLiteral = JSON.stringify(tab);
+  const idLiteral = JSON.stringify(spreadsheetId);
+  return `// Project tab: ${tab.replace(/[\r\n]/g, ' ')}
+// 1. Change SHEET_WEBHOOK_SECRET to the same secret set in Vercel.
+// 2. Open Extensions > Apps Script in this Sheet and paste the code.
+// 3. Run ${installer} once and approve the Google permission prompt.
+// Existing Guest Post Anchor workbook: DO NOT install another trigger.
+
+function ${installer}() {
+  const spreadsheet = SpreadsheetApp.getActive();
+  const expectedSheetId = ${idLiteral};
+  if (expectedSheetId && spreadsheet.getId() !== expectedSheetId) {
+    throw new Error('Wrong Google Sheet. Open Apps Script from the selected project spreadsheet.');
+  }
+  ScriptApp.getProjectTriggers()
+    .filter(trigger => trigger.getHandlerFunction() === ${JSON.stringify(handler)})
+    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+  ScriptApp.newTrigger(${JSON.stringify(handler)})
+    .forSpreadsheet(spreadsheet).onEdit().create();
+}
+
+function ${handler}(e) {
+  if (!e || !e.range) return;
+  const PROJECT_TAB = ${tabLiteral};
+  const PROJECT_SPREADSHEET_ID = ${idLiteral};
+  const INHOUSE_REQUEST_WEBHOOK_URL = ${urlLiteral};
+  const SHEET_WEBHOOK_SECRET = 'PASTE_THE_SAME_SHEET_WEBHOOK_SECRET_HERE';
+  const WEBSITE_COLUMN = ${websiteCol};
+  const ANCHOR_COLUMN = ${anchorCol};
+  const STATUS_COLUMN = ${statusCol};
+  const range = e.range;
+  const sheet = range.getSheet();
+  if (sheet.getName() !== PROJECT_TAB) return;
+  if (PROJECT_SPREADSHEET_ID && sheet.getParent().getId() !== PROJECT_SPREADSHEET_ID) return;
+  if (range.getColumn() > STATUS_COLUMN || range.getLastColumn() < STATUS_COLUMN) return;
+  for (let i = 0; i < range.getNumRows(); i++) {
+    const sheetRow = range.getRow() + i;
+    if (sheetRow <= 1) continue;
+    const website = String(sheet.getRange(sheetRow, WEBSITE_COLUMN).getDisplayValue() || '').trim();
+    const anchor = String(sheet.getRange(sheetRow, ANCHOR_COLUMN).getDisplayValue() || '').trim();
+    const status = String(sheet.getRange(sheetRow, STATUS_COLUMN).getDisplayValue() || '').trim();
+    if (!website || !anchor || !['Request shared', 'Live', 'Rejected'].includes(status)) continue;
+    const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
+      method: 'post', contentType: 'application/json',
+      headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },
+      payload: JSON.stringify({
+        tab: sheet.getName(), spreadsheetId: PROJECT_SPREADSHEET_ID || undefined,
+        row: sheetRow, website, anchor, status
+      }), muteHttpExceptions: true
+    });
+    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
+      console.error('Project status sync error', response.getResponseCode(), response.getContentText());
+    }
+  }
+}`;
 }

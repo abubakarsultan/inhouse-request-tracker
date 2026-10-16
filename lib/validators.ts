@@ -25,6 +25,7 @@ const columnMappingSchema = z.array(z.object({
   column: z.string().trim().toUpperCase().regex(/^[A-Z]$/, 'Use a column from A to Z'),
   heading: z.string().trim().min(1, 'Heading is required'),
   field: z.enum(SHEET_DATA_FIELDS.map((item) => item.value) as [string, ...string[]]),
+  static_value: z.string().max(300).optional(),
 })).min(1).max(26).superRefine((columns, ctx) => {
   const seen = new Set<string>();
   for (const [index, item] of columns.entries()) {
@@ -44,6 +45,8 @@ export const projectSchema = z.object({
   }),
   guest_post_tab_name: z.string().trim().optional().nullable(),
   column_mapping: columnMappingSchema,
+  create_new_sheet: z.boolean().optional().default(false),
+  new_sheet_title: z.string().trim().max(150).optional().nullable(),
   sync_enabled: z.boolean().default(true),
 });
 export type ProjectInput = z.infer<typeof projectSchema>;
