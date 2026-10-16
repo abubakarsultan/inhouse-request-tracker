@@ -28,11 +28,11 @@ export default async function PartnerDetails({params}:{params:Promise<{id:string
       {sheetUrl&&<p className="mt-1 text-xs text-[var(--muted)]">{partner.spreadsheet_title} · {partner.our_tab_name} / {partner.partner_tab_name} / {partner.summary_tab_name}</p>}
       {partner.sheet_setup_error&&<p className="mt-3 rounded-lg bg-[#fef7e0] p-2 text-xs text-[#795000]">{partner.sheet_setup_error}</p>}
       <p className="mt-3 text-xs text-[var(--muted)]">Last sync: {partner.last_synced_at?new Date(partner.last_synced_at).toLocaleString():'Not yet synced'}</p>
-      {profile.role==='admin'&&<div className="mt-4 grid gap-4 md:grid-cols-2">
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
         <div><h3 className="mb-2 text-sm font-bold">Connect / Reconnect</h3><ConnectPartnerSheet partnerId={partner.id}/></div>
         <div className="space-y-2"><h3 className="text-sm font-bold">One-File Google Sheets Template</h3><p className="text-xs text-[var(--muted)]">Download one .xlsx workbook containing all 3 tabs. Upload it once to Google Drive, open/convert it to Google Sheets, share Editor access, then paste the Google Sheets URL.</p><a className="inline-block rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold" href={`/api/collaboration/templates?partner=${encodeURIComponent(partner.name)}`}>Download Excel Template (.xlsx)</a></div>
-      </div>}
-      {profile.role==='admin'&&partner.sheet_setup_state==='connected'&&<div className="mt-5 border-t border-[var(--border)] pt-4"><h3 className="mb-2 text-sm font-bold">Sheet → App Apps Script</h3><p className="mb-2 text-xs text-[var(--muted)]">Copy code into this spreadsheet's Extensions → Apps Script. Run installCollaborationTrigger once and authorize Google. App → Sheet sync works without this trigger; Sheet → App requires it.</p><CopyCode script={script}/></div>}
+      </div>
+      {partner.sheet_setup_state==='connected'&&<div className="mt-5 border-t border-[var(--border)] pt-4"><h3 className="mb-2 text-sm font-bold">Sheet → App Apps Script</h3><p className="mb-2 text-xs text-[var(--muted)]">Copy code into this spreadsheet's Extensions → Apps Script. Run installCollaborationTrigger once and authorize Google. App → Sheet sync works without this trigger; Sheet → App requires it.</p><CopyCode script={script}/></div>}
     </section>
     <section className={panel}><h2 className="mb-3 text-lg font-bold">Exchange Deals</h2><DealCreator partnerId={partner.id} give={partner.default_give_qty} receive={partner.default_receive_qty}/>
       <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[620px] text-left text-sm"><thead><tr className="border-b border-[var(--border)] text-xs text-[var(--muted)]"><th className="p-2">Deal ID</th><th className="p-2">Give</th><th className="p-2">Receive</th><th className="p-2">Remaining (Us / Partner)</th><th className="p-2">State</th></tr></thead><tbody>
