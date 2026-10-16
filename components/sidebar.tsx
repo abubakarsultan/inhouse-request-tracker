@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch, HeartPulse, UsersRound, PlusCircle, UserRound, type LucideIcon } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch, HeartPulse, UsersRound, Handshake, PlusCircle, UserRound, type LucideIcon } from 'lucide-react';
 import type { AppRole } from '@/lib/auth-types';
 
 const memberLinks = [
   ['Dashboard', '/dashboard', LayoutDashboard],
   ['My Requests', '/my-requests', ListTodo],
   ['Create Request', '/requests/new', PlusCircle],
+  ['Collaborations', '/collaborations', Handshake],
   ['Site Check', '/site-check', ScanSearch],
   ['Profile', '/profile', UserRound],
 ] as const;
@@ -16,6 +17,7 @@ const memberLinks = [
 const adminPrimaryLinks = [
   ['Dashboard', '/dashboard', LayoutDashboard],
   ['Projects', '/projects', FolderKanban],
+  ['Collaborations', '/collaborations', Handshake],
   ['All Requests', '/requests', ListTodo],
   ['My Requests', '/my-requests', UserRound],
   ['Create Request', '/requests/new', PlusCircle],
@@ -32,7 +34,7 @@ const adminControlLinks = [
 
 type LinkTuple = readonly [string, string, LucideIcon];
 
-const quickPrefetch = new Set(['/dashboard', '/projects', '/requests', '/my-requests', '/requests/new']);
+const quickPrefetch = new Set(['/dashboard', '/projects', '/collaborations', '/requests', '/my-requests', '/requests/new']);
 
 export default function Sidebar({ role }: { role: AppRole }) {
   const pathname = usePathname();

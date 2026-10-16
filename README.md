@@ -1,3 +1,5 @@
+**New:** V8 Collaboration module setup: see [RELEASE_V8_COLLABORATION_IMPLEMENTATION.md](RELEASE_V8_COLLABORATION_IMPLEMENTATION.md).
+
 ## V7 setup (important)
 
 - Projects now have four categories: **Inhouse, Client, On Page, Others**. Migration 007 defaults all existing projects (including a pre-existing Get Pro Links record) to Inhouse, without modifying Sheet rows.

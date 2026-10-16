@@ -107,6 +107,10 @@ export async function setRequestStatusCore(
     if (sync.row && linkedSite?.id) await supabase.from('project_sites').update({ team_row: sync.row }).eq('id', linkedSite.id);
   }
 
+  try {
+    const { updateCollaborationFromRequest } = await import('@/lib/collaboration-status-bridge');
+    await updateCollaborationFromRequest(requestId, newStatus);
+  } catch (error) { console.error('[collaboration] Linked request status propagation failed:', error); }
   revalidateRequestPaths(project?.slug);
   return { ok: database.ok && projectSite.ok && teamSheet.ok, database, projectSite, teamSheet };
 }
