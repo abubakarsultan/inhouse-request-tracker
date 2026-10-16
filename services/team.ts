@@ -5,6 +5,21 @@ import { adminClient } from '@/lib/supabase-admin';
 import { requireAdminForAction, type UserProfile } from '@/lib/auth';
 import { syncRequestFullRowToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 
+
+export async function createUserInvitation(emailInput: string, displayNameInput: string, role: 'admin' | 'member') {
+  const admin = await requireAdminForAction();
+  const email = String(emailInput ?? '').trim().toLowerCase();
+  const displayName = String(displayNameInput ?? '').trim() || null;
+  if (!email || !email.includes('@') || email.endsWith('@rankviz.com')) throw new Error('External invitations require a valid non-Rankviz email.');
+  const { data: existing } = await adminClient.from('users').select('id,account_status').eq('email', email).maybeSingle();
+  if (existing?.account_status === 'active') throw new Error('This email already has an active account.');
+  const { error: revokeError } = await adminClient.from('user_invitations').update({ status: 'revoked' }).eq('email', email).eq('status', 'pending');
+  if (revokeError) throw new Error(revokeError.message);
+  const { error } = await adminClient.from('user_invitations').insert({ email, display_name: displayName, role, status: 'pending', invited_by: admin.id });
+  if (error) throw new Error(error.message);
+  revalidatePath('/team');
+}
+
 export type TeamNameOption = { id: string; name: string; badge_bg: string; badge_text: string; active: boolean; claimedBy: string | null };
 
 export async function getAvailableTeamNames(): Promise<TeamNameOption[]> {
