@@ -20,7 +20,9 @@ export async function proxy(request: NextRequest) {
     },
   });
 
-  await supabase.auth.getUser();
+  // A verified JWT is normally checked locally against cached JWKS, avoiding
+  // an Auth-server network request on every internal navigation.
+  await supabase.auth.getClaims();
   return response;
 }
 

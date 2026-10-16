@@ -26,6 +26,11 @@ create table if not exists projects (
   outreach_project_name text,
   guest_post_tab_name text,
   google_sheet_id text,
+  google_sheet_gid bigint,
+  category text not null default 'Inhouse' check (category in ('Inhouse','Client','On Page','Others')),
+  sheet_source text not null default 'guest_post_anchor' check (sheet_source in ('guest_post_anchor','custom_sheet')),
+  sheet_name text,
+  column_mapping jsonb not null default '[{"column":"A","heading":"Website","field":"approved_site"},{"column":"B","heading":"Opportunity","field":"placement_page"},{"column":"C","heading":"Anchor","field":"anchor"},{"column":"D","heading":"DR","field":"blank"},{"column":"E","heading":"Traffic","field":"blank"},{"column":"F","heading":"Status","field":"status"},{"column":"G","heading":"Note / Assigned To","field":"assign_to"},{"column":"H","heading":"Created By Email","field":"created_by_email"}]'::jsonb,
   sync_enabled boolean not null default true,
   active boolean not null default true,
   created_by uuid,
@@ -322,7 +327,7 @@ as $$
           and regexp_replace(lower(coalesce(r.approved_site, '')), '[^a-z0-9]', '', 'g') = n.website_key
           and regexp_replace(lower(coalesce(r.anchor, '')), '[^a-z0-9]', '', 'g') = n.anchor_key
         )
-        or (p_row is not null and r.team_row = p_row)
+        or (p_sheet_id is null and p_row is not null and r.team_row = p_row)
       )
   )
   select id,
@@ -945,7 +950,7 @@ as $$
           and regexp_replace(lower(coalesce(r.approved_site, '')), '[^a-z0-9]', '', 'g') = n.website_key
           and regexp_replace(lower(coalesce(r.anchor, '')), '[^a-z0-9]', '', 'g') = n.anchor_key
         )
-        or (p_row is not null and r.team_row = p_row)
+        or (p_sheet_id is null and p_row is not null and r.team_row = p_row)
       )
   )
   select id,
@@ -1293,120 +1298,84 @@ $$;
 
 revoke execute on function get_admin_team_attention() from public, anon, authenticated;
 grant execute on function get_admin_team_attention() to service_role;
--- INHOUSE REQUEST upgrade 009: categories, per-project sheet settings, request flags, viewer role audit and query support.
--- Safe to re-run; does not delete or rewrite request/project data beyond category backfill.
 
-create table if not exists public.project_categories (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  slug text not null,
-  sort_order integer not null default 0,
-  sheet_mode text not null check (sheet_mode in ('team_sheet_tab','own_sheet')),
-  active boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-create unique index if not exists project_categories_name_lower_uq on public.project_categories (lower(name));
-create unique index if not exists project_categories_slug_uq on public.project_categories (slug);
+-- Project URL + performance upgrades (also see migration 008 for existing databases)
+-- Apply after 007. No existing requests or projects are removed.
+alter table public.projects add column if not exists google_sheet_gid bigint;
 
-insert into public.project_categories (name, slug, sort_order, sheet_mode, active)
-select v.name, v.slug, v.sort_order, v.sheet_mode, true
-from (values
-  ('Inhouse','inhouse',10,'team_sheet_tab'),
-  ('Client','client',20,'own_sheet'),
-  ('Onpage','onpage',30,'own_sheet')
-) as v(name,slug,sort_order,sheet_mode)
-where not exists (select 1 from public.project_categories c where lower(c.name)=lower(v.name));
-
-alter table public.projects add column if not exists category_id uuid;
-alter table public.projects add column if not exists sheet_tab_name text;
-alter table public.projects add column if not exists sheet_column_config jsonb not null default '{}'::jsonb;
-alter table public.projects add column if not exists sheet_share_emails text[] not null default '{}'::text[];
-
-update public.projects set sheet_tab_name = guest_post_tab_name
-where sheet_tab_name is null and guest_post_tab_name is not null;
-update public.projects p set category_id = c.id
-from public.project_categories c
-where p.category_id is null and lower(c.name)='inhouse';
-
--- If a legacy installation somehow has no Inhouse category, seed it before enforcing NOT NULL.
-insert into public.project_categories(name,slug,sort_order,sheet_mode,active)
-select 'Inhouse','inhouse',10,'team_sheet_tab',true
-where not exists (select 1 from public.project_categories where lower(name)='inhouse');
-update public.projects p set category_id = c.id
-from public.project_categories c
-where p.category_id is null and lower(c.name)='inhouse';
-
-alter table public.projects alter column category_id set not null;
-do $$ begin
-  alter table public.projects add constraint projects_category_id_fkey
-    foreign key (category_id) references public.project_categories(id) on delete restrict;
-exception when duplicate_object then null; end $$;
-create index if not exists projects_category_active_idx on public.projects(category_id, active, name);
-
-alter table public.requests add column if not exists sheet_flag text;
-alter table public.requests add column if not exists sheet_flag_at timestamptz;
-do $$ begin
-  alter table public.requests add constraint requests_sheet_flag_check
-    check (sheet_flag is null or sheet_flag in ('Removed'));
-exception when duplicate_object then null; end $$;
-create index if not exists requests_sheet_flag_idx on public.requests(sheet_flag) where sheet_flag is not null;
-create index if not exists requests_project_status_created_idx on public.requests(project_id, status, created_at desc) where deleted_at is null;
-create index if not exists project_sites_project_status_idx on public.project_sites(project_id, status);
-
--- Existing role is an enum in canonical schema. Add viewer without changing existing roles.
-alter type public.user_role add value if not exists 'viewer';
-
-create table if not exists public.user_role_audit (
-  id uuid primary key default gen_random_uuid(),
-  changed_user_id uuid not null references public.users(id) on delete cascade,
-  changed_by_user_id uuid references public.users(id) on delete set null,
-  action text not null,
-  old_value jsonb,
-  new_value jsonb,
-  created_at timestamptz not null default now()
-);
-create index if not exists user_role_audit_changed_user_idx on public.user_role_audit(changed_user_id, created_at desc);
-create index if not exists user_role_audit_changed_by_idx on public.user_role_audit(changed_by_user_id, created_at desc);
-
-create or replace function public.get_project_request_counts()
-returns table(project_id uuid, request_count bigint, live_count bigint, pending_count bigint, rejected_count bigint, removed_count bigint)
-language sql stable security definer set search_path=public as $$
-  select p.id,
-    count(r.id) filter (where r.deleted_at is null),
-    count(r.id) filter (where r.deleted_at is null and r.status='Live'),
-    count(r.id) filter (where r.deleted_at is null and r.status='Request shared'),
-    count(r.id) filter (where r.deleted_at is null and r.status='Rejected'),
-    count(r.id) filter (where r.deleted_at is null and r.sheet_flag='Removed')
-  from public.projects p left join public.requests r on r.project_id=p.id
-  group by p.id;
+-- Aggregate project counts in Postgres instead of reading all request records in pages.
+create or replace function public.project_request_status_counts()
+returns table (project_id uuid, requests bigint, live bigint, pending bigint, rejected bigint)
+language sql stable security definer set search_path = public
+as $$
+  select r.project_id,
+    count(*) as requests,
+    count(*) filter (where r.status = 'Live') as live,
+    count(*) filter (where r.status = 'Request shared') as pending,
+    count(*) filter (where r.status = 'Rejected') as rejected
+  from public.requests r
+  where r.deleted_at is null
+  group by r.project_id;
 $$;
-revoke all on function public.get_project_request_counts() from public, anon, authenticated;
-grant execute on function public.get_project_request_counts() to service_role;
 
-alter table public.project_categories enable row level security;
-drop policy if exists project_categories_read_active on public.project_categories;
-create policy project_categories_read_active on public.project_categories for select to authenticated
-  using (active = true or exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
-drop policy if exists project_categories_admin_insert on public.project_categories;
-create policy project_categories_admin_insert on public.project_categories for insert to authenticated
-  with check (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
-drop policy if exists project_categories_admin_update on public.project_categories;
-create policy project_categories_admin_update on public.project_categories for update to authenticated
-  using (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'))
-  with check (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
+create or replace function public.project_site_status_counts(p_project_id uuid)
+returns table (total bigint, live bigint, pending bigint, rejected bigint)
+language sql stable security definer set search_path = public
+as $$
+  select count(*) as total,
+    count(*) filter (where s.status = 'Live') as live,
+    count(*) filter (where s.status = 'Request shared') as pending,
+    count(*) filter (where s.status = 'Rejected') as rejected
+  from public.project_sites s
+  where s.project_id = p_project_id and s.archived_at is null;
+$$;
 
-alter table public.user_role_audit enable row level security;
-drop policy if exists user_role_audit_admin_read on public.user_role_audit;
-create policy user_role_audit_admin_read on public.user_role_audit for select to authenticated
-  using (exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'));
+revoke all on function public.project_request_status_counts() from public, anon, authenticated;
+revoke all on function public.project_site_status_counts(uuid) from public, anon, authenticated;
+grant execute on function public.project_request_status_counts() to service_role;
+grant execute on function public.project_site_status_counts(uuid) to service_role;
 
-drop trigger if exists trg_project_categories_updated on public.project_categories;
-create trigger trg_project_categories_updated before update on public.project_categories
-  for each row execute function public.set_updated_at();
+create index if not exists idx_project_sites_visible_latest
+on public.project_sites (project_id, created_at desc)
+where archived_at is null;
+create index if not exists idx_requests_active_project_status
+on public.requests (project_id, status)
+where deleted_at is null;
 
--- Verification queries (run after this migration):
--- select name, slug, sheet_mode from public.project_categories order by sort_order;
--- select count(*) as projects_without_category from public.projects where category_id is null;
--- select column_name from information_schema.columns where table_schema='public' and table_name='requests' and column_name in ('sheet_flag','sheet_flag_at');
--- select unnest(enum_range(null::public.user_role)) as role;
+-- Sheet webhooks must be scoped to a spreadsheet. Many custom Sheets have the
+-- same default tab name ("Sheet1"); tab + row alone must never identify a project.
+-- NULL sheet id means the legacy shared Guest Post Anchor script.
+create or replace function public.find_request_from_sheet_scoped(
+  p_tab text, p_website text, p_anchor text, p_row integer, p_sheet_id text
+)
+returns table(request_id uuid, match_type text)
+language sql stable security definer set search_path = public
+as $$
+  with normalized as (
+    select regexp_replace(lower(coalesce(p_website, '')), '[^a-z0-9]', '', 'g') as website_key,
+           regexp_replace(lower(coalesce(p_anchor, '')), '[^a-z0-9]', '', 'g') as anchor_key
+  ), matches as (
+    select r.id,
+           case when regexp_replace(lower(coalesce(r.approved_site, '')), '[^a-z0-9]', '', 'g') = n.website_key
+                  and regexp_replace(lower(coalesce(r.anchor, '')), '[^a-z0-9]', '', 'g') = n.anchor_key
+                then 1 else 2 end as priority
+    from public.requests r
+    join public.projects p on p.id = r.project_id
+    cross join normalized n
+    where r.deleted_at is null and r.team_tab = p_tab
+      and (
+        (p_sheet_id is null and p.sheet_source = 'guest_post_anchor')
+        or (p_sheet_id is not null and p.sheet_source = 'custom_sheet' and p.google_sheet_id = p_sheet_id)
+      )
+      and (
+        (length(n.website_key) > 0 and length(n.anchor_key) > 0
+         and regexp_replace(lower(coalesce(r.approved_site, '')), '[^a-z0-9]', '', 'g') = n.website_key
+         and regexp_replace(lower(coalesce(r.anchor, '')), '[^a-z0-9]', '', 'g') = n.anchor_key)
+        or (p_sheet_id is null and p_row is not null and r.team_row = p_row)
+      )
+  )
+  select m.id, case when m.priority = 1 then 'site_anchor' else 'row_fallback' end
+  from matches m order by m.priority, m.id limit 1;
+$$;
+revoke all on function public.find_request_from_sheet_scoped(text,text,text,integer,text) from public, anon, authenticated;
+grant execute on function public.find_request_from_sheet_scoped(text,text,text,integer,text) to service_role;

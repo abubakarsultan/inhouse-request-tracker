@@ -1,7 +1,6 @@
 'use server';
 
 import { createClient } from '@/lib/supabase-server';
-import { adminClient } from '@/lib/supabase-admin';
 import { normalizeSearchText } from '@/lib/domain';
 import { requireActiveUserForAction } from '@/lib/auth';
 
@@ -32,9 +31,9 @@ export async function searchDatabase(query: string): Promise<SearchDatabaseResul
   if (normalizeSearchText(clean).length < 2) return { ok: true, count: 0, capped: false, rows: [] };
 
   const profile = await requireActiveUserForAction();
-  const supabase = profile.role === 'viewer' ? adminClient : await createClient();
-  const rpc = profile.role !== 'member' ? 'search_requests' : 'search_requests_for_user';
-  const args = profile.role !== 'member'
+  const supabase = await createClient();
+  const rpc = profile.role === 'admin' ? 'search_requests' : 'search_requests_for_user';
+  const args = profile.role === 'admin'
     ? { p_query: clean, p_limit: 101 }
     : { p_query: clean, p_user_id: profile.id, p_sheet_name: profile.sheet_name || '', p_limit: 101 };
   const { data, error } = await supabase.rpc(rpc, args);

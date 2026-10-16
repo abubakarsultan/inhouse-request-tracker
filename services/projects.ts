@@ -1,12 +1,15 @@
 'use server';
 
 import { createClient } from '@/lib/supabase-server';
-import { adminClient } from '@/lib/supabase-admin';
-import { projectSchema, validateSheetTabName, type ProjectInput } from '@/lib/validators';
-import { ensureTeamSheetTab, prepareOwnSheetConnection } from '@/services/google-sheet-sync';
+import { projectSchema, type ProjectInput } from '@/lib/validators';
 import { slugify } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
 import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
+import { resolveGoogleSheetUrl, inspectProjectSpreadsheet, inspectProjectTab, createBlankProjectSpreadsheet } from '@/lib/google-sheet-setup';
+import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
+import { adminClient } from '@/lib/supabase-admin';
+import { describeProjectSaveError } from '@/lib/project-save-error';
+import { projectCategorySlug } from '@/lib/project-category-slugs';
 
 export async function getProjects(search?: string, activeOnly = false) {
   const supabase = await createClient();
@@ -19,49 +22,47 @@ export async function getProjects(search?: string, activeOnly = false) {
 }
 
 
+/**
+ * Statistics are an enhancement, not a dependency of the Projects workspace.
+ * Migration 008 adds the fast Postgres aggregate RPC. Older deployments should
+ * still list/edit projects while the DB is being upgraded. Never show fake 0s
+ * when the aggregate cannot be obtained.
+ */
 export async function getProjectsWithCounts(search?: string) {
-  const { requireActiveUserForAction } = await import('@/lib/auth');
-  const profile = await requireActiveUserForAction();
-  if (profile.role === 'member') throw new Error('Company-wide project counts are not available to member accounts.');
-  const supabase = adminClient;
-  let projectQuery = supabase.from('projects').select('*').order('name', { ascending: true });
-  if (search) projectQuery = projectQuery.ilike('name', `%${search}%`);
-  const { data: projects, error: projectsError } = await projectQuery;
-  if (projectsError) throw projectsError;
-  const categories = await getProjectCategories(false);
-  const categoryById = new Map(categories.map((category: any) => [String(category.id), category]));
-  const rows: Array<{ project_id: string; status: string }> = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from('requests').select('project_id,status').is('deleted_at', null).range(from, from + 999);
-    if (error) throw error;
-    rows.push(...((data ?? []) as Array<{ project_id: string; status: string }>));
-    if ((data ?? []).length < 1000) break;
+  await requireAdminForAction();
+  const [projects, stats] = await Promise.all([
+    getProjects(search),
+    Promise.resolve()
+      .then(() => adminClient.rpc('project_request_status_counts'))
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('[projects] Project counts RPC failed. Check migration 008 and service role permissions:', error.message);
+          return { rows: [] as any[], unavailable: true };
+        }
+        return { rows: (data ?? []) as any[], unavailable: false };
+      })
+      .catch((error: unknown) => {
+        console.error('[projects] Project counts RPC unavailable:', error);
+        return { rows: [] as any[], unavailable: true };
+      }),
+  ]);
+
+  type Counts = { requests: number | null; live: number | null; pending: number | null; rejected: number | null };
+  const counts = new Map<string, Counts>();
+  for (const row of stats.rows) {
+    counts.set(String(row.project_id), {
+      requests: Number(row.requests || 0), live: Number(row.live || 0),
+      pending: Number(row.pending || 0), rejected: Number(row.rejected || 0),
+    });
   }
 
-  const counts = new Map<string, { requests: number; live: number; pending: number; rejected: number }>();
-  for (const row of rows) {
-    const item = counts.get(row.project_id) ?? { requests: 0, live: 0, pending: 0, rejected: 0 };
-    item.requests += 1;
-    if (row.status === 'Live') item.live += 1;
-    if (row.status === 'Request shared') item.pending += 1;
-    if (row.status === 'Rejected') item.rejected += 1;
-    counts.set(row.project_id, item);
-  }
-
-  return projects.map((project: any) => ({
-    ...project,
-    category: categoryById.get(String(project.category_id)) ?? null,
-    counts: counts.get(String(project.id)) ?? { requests: 0, live: 0, pending: 0, rejected: 0 },
-  }));
-}
-
-export async function getProjectCategories(activeOnly = true) {
-  const supabase = await createClient();
-  let query = supabase.from('project_categories').select('id,name,slug,sort_order,sheet_mode,active').order('sort_order').order('name');
-  if (activeOnly) query = query.eq('active', true);
-  const { data, error } = await query;
-  if (error) throw error;
-  return data ?? [];
+  const empty: Counts = stats.unavailable
+    ? { requests: null, live: null, pending: null, rejected: null }
+    : { requests: 0, live: 0, pending: 0, rejected: 0 };
+  return {
+    statsUnavailable: stats.unavailable,
+    projects: projects.map((project: any) => ({ ...project, counts: counts.get(String(project.id)) ?? empty })),
+  };
 }
 
 export async function getActiveProjects() {
@@ -70,42 +71,102 @@ export async function getActiveProjects() {
 }
 
 export async function getProjectBySlug(slug: string) {
-  const { requireActiveUserForAction } = await import('@/lib/auth');
-  const profile = await requireActiveUserForAction();
-  if (profile.role === 'member') throw new Error('Project details are available to admins and read-only viewers.');
-  const supabase = adminClient;
+  await requireAdminForAction();
+  const supabase = await createClient();
   const { data, error } = await supabase.from('projects').select('*').eq('slug', slug).single();
   if (error) throw error;
   return data;
 }
 
-export async function createProject(input: ProjectInput): Promise<{ warning?: string }> {
+/** Admin-only metadata lookup. No writes and no full-row scans. */
+export async function listProjectSheetTabs(sheetUrl?: string, shared = false) {
   await requireAdminForAction();
+  return inspectProjectSpreadsheet(sheetUrl, shared);
+}
+
+export async function inspectSharedProjectTab(tabName: string) {
+  await requireAdminForAction();
+  const result = await inspectProjectSpreadsheet(undefined, true);
+  const tab = result.tabs.find((entry) => entry.title === tabName);
+  if (!tab) throw new Error('Shared Guest Post Anchor tab not found.');
+  return inspectProjectTab(`https://docs.google.com/spreadsheets/d/${result.spreadsheetId}/edit#gid=${tab.gid}`);
+}
+
+export async function testProjectSheetConnection(sheetUrl: string) {
+  await requireAdminForAction();
+  return inspectProjectTab(sheetUrl);
+}
+
+async function resolveProjectSheet(input: ProjectInput, existing?: any, adminEmail?: string) {
+  if (input.sheet_source === 'guest_post_anchor') {
+    if (!input.guest_post_tab_name?.trim()) throw new Error('Select a Guest Post Anchor project tab.');
+    // Validate the existing shared workbook and tab without changing its contents.
+    const shared = await inspectProjectSpreadsheet(undefined, true);
+    const chosen = shared.tabs.find((item) => item.title === input.guest_post_tab_name);
+    if (!chosen) throw new Error('That Guest Post Anchor tab was not found. Reload available tabs.');
+    return {
+      google_sheet_id: null, google_sheet_gid: chosen.gid, sheet_name: 'Guest Post Anchor',
+      guest_post_tab_name: chosen.title, column_mapping: input.column_mapping,
+    };
+  }
+  if (input.create_new_sheet) {
+    if (!adminEmail) throw new Error('A signed-in administrator is needed to share the new sheet.');
+    if (!input.new_sheet_title?.trim() || !input.guest_post_tab_name?.trim()) throw new Error('New Sheet title and tab name are required.');
+    const created = await createBlankProjectSpreadsheet(input.new_sheet_title, input.guest_post_tab_name, adminEmail, input.column_mapping as any);
+    return { ...created, column_mapping: input.column_mapping };
+  }
+  if (!input.sheet_url) throw new Error('Paste the Google Sheet URL to connect this project.');
+  const parsed = parseGoogleSheetUrl(input.sheet_url);
+  const sheet = await resolveGoogleSheetUrl(input.sheet_url);
+  // The administrator's custom mapping is authoritative. Never overwrite it with
+  // automatic header detection at Save time (including on first creation).
+  return { ...sheet, column_mapping: input.column_mapping };
+}
+
+/** Resolve the required UUID FK against existing categories. Never hard-code IDs:
+ * each Supabase environment may have different UUIDs. A missing category is
+ * an explicit setup error, not a reason to insert an arbitrary ID.
+ */
+async function resolveProjectCategoryId(category: ProjectInput['category']): Promise<string> {
+  const slug = projectCategorySlug(category);
+  const { data, error } = await adminClient.from('project_categories')
+    .select('id')
+    .eq('slug', slug)
+    .eq('active', true)
+    .maybeSingle();
+  if (error) {
+    console.error('[projects] Category lookup failed:', { slug, code: error.code, message: error.message });
+    throw new Error('Project categories could not be loaded. Check project category migration 009 and Supabase permissions.');
+  }
+  if (!data?.id) {
+    throw new Error(`The ${category} category is missing or inactive. Apply project category migration 009 and try again.`);
+  }
+  return String(data.id);
+}
+
+export async function createProject(input: ProjectInput) {
+  const profile = await requireAdminForAction();
   const parsed = projectSchema.parse(input);
   const supabase = await createClient();
+  // Validate the FK before creating a Google spreadsheet (no orphan sheets).
+  const categoryId = await resolveProjectCategoryId(parsed.category);
+  if (parsed.sheet_source === 'guest_post_anchor') {
+    const { data: duplicate, error: duplicateError } = await supabase.from('projects')
+      .select('id,name').eq('sheet_source', 'guest_post_anchor')
+      .eq('guest_post_tab_name', parsed.guest_post_tab_name).limit(1).maybeSingle();
+    if (duplicateError) throw duplicateError;
+    if (duplicate) throw new Error(`This Guest Post Anchor tab is already connected to ${duplicate.name}. Choose another tab.`);
+  }
+  const sheet = await resolveProjectSheet(parsed, undefined, profile.email);
+  if (parsed.sheet_source === 'custom_sheet' && sheet.google_sheet_id) {
+    const { data: duplicate, error: duplicateError } = await supabase.from('projects')
+      .select('id,name').eq('sheet_source', 'custom_sheet')
+      .eq('google_sheet_id', sheet.google_sheet_id)
+      .eq('guest_post_tab_name', sheet.guest_post_tab_name).limit(1).maybeSingle();
+    if (duplicateError) throw duplicateError;
+    if (duplicate) throw new Error(`This Google Sheet tab already belongs to ${duplicate.name}. Choose a different tab to avoid conflicting status updates.`);
+  }
 
-  let categoryId = parsed.category_id ?? null;
-  if (!categoryId) {
-    const { data: defaultCategory, error: categoryError } = await supabase.from('project_categories').select('id').eq('slug', 'inhouse').single();
-    if (categoryError || !defaultCategory) throw new Error('Inhouse category is missing. Run database/migrations/009_project_categories_sheets_roles.sql first.');
-    categoryId = String(defaultCategory.id);
-  }
-  const { data: categoryRow, error: categoryModeError } = await supabase.from('project_categories').select('id,name,sheet_mode').eq('id', categoryId).single();
-  if (categoryModeError || !categoryRow) throw new Error(categoryModeError?.message ?? 'Selected category was not found.');
-  let tabName = categoryRow.sheet_mode === 'own_sheet' ? (parsed.sheet_tab_name || 'Live Link') : (parsed.sheet_tab_name || parsed.guest_post_tab_name || parsed.name);
-  let sheetId = parsed.google_sheet_id || null;
-  let columnConfig = parsed.sheet_column_config ?? {};
-  let shareEmails = parsed.sheet_share_emails ?? [];
-  let syncEnabled = parsed.sync_enabled;
-  if (categoryRow.sheet_mode === 'team_sheet_tab' && parsed.sync_enabled) { const invalid = validateSheetTabName(tabName); if (invalid) throw new Error(invalid); }
-  if (categoryRow.sheet_mode === 'own_sheet') {
-    const mode = parsed.sheet_connection_mode ?? (parsed.google_sheet_id ? 'existing' : 'none');
-    if (mode === 'none') { syncEnabled = false; sheetId = null; }
-    else {
-      const connection = await prepareOwnSheetConnection({ mode, title: parsed.name, url: parsed.sheet_url || parsed.google_sheet_id, tabName, shareEmails, includeDrTraffic: Boolean(parsed.include_dr_traffic) });
-      sheetId = connection.spreadsheetId; tabName = connection.tabName; columnConfig = connection.sheetColumnConfig; shareEmails = connection.shareEmails; syncEnabled = true;
-    }
-  }
   const baseSlug = slugify(parsed.name) || 'project';
   let slug = baseSlug;
   for (let i = 1; i < 50; i += 1) {
@@ -114,66 +175,89 @@ export async function createProject(input: ProjectInput): Promise<{ warning?: st
     slug = `${baseSlug}-${i + 1}`;
   }
 
-  const { data: createdProject, error } = await supabase.from('projects').insert({
+  const { error } = await supabase.from('projects').insert({
     name: parsed.name,
     slug,
     outreach_project_name: parsed.outreach_project_name || parsed.name,
-    guest_post_tab_name: parsed.guest_post_tab_name || null,
-    sync_enabled: syncEnabled,
+    category: parsed.category,
     category_id: categoryId,
-    sheet_tab_name: tabName,
-    sheet_column_config: columnConfig,
-    sheet_share_emails: shareEmails,
-    google_sheet_id: sheetId,
+    sheet_source: parsed.sheet_source,
+    ...sheet,
+    sync_enabled: parsed.sync_enabled,
     active: true,
-  }).select('id').single();
-  if (error || !createdProject) throw error ?? new Error('Could not create project.');
-  let warning: string | undefined;
-  if (categoryRow.sheet_mode === 'team_sheet_tab' && parsed.sync_enabled) {
-    try { await ensureTeamSheetTab(tabName); }
-    catch (caught) {
-      warning = `Project saved, but Sheet tab was not created. Fix the issue and retry: ${caught instanceof Error ? caught.message : String(caught)}`;
-      await adminClient.from('sync_logs').insert({ direction: 'to_sheet', sheet_name: tabName, status: 'error', detail: warning });
-    }
-  }
+  });
+  if (error) throw error;
   revalidatePath('/projects');
   revalidatePath('/requests/new');
-  return { warning };
 }
 
 export async function updateProject(id: string, input: ProjectInput) {
   await requireAdminForAction();
   const parsed = projectSchema.parse(input);
   const supabase = await createClient();
-  let tabName = parsed.sheet_tab_name || parsed.guest_post_tab_name || parsed.name;
-  let sheetId = parsed.google_sheet_id || null;
-  let columnConfig = parsed.sheet_column_config ?? {};
-  let shareEmails = parsed.sheet_share_emails ?? [];
-  let syncEnabled = parsed.sync_enabled;
-  if (parsed.category_id) {
-    const { data: category, error: categoryError } = await supabase.from('project_categories').select('sheet_mode').eq('id', parsed.category_id).single();
-    if (categoryError || !category) throw new Error(categoryError?.message ?? 'Selected category was not found.');
-    if (category.sheet_mode === 'team_sheet_tab') { sheetId = null; columnConfig = {}; shareEmails = []; if (parsed.sync_enabled) { const invalid = validateSheetTabName(tabName); if (invalid) throw new Error(invalid); } }
-    if (category.sheet_mode === 'own_sheet') {
-      const mode = parsed.sheet_connection_mode ?? (sheetId ? 'existing' : 'none');
-      if (mode === 'none') { syncEnabled = false; sheetId = null; }
-      else { const connection = await prepareOwnSheetConnection({ mode, title: parsed.name, url: parsed.sheet_url || sheetId, tabName: parsed.sheet_tab_name || 'Live Link', shareEmails, includeDrTraffic: Boolean(parsed.include_dr_traffic) }); sheetId = connection.spreadsheetId; tabName = connection.tabName; columnConfig = connection.sheetColumnConfig; shareEmails = connection.shareEmails; syncEnabled = true; }
-    }
+  const categoryId = await resolveProjectCategoryId(parsed.category);
+  const { data: existing, error: lookupError } = await supabase.from('projects').select('google_sheet_id,google_sheet_gid,guest_post_tab_name,sheet_source,column_mapping').eq('id', id).single();
+  if (lookupError || !existing) throw new Error(lookupError?.message || 'Project not found');
+  if (parsed.create_new_sheet) throw new Error('Create a new Google Sheet only while adding a project. Connect an existing Sheet URL to change this project.');
+  if (existing.sheet_source === 'guest_post_anchor' && parsed.sheet_source === 'guest_post_anchor' &&
+      existing.guest_post_tab_name !== parsed.guest_post_tab_name) {
+    throw new Error('Existing Guest Post Anchor project tabs cannot be reassigned. Create a new project instead to protect linked requests and Sheet rows.');
   }
+  // Never overwrite the A:H mapping of an existing shared Guest Post Anchor project.
+  // Its historic rows and the installed workbook-level trigger depend on those positions.
+  const sheet = await resolveProjectSheet(parsed, existing);
+  if (existing.sheet_source === 'guest_post_anchor' && parsed.sheet_source === 'guest_post_anchor') {
+    sheet.column_mapping = existing.column_mapping;
+  }
+  // One tab represents one project. Sharing the same tab between two projects
+  // would make status webhooks ambiguous even if spreadsheet IDs are scoped.
+  let duplicateQuery = supabase.from('projects').select('id,name')
+    .eq('sheet_source', parsed.sheet_source)
+    .eq('guest_post_tab_name', sheet.guest_post_tab_name).neq('id', id);
+  if (parsed.sheet_source === 'custom_sheet') duplicateQuery = duplicateQuery.eq('google_sheet_id', sheet.google_sheet_id);
+  const { data: duplicate, error: duplicateError } = await duplicateQuery.limit(1).maybeSingle();
+  if (duplicateError) throw duplicateError;
+  if (duplicate) throw new Error(`This spreadsheet tab is already mapped to ${duplicate.name}. Select another tab.`);
   const { error } = await supabase.from('projects').update({
     name: parsed.name,
     outreach_project_name: parsed.outreach_project_name || parsed.name,
-    guest_post_tab_name: parsed.guest_post_tab_name || null,
-    sync_enabled: syncEnabled,
-    ...(parsed.category_id ? { category_id: parsed.category_id } : {}),
-    sheet_tab_name: tabName,
-    sheet_column_config: columnConfig,
-    sheet_share_emails: shareEmails,
-    google_sheet_id: sheetId,
+    category: parsed.category,
+    category_id: categoryId,
+    sheet_source: parsed.sheet_source,
+    ...sheet,
+    sync_enabled: parsed.sync_enabled,
   }).eq('id', id);
   if (error) throw error;
   revalidatePath('/projects');
   revalidatePath('/requests/new');
+  revalidatePath('/projects/[slug]', 'page');
+}
+
+/**
+ * A Server Action exception is masked as React #441 in production. Return
+ * serializable feedback so the wizard can display a real, actionable message.
+ * Never return raw SQL or Google API errors to the browser.
+ */
+type ProjectSaveFeedback = { ok: true } | { ok: false; message: string };
+
+export async function createProjectWithFeedback(input: ProjectInput): Promise<ProjectSaveFeedback> {
+  try {
+    await createProject(input);
+    return { ok: true };
+  } catch (error) {
+    console.error('[project:save] create failed:', error);
+    return { ok: false, message: describeProjectSaveError(error) };
+  }
+}
+
+export async function updateProjectWithFeedback(id: string, input: ProjectInput): Promise<ProjectSaveFeedback> {
+  try {
+    await updateProject(id, input);
+    return { ok: true };
+  } catch (error) {
+    console.error('[project:save] update failed:', error);
+    return { ok: false, message: describeProjectSaveError(error) };
+  }
 }
 
 export async function toggleProjectActive(id: string, active: boolean) {
@@ -183,41 +267,4 @@ export async function toggleProjectActive(id: string, active: boolean) {
   if (error) throw error;
   revalidatePath('/projects');
   revalidatePath('/requests/new');
-}
-
-export async function saveProjectCategory(input: { id?: string; name: string; sheet_mode: 'team_sheet_tab' | 'own_sheet'; sort_order?: number; active?: boolean }) {
-  await requireAdminForAction();
-  const name = input.name.trim();
-  if (!name) throw new Error('Category name is required.');
-  if (name.length > 60) throw new Error('Category name must be 60 characters or fewer.');
-  const supabase = await createClient();
-  const slug = slugify(name) || 'category';
-  if (input.id) {
-    const { data: current, error: currentError } = await supabase.from('project_categories').select('id,name,active').eq('id', input.id).single();
-    if (currentError || !current) throw new Error(currentError?.message ?? 'Category not found.');
-    if (input.active === false && current.active) {
-      const { count, error } = await supabase.from('projects').select('id', { count: 'exact', head: true }).eq('category_id', input.id);
-      if (error) throw new Error(error.message);
-      if ((count ?? 0) > 0) throw new Error(`Cannot deactivate “${current.name}” because ${count} project(s) still use it. Move those projects first.`);
-    }
-    const { error } = await supabase.from('project_categories').update({ name, slug, sheet_mode: input.sheet_mode, sort_order: input.sort_order ?? 0, active: input.active ?? true }).eq('id', input.id);
-    if (error) throw new Error(error.message.includes('unique') ? 'A category with this name already exists.' : error.message);
-  } else {
-    const { error } = await supabase.from('project_categories').insert({ name, slug, sheet_mode: input.sheet_mode, sort_order: input.sort_order ?? 0, active: input.active ?? true });
-    if (error) throw new Error(error.message.includes('unique') ? 'A category with this name already exists.' : error.message);
-  }
-  revalidatePath('/projects');
-}
-
-export async function deactivateProjectCategory(id: string) {
-  await requireAdminForAction();
-  const supabase = await createClient();
-  const { data: category, error: categoryError } = await supabase.from('project_categories').select('name').eq('id', id).single();
-  if (categoryError || !category) throw new Error(categoryError?.message ?? 'Category not found.');
-  const { count, error } = await supabase.from('projects').select('id', { count: 'exact', head: true }).eq('category_id', id);
-  if (error) throw new Error(error.message);
-  if ((count ?? 0) > 0) throw new Error(`Cannot deactivate “${category.name}”: move its ${count} project(s) to another category first.`);
-  const { error: updateError } = await supabase.from('project_categories').update({ active: false }).eq('id', id);
-  if (updateError) throw new Error(updateError.message);
-  revalidatePath('/projects');
 }

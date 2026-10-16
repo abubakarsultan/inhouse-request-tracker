@@ -26,7 +26,7 @@ export async function setRequestStatusCore(
 
   const { data: current, error: fetchError } = await supabase
     .from('requests')
-    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_tab_name,sheet_column_config)')
+    .select('*, projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,column_mapping,sheet_source)')
     .eq('id', requestId)
     .is('deleted_at', null)
     .single();
@@ -107,6 +107,10 @@ export async function setRequestStatusCore(
     if (sync.row && linkedSite?.id) await supabase.from('project_sites').update({ team_row: sync.row }).eq('id', linkedSite.id);
   }
 
+  try {
+    const { updateCollaborationFromRequest } = await import('@/lib/collaboration-status-bridge');
+    await updateCollaborationFromRequest(requestId, newStatus);
+  } catch (error) { console.error('[collaboration] Linked request status propagation failed:', error); }
   revalidateRequestPaths(project?.slug);
   return { ok: database.ok && projectSite.ok && teamSheet.ok, database, projectSite, teamSheet };
 }

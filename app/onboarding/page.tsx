@@ -6,7 +6,7 @@ import LogoutButton from '@/components/app/logout-button';
 
 export default async function OnboardingPage() {
   const profile = await requireAuthenticatedProfile();
-  if (profile.onboarding_completed && (profile.sheet_name || profile.role === 'viewer')) {
+  if (profile.onboarding_completed && profile.sheet_name) {
     redirect(profile.account_status === 'active' ? '/dashboard' : '/pending');
   }
   const names = await getAvailableTeamNames();

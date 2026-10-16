@@ -1,0 +1,11 @@
+INHOUSE REQUEST V6 - QUICK START
+
+1) Supabase SQL Editor: run database/migrations/008_project_url_speed.sql (after previous migration 007).
+2) Upload the updated inhouse-build files to your GitHub repository and deploy on Vercel.
+3) Keep your existing Vercel environment variables; no new env keys are required.
+4) Add Project -> enter project name, category, full Google Sheet URL; copy the displayed service-account email and share the Google Sheet with it as Editor.
+5) Save. Sheet ID, document title, selected #gid tab, and standard column mapping are detected automatically.
+6) For Google Sheet -> app automatic status updates, use Project > Sheet Details & Apps Script, update/re-install the script in the actual Google spreadsheet with your existing SHEET_WEBHOOK_SECRET, then authorize installTrigger.
+7) Test a sample sync request and navigate through Projects, All Requests, and Dashboard.
+
+Detailed deployment, limitations and test results: RELEASE_V6_URL_AUTO_SPEED.md

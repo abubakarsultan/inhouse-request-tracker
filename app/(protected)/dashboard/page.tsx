@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { getDashboardOverview, getViewerDashboardOverview, type DashboardActivityRow } from '@/services/requests';
+import { getDashboardOverview, type DashboardActivityRow } from '@/services/requests';
 import StatusBadge from '@/components/status-badge';
 import RetrySyncButton from '@/components/app/retry-sync-button';
 import { formatKarachiDateTime } from '@/lib/date';
@@ -21,12 +21,7 @@ const CARDS = [
 
 export default async function Dashboard() {
   const profile = await requireActiveProfile();
-  if (profile.role === 'viewer') {
-    const stats = await getViewerDashboardOverview();
-    const cards = [{ label: 'Total requests', value: stats.total, href: '/requests' }, { label: 'Live', value: stats.live, href: '/requests?status=Live' }, { label: 'Pending', value: stats.pending, href: '/requests?status=Request%20shared' }, { label: 'Rejected', value: stats.rejected, href: '/requests?status=Rejected' }, { label: 'Removed in sheet', value: stats.removed, href: '/requests' }, { label: 'Incomplete details', value: stats.incomplete, href: '/requests?incomplete=1' }];
-    return <div><div className="mb-6"><h1 className="text-2xl font-bold text-[var(--text)]">Company Dashboard</h1><p className="mt-1 text-sm text-[var(--muted)]">Read-only company-wide overview.</p></div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{cards.map(card => <Link key={card.label} href={card.href} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 transition hover:-translate-y-0.5"><p className="text-sm text-[var(--muted)]">{card.label}</p><p className="mt-2 text-3xl font-bold">{card.value}</p><p className="mt-2 text-xs text-[var(--brand)]">View details →</p></Link>)}</div></div>;
-  }
-  if (profile.role === 'member') {
+  if (profile.role !== 'admin') {
     const memberData = await getMemberDashboardWorkspace();
     return (
       <div>

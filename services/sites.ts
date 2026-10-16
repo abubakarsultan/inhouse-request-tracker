@@ -2,21 +2,72 @@
 
 import * as XLSX from 'xlsx';
 import { createClient } from '@/lib/supabase-server';
-import { adminClient } from '@/lib/supabase-admin';
 import { SITE_IMPORT_HEADERS } from '@/lib/validators';
 import { extractHost } from '@/lib/domain';
 import { revalidatePath } from 'next/cache';
 import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
 import { appendRequestToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
-import { requireAdminForAction, requireActiveUserForAction } from '@/lib/auth';
+import { requireAdminForAction } from '@/lib/auth';
+import { adminClient } from '@/lib/supabase-admin';
 
-export async function getProjectSites(projectId: string) {
-  const profile = await requireActiveUserForAction();
-  if (profile.role === 'member') throw new Error('Project-wide site lists are available to admins and read-only viewers.');
-  const supabase = adminClient;
-  const { data, error } = await supabase.from('project_sites').select('*, requests(sheet_flag,placement_page,target_url,assign_to,deadline)').eq('project_id', projectId).is('archived_at', null).order('created_at', { ascending: false });
+/** Read one page, not the entire history of a project. */
+export async function getProjectSites(projectId: string, page = 1, pageSize = 100) {
+  await requireAdminForAction();
+  const supabase = await createClient();
+  const safePage = Number.isSafeInteger(page) && page > 0 ? page : 1;
+  const size = Math.min(Math.max(pageSize, 1), 100);
+  const from = (safePage - 1) * size;
+  const { data, error } = await supabase.from('project_sites')
+    .select('id,website,opportunity,anchor,dr,traffic,status,note,request_id')
+    .eq('project_id', projectId).is('archived_at', null)
+    .order('created_at', { ascending: false }).range(from, from + size - 1);
   if (error) throw error;
-  return data;
+  return data ?? [];
+}
+
+/**
+ * Use the service role for the aggregate RPC: migration 008 deliberately grants
+ * execution only to service_role (not to authenticated). Authorization has been
+ * checked above. A bounded four-count fallback keeps older DBs usable.
+ */
+export async function getProjectSiteCounts(projectId: string) {
+  await requireAdminForAction();
+  try {
+    const { data, error } = await adminClient.rpc('project_site_status_counts', { p_project_id: projectId });
+    if (!error) {
+      const stats = data?.[0];
+      return {
+        total: Number(stats?.total || 0), live: Number(stats?.live || 0),
+        pending: Number(stats?.pending || 0), rejected: Number(stats?.rejected || 0),
+        statsUnavailable: false,
+      };
+    }
+    console.error('[project-detail] Site counts RPC failed. Check migration 008:', error.message);
+  } catch (error) {
+    console.error('[project-detail] Site counts RPC unavailable:', error);
+  }
+
+  // Only one project is counted here. Four head-only count queries are cheap
+  // relative to loading all project rows into memory, and never expose rows.
+  try {
+    const base = () => adminClient.from('project_sites').select('id', { head: true, count: 'exact' })
+      .eq('project_id', projectId).is('archived_at', null);
+    const [total, live, pending, rejected] = await Promise.all([
+      base(), base().eq('status', 'Live'),
+      base().eq('status', 'Request shared'), base().eq('status', 'Rejected'),
+    ]);
+    const results = [total, live, pending, rejected];
+    const failed = results.find(({ error }) => Boolean(error));
+    if (failed?.error) throw failed.error;
+    return {
+      total: total.count ?? 0, live: live.count ?? 0,
+      pending: pending.count ?? 0, rejected: rejected.count ?? 0,
+      statsUnavailable: true,
+    };
+  } catch (error) {
+    console.error('[project-detail] Could not calculate fallback counts:', error);
+    return { total: null, live: null, pending: null, rejected: null, statsUnavailable: true };
+  }
 }
 
 export type ImportResult = { rowsImported: number; rowsSynced: number; rowsSkippedSync: number; rowsFailedSync: number; errors: string[] };
@@ -208,7 +259,7 @@ export async function importFromTeamSheet(): Promise<TeamSheetImportReport> {
   await requireAdminForAction();
   const { readTeamSheetProjectRows } = await import('@/services/google-sheet-sync');
   const supabase = await createClient();
-  const { data: projects, error: projectsError } = await supabase.from('projects').select('id,name,guest_post_tab_name,sync_enabled').order('name');
+  const { data: projects, error: projectsError } = await supabase.from('projects').select('id,name,guest_post_tab_name,sync_enabled,google_sheet_id,sheet_source,column_mapping').order('name');
   if (projectsError) throw new Error(`Could not load projects: ${projectsError.message}`);
   const known = await loadKnownProjectDomains(supabase);
   const owners = await loadOwnerMap(supabase);

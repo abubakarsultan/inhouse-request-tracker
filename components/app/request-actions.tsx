@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { Archive, Pencil } from 'lucide-react';
 import { archiveRequest } from '@/services/requests';
+import RetrySyncButton from '@/components/app/retry-sync-button';
 
-export default function RequestActions({ id, onArchived }: { id: string; onArchived?: () => void }) {
+export default function RequestActions({ id, onArchived, syncState }: { id: string; onArchived?: () => void; syncState?: string | null }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +33,7 @@ export default function RequestActions({ id, onArchived }: { id: string; onArchi
         <Link onClick={() => window.dispatchEvent(new CustomEvent('rankviz:navigation-start'))} href={`/requests/${id}/edit`} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs font-medium transition active:scale-95 hover:bg-[var(--canvas)]"><Pencil size={12} />Edit</Link>
         <button type="button" disabled={pending} onClick={remove} className="inline-flex items-center gap-1 rounded-md border border-[#f5b5b1] px-2 py-1 text-xs font-medium text-[var(--red)] transition active:scale-95 hover:bg-[#fce8e6] disabled:opacity-50"><Archive size={12} />{pending ? 'Archiving…' : 'Delete'}</button>
       </div>
+      {syncState && syncState !== 'synced' && <div className="mt-1"><RetrySyncButton requestId={id} /></div>}
       {error && <p className="mt-1 max-w-48 text-[10px] text-[var(--red)]">{error}</p>}
     </div>
   );

@@ -5,6 +5,21 @@ import { adminClient } from '@/lib/supabase-admin';
 import { requireAdminForAction, type UserProfile } from '@/lib/auth';
 import { syncRequestFullRowToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 
+
+export async function createUserInvitation(emailInput: string, displayNameInput: string, role: 'admin' | 'member') {
+  const admin = await requireAdminForAction();
+  const email = String(emailInput ?? '').trim().toLowerCase();
+  const displayName = String(displayNameInput ?? '').trim() || null;
+  if (!email || !email.includes('@') || email.endsWith('@rankviz.com')) throw new Error('External invitations require a valid non-Rankviz email.');
+  const { data: existing } = await adminClient.from('users').select('id,account_status').eq('email', email).maybeSingle();
+  if (existing?.account_status === 'active') throw new Error('This email already has an active account.');
+  const { error: revokeError } = await adminClient.from('user_invitations').update({ status: 'revoked' }).eq('email', email).eq('status', 'pending');
+  if (revokeError) throw new Error(revokeError.message);
+  const { error } = await adminClient.from('user_invitations').insert({ email, display_name: displayName, role, status: 'pending', invited_by: admin.id });
+  if (error) throw new Error(error.message);
+  revalidatePath('/team');
+}
+
 export type TeamNameOption = { id: string; name: string; badge_bg: string; badge_text: string; active: boolean; claimedBy: string | null };
 
 export async function getAvailableTeamNames(): Promise<TeamNameOption[]> {
@@ -25,14 +40,8 @@ export async function getAvailableTeamNames(): Promise<TeamNameOption[]> {
   });
 }
 
-export async function completeOnboarding(teamNameId: string | null) {
+export async function completeOnboarding(teamNameId: string) {
   const profile = await requireAuthenticatedForOnboarding();
-  if (teamNameId === null) {
-    const { error } = await adminClient.from('users').update({ role: 'viewer', sheet_name: null, onboarding_completed: true, account_status: 'pending', active: false, approved_at: null, approved_by: null }).eq('id', profile.id);
-    if (error) throw new Error(error.message);
-    revalidateTeamPaths();
-    return { ok: true, pending: true };
-  }
   const { data: teamName, error: nameError } = await adminClient.from('team_names').select('id,name,active').eq('id', teamNameId).single();
   if (nameError || !teamName || !teamName.active) throw new Error('Choose one of the approved Guest Post Anchor names.');
   const { data: claimed, error: claimError } = await adminClient.from('users').select('id').ilike('sheet_name', String(teamName.name)).neq('id', profile.id).maybeSingle();
@@ -41,7 +50,6 @@ export async function completeOnboarding(teamNameId: string | null) {
   const isAdmin = profile.role === 'admin';
   const { error } = await adminClient.from('users').update({ sheet_name: String(teamName.name), onboarding_completed: true, account_status: isAdmin ? 'active' : 'pending', active: isAdmin, approved_at: isAdmin ? new Date().toISOString() : null, approved_by: isAdmin ? profile.id : null }).eq('id', profile.id);
   if (error) throw new Error(error.message);
-  await adminClient.from('user_role_audit').insert({ changed_user_id: profile.id, changed_by_user_id: profile.id, action: 'mapping:onboarding', old_value: { sheet_name: profile.sheet_name }, new_value: { sheet_name: String(teamName.name), role: profile.role } });
   if (isAdmin) await linkUserHistory(profile.id);
   revalidateTeamPaths();
   return { ok: true, pending: !isAdmin };
@@ -62,20 +70,19 @@ export async function linkUserHistory(userId: string) {
 
 export type TeamAdminUser = {
   id: string; email: string; googleName: string | null; avatarUrl: string | null; sheetName: string | null;
-  role: 'admin' | 'member' | 'viewer'; status: 'pending' | 'active' | 'disabled'; onboardingCompleted: boolean;
+  role: 'admin' | 'member'; status: 'pending' | 'active' | 'disabled'; onboardingCompleted: boolean;
   approvedAt: string | null; lastLoginAt: string | null; requestedAt: string | null;
   counts: { assigned: number; live: number; pending: number; rejected: number; overdue: number };
 };
-export type TeamAdminData = { users: TeamAdminUser[]; names: TeamNameOption[]; unmatched: Array<{ name: string; rows: number; invalid: boolean }>; auditHistory: Array<{ id: string; action: string; changedUser: string; changedBy: string; createdAt: string; oldValue: unknown; newValue: unknown }> };
+export type TeamAdminData = { users: TeamAdminUser[]; names: TeamNameOption[]; unmatched: Array<{ name: string; rows: number; invalid: boolean }> };
 
 function todayKarachi() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
 
 export async function getTeamAdminData(): Promise<TeamAdminData> {
   await requireAdminForAction();
-  const [{ data: users, error: usersError }, { data: names, error: namesError }, { data: audits, error: auditsError }] = await Promise.all([
+  const [{ data: users, error: usersError }, { data: names, error: namesError }] = await Promise.all([
     adminClient.from('users').select('id,email,google_name,avatar_url,sheet_name,role,account_status,onboarding_completed,approved_at,last_login_at,created_at').order('created_at'),
     adminClient.from('team_names').select('id,name,badge_bg,badge_text,active').order('name'),
-    adminClient.from('user_role_audit').select('id,changed_user_id,changed_by_user_id,action,old_value,new_value,created_at').order('created_at', { ascending: false }).limit(20),
   ]);
   if (usersError) throw new Error(usersError.message);
   if (namesError) throw new Error(namesError.message);
@@ -93,7 +100,7 @@ export async function getTeamAdminData(): Promise<TeamAdminData> {
     const assigned = requestRows.filter((row) => String(row.assigned_user_id ?? '') === String(user.id) || (sheetKey && String(row.assign_to ?? '').trim().toLowerCase() === sheetKey));
     return {
       id: String(user.id), email: String(user.email), googleName: user.google_name ? String(user.google_name) : null, avatarUrl: user.avatar_url ? String(user.avatar_url) : null,
-      sheetName: user.sheet_name ? String(user.sheet_name) : null, role: user.role === 'admin' ? 'admin' : user.role === 'viewer' ? 'viewer' : 'member',
+      sheetName: user.sheet_name ? String(user.sheet_name) : null, role: user.role === 'admin' ? 'admin' : 'member',
       status: user.account_status === 'active' ? 'active' : user.account_status === 'disabled' ? 'disabled' : 'pending',
       onboardingCompleted: Boolean(user.onboarding_completed), approvedAt: user.approved_at ? String(user.approved_at) : null,
       lastLoginAt: user.last_login_at ? String(user.last_login_at) : null, requestedAt: user.created_at ? String(user.created_at) : null,
@@ -117,62 +124,41 @@ export async function getTeamAdminData(): Promise<TeamAdminData> {
     const key = name.toLowerCase(); const item = historical.get(key) ?? { name, rows: 0 }; item.rows += 1; historical.set(key, item);
   }
   const unmatched = [...historical.entries()].filter(([key]) => !claimedKeys.has(key) || !activeRoster.has(key)).map(([key, value]) => ({ ...value, invalid: !activeRoster.has(key) })).sort((a, b) => Number(b.invalid) - Number(a.invalid) || b.rows - a.rows || a.name.localeCompare(b.name));
-  const emailById = new Map(normalizedUsers.map(user => [user.id, user.email]));
-  const auditHistory = (audits ?? []).map((audit: any) => ({ id: String(audit.id), action: String(audit.action), changedUser: emailById.get(String(audit.changed_user_id)) ?? String(audit.changed_user_id), changedBy: emailById.get(String(audit.changed_by_user_id)) ?? 'System', createdAt: String(audit.created_at), oldValue: audit.old_value, newValue: audit.new_value }));
-  return { users: normalizedUsers, names: teamNames, unmatched, auditHistory };
+  return { users: normalizedUsers, names: teamNames, unmatched };
 }
 
 export async function approveTeamUser(userId: string) {
   const admin = await requireAdminForAction();
-  const { data: user, error } = await adminClient.from('users').select('id,sheet_name,role').eq('id', userId).single();
+  const { data: user, error } = await adminClient.from('users').select('id,sheet_name').eq('id', userId).single();
   if (error || !user) throw new Error(error?.message ?? 'User not found.');
-  if (user.role !== 'viewer') {
-    if (!user.sheet_name) throw new Error('User must select a Guest Post Anchor name first.');
-    const { data: roster } = await adminClient.from('team_names').select('id').eq('active', true).ilike('name', String(user.sheet_name)).maybeSingle();
-    if (!roster) throw new Error('Selected name is not in the approved team roster.');
-  }
+  if (!user.sheet_name) throw new Error('User must select a Guest Post Anchor name first.');
+  const { data: roster } = await adminClient.from('team_names').select('id').eq('active', true).ilike('name', String(user.sheet_name)).maybeSingle();
+  if (!roster) throw new Error('Selected name is not in the approved seven-person roster.');
   const { error: updateError } = await adminClient.from('users').update({ account_status: 'active', active: true, approved_by: admin.id, approved_at: new Date().toISOString() }).eq('id', userId);
   if (updateError) throw new Error(updateError.message);
-  const linked = user.role === 'viewer' ? { requests: 0, project_sites: 0 } : await linkUserHistory(userId); revalidateTeamPaths(); return { ok: true, linked };
+  const linked = await linkUserHistory(userId); revalidateTeamPaths(); return { ok: true, linked };
 }
 
 export async function setTeamUserStatus(userId: string, status: 'active' | 'disabled') {
   const admin = await requireAdminForAction();
-  const { data: target, error: targetError } = await adminClient.from('users').select('id,role,account_status').eq('id', userId).single();
-  if (targetError || !target) throw new Error(targetError?.message ?? 'User not found.');
   if (admin.id === userId && status === 'disabled') throw new Error('You cannot disable your own admin account.');
-  if (status === 'disabled' && target.role === 'admin' && target.account_status === 'active') {
-    const { count } = await adminClient.from('users').select('id', { count: 'exact', head: true }).eq('role', 'admin').eq('account_status', 'active');
-    if ((count ?? 0) <= 1) throw new Error('The last active admin cannot be disabled.');
-  }
   const update: Record<string, unknown> = { account_status: status, active: status === 'active' };
   if (status === 'active') { update.approved_by = admin.id; update.approved_at = new Date().toISOString(); }
   const { error } = await adminClient.from('users').update(update).eq('id', userId); if (error) throw new Error(error.message);
-  await adminClient.from('user_role_audit').insert({ changed_user_id: userId, changed_by_user_id: admin.id, action: `status:${status}`, old_value: { account_status: target.account_status }, new_value: { account_status: status } });
-  if (status === 'active' && target.role !== 'viewer') await linkUserHistory(userId); revalidateTeamPaths();
+  if (status === 'active') await linkUserHistory(userId); revalidateTeamPaths();
 }
 
-export async function setTeamUserRole(userId: string, role: 'admin' | 'member' | 'viewer') {
+export async function setTeamUserRole(userId: string, role: 'admin' | 'member') {
   const admin = await requireAdminForAction();
-  const { data: target, error: targetError } = await adminClient.from('users').select('id,role,account_status').eq('id', userId).single();
-  if (targetError || !target) throw new Error(targetError?.message ?? 'User not found.');
-  if (admin.id === userId && role !== 'admin') throw new Error('You cannot demote yourself. Ask another admin to change your role.');
-  if (target.role === 'admin' && target.account_status === 'active' && role !== 'admin') {
-    const { count } = await adminClient.from('users').select('id', { count: 'exact', head: true }).eq('role', 'admin').eq('account_status', 'active');
-    if ((count ?? 0) <= 1) throw new Error('The last active admin cannot be demoted.');
-  }
-  const { error } = await adminClient.from('users').update({ role }).eq('id', userId); if (error) throw new Error(error.message);
-  await adminClient.from('user_role_audit').insert({ changed_user_id: userId, changed_by_user_id: admin.id, action: 'role:change', old_value: { role: target.role }, new_value: { role } });
-  revalidateTeamPaths();
+  if (admin.id === userId && role === 'member') throw new Error('You cannot remove your own admin role.');
+  const { error } = await adminClient.from('users').update({ role }).eq('id', userId); if (error) throw new Error(error.message); revalidateTeamPaths();
 }
 
 export async function resetTeamUserMapping(userId: string) {
   const admin = await requireAdminForAction();
   if (admin.id === userId) throw new Error('Use another admin account to reset your own mapping.');
-  const { data: target } = await adminClient.from('users').select('sheet_name,role,account_status').eq('id', userId).single();
   const { error } = await adminClient.from('users').update({ sheet_name: null, onboarding_completed: false, account_status: 'pending', active: false, approved_by: null, approved_at: null }).eq('id', userId);
   if (error) throw new Error(error.message);
-  await adminClient.from('user_role_audit').insert({ changed_user_id: userId, changed_by_user_id: admin.id, action: 'mapping:reset', old_value: { sheet_name: target?.sheet_name, role: target?.role, account_status: target?.account_status }, new_value: { sheet_name: null, account_status: 'pending' } });
   await adminClient.from('requests').update({ assigned_user_id: null }).eq('assigned_user_id', userId);
   await adminClient.from('project_sites').update({ owner_user_id: null }).eq('owner_user_id', userId);
   revalidateTeamPaths();
@@ -188,7 +174,7 @@ export async function reassignHistoricalName(fromName: string, toName: string) {
   const canonical = String(roster.name);
   const { data: owner } = await adminClient.from('users').select('id').ilike('sheet_name', canonical).eq('account_status', 'active').maybeSingle();
   const ownerId = owner?.id ? String(owner.id) : null;
-  const { data: rows, error } = await adminClient.from('requests').select('*,projects(id,name,slug,guest_post_tab_name,sync_enabled),project_sites(id)').ilike('assign_to', from).is('deleted_at', null);
+  const { data: rows, error } = await adminClient.from('requests').select('*,projects(id,name,slug,guest_post_tab_name,sync_enabled,google_sheet_id,column_mapping,sheet_source),project_sites(id)').ilike('assign_to', from).is('deleted_at', null);
   if (error) throw new Error(error.message);
 
   let synced = 0; let failed = 0;

@@ -3,7 +3,8 @@ import 'server-only';
 import { randomUUID } from 'node:crypto';
 import { google, type sheets_v4 } from 'googleapis';
 import { adminClient } from '@/lib/supabase-admin';
-import { normalizeForDuplicate, validateSheetTabName } from '@/lib/validators';
+import { normalizeForDuplicate } from '@/lib/validators';
+import { normalizeColumnMapping, columnNumber, valueForField } from '@/lib/project-sheet';
 import { revalidatePath } from 'next/cache';
 import { requireAdminForAction } from '@/lib/auth';
 
@@ -12,8 +13,8 @@ type SyncableProject = {
   guest_post_tab_name: string | null;
   sync_enabled: boolean;
   google_sheet_id?: string | null;
-  sheet_tab_name?: string | null;
-  sheet_column_config?: Record<string, string> | null;
+  sheet_source?: string | null;
+  column_mapping?: unknown;
 };
 
 export type RequestSheetRecord = {
@@ -21,13 +22,18 @@ export type RequestSheetRecord = {
   project_id: string;
   approved_site: string;
   placement_page: string | null;
-  target_url?: string | null;
   anchor: string;
   assign_to: string | null;
   status: string;
   team_tab: string | null;
   team_row: number | null;
   created_by_email?: string | null;
+  target_url?: string | null;
+  priority?: string | null;
+  deadline?: string | null;
+  created_by_name?: string | null;
+  project_name?: string | null;
+  created_at?: string | null;
 };
 
 export type ProjectSiteSheetRecord = {
@@ -53,77 +59,77 @@ export type SheetSyncResult = {
   repairedRow?: boolean;
 };
 
-let metadataCache: { spreadsheetId: string; expiresAt: number; titles: Set<string> } | null = null;
+const metadataCache = new Map<string, { expiresAt: number; titles: Set<string> }>();
 const METADATA_TTL_MS = 15_000;
 
-function getTeamSheetId() {
-  return (process.env.TEAM_SHEET_ID ?? '').trim();
+function getTeamSheetId(project?: SyncableProject | null) {
+  if (project?.sheet_source === 'custom_sheet') return String(project.google_sheet_id || '').trim();
+  return String(project?.google_sheet_id || process.env.TEAM_SHEET_ID || '').trim();
+}
+
+function sheetLayout(project: SyncableProject) {
+  const mapping = normalizeColumnMapping(project.column_mapping);
+  const maxNumber = Math.max(...mapping.map((item) => columnNumber(item.column)), 1);
+  const maxColumn = mapping.find((item) => columnNumber(item.column) === maxNumber)?.column || 'H';
+  const indexFor = (field: string, fallback: number) => {
+    const item = mapping.find((entry) => entry.field === field);
+    return item ? columnNumber(item.column) - 1 : fallback;
+  };
+  return { mapping, maxColumn, maxNumber, websiteIndex: indexFor('approved_site', 0), anchorIndex: indexFor('anchor', 2), statusIndex: indexFor('status', 5) };
+}
+
+function mappedRow(project: SyncableProject, record: Record<string, any>, existing?: unknown[]) {
+  const layout = sheetLayout(project);
+  const row = Array.from({ length: layout.maxNumber }, (_, index) => existing?.[index] ?? '');
+  for (const item of layout.mapping) {
+    const index = columnNumber(item.column) - 1;
+    if (item.field !== 'blank') {
+      const value = valueForField(item.field, record, item.static_value);
+      // When editing a request, do not erase Sheet-managed metrics or values
+      // that were never present in the request model.
+      const preserveMissing = existing && value === '' &&
+        !['approved_site', 'anchor', 'placement_page', 'opportunity', 'status', 'assign_to', 'note', 'static'].includes(item.field);
+      if (!preserveMissing) row[index] = value;
+    }
+  }
+  return row;
+}
+
+async function ensureMappedHeaders(sheets: sheets_v4.Sheets, spreadsheetId: string, tab: string, project: SyncableProject) {
+  const layout = sheetLayout(project);
+  const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A1:${layout.maxColumn}1` })) as { data: { values?: unknown[][] } };
+  const existing = (response.data.values ?? [])[0] ?? [];
+  const headings = Array.from({ length: layout.maxNumber }, (_, index) => existing[index] ?? '');
+  let changed = false;
+  for (const item of layout.mapping) {
+    const index = columnNumber(item.column) - 1;
+    if (!String(headings[index] ?? '').trim()) { headings[index] = item.heading; changed = true; }
+  }
+  if (changed) await withGoogleRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${quoteTab(tab)}!A1:${layout.maxColumn}1`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [headings] },
+  }));
 }
 
 function getSheetsClient() {
-  const credentials = getServiceAccountCredentials();
-  const auth = new google.auth.GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
-  return google.sheets({ version: 'v4', auth });
-}
-
-function getServiceAccountCredentials() {
   const encoded = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!encoded) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not configured');
-  try { return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as Record<string, unknown>; }
-  catch { throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid base64-encoded JSON'); }
-}
 
-export function getServiceAccountEmail() {
-  try { return String(getServiceAccountCredentials().client_email ?? '') || null; }
-  catch { return null; }
-}
-
-function getDriveClient() {
-  const auth = new google.auth.GoogleAuth({ credentials: getServiceAccountCredentials(), scopes: ['https://www.googleapis.com/auth/drive'] });
-  return google.drive({ version: 'v3', auth });
-}
-
-export async function prepareOwnSheetConnection(input: { mode: 'existing' | 'create'; title: string; url?: string | null; tabName?: string | null; shareEmails?: string[]; includeDrTraffic?: boolean }) {
-  const tabName = (input.tabName || 'Live Link').trim();
-  const invalid = validateSheetTabName(tabName);
-  if (invalid) throw new Error(invalid);
-  const sheets = getSheetsClient();
-  let spreadsheetId = '';
-  let url = '';
-  if (input.mode === 'existing') {
-    const match = String(input.url ?? '').match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (!match) throw new Error('Google Sheet URL is not valid. Copy the full URL from the browser address bar.');
-    spreadsheetId = match[1];
-    const response = await withGoogleRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: 'spreadsheetUrl,sheets.properties.title' }));
-    const tabExists = (response.data.sheets ?? []).some((sheet) => sheet.properties?.title === tabName);
-    if (!tabExists) throw new Error(`Tab “${tabName}” was not found in this Google Sheet.`);
-    const headerResponse = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tabName)}!A1:Z1` }));
-    const headers = (headerResponse.data.values?.[0] ?? []).map((value) => String(value ?? '').trim());
-    const required = ['Live Link', 'Anchor', 'Target Page', 'Status'];
-    const missing = required.filter((header) => !headers.includes(header));
-    if (missing.length) throw new Error(`Missing required header(s) in “${tabName}”: ${missing.join(', ')}. Existing columns were left untouched.`);
-    url = String(response.data.spreadsheetUrl ?? input.url ?? '');
-  } else {
-    const headers = input.includeDrTraffic ? ['Live Link', 'Anchor', 'Target Page', 'Status', 'DR', 'Traffic'] : ['Live Link', 'Anchor', 'Target Page', 'Status'];
-    const created = await withGoogleRetry(() => sheets.spreadsheets.create({ requestBody: { properties: { title: input.title }, sheets: [{ properties: { title: tabName, gridProperties: { frozenRowCount: 1 } } }] } }));
-    spreadsheetId = String(created.data.spreadsheetId ?? '');
-    url = String(created.data.spreadsheetUrl ?? (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : ''));
-    if (!spreadsheetId) throw new Error('Google created the sheet but did not return its ID. Check Google Cloud API access.');
-    await withGoogleRetry(() => sheets.spreadsheets.values.update({ spreadsheetId, range: `${quoteTab(tabName)}!A1:${input.includeDrTraffic ? 'F' : 'D'}1`, valueInputOption: 'RAW', requestBody: { values: [headers] } }));
-    const metadata = await withGoogleRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties' }));
-    const sheetId = Number(metadata.data.sheets?.find((sheet) => sheet.properties?.title === tabName)?.properties?.sheetId);
-    if (Number.isFinite(sheetId)) await withGoogleRetry(() => sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [
-      { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.12, green: 0.38, blue: 0.25 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)' } },
-      { setDataValidation: { range: { sheetId, startRowIndex: 1, startColumnIndex: 3, endColumnIndex: 4 }, rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: 'Request shared' }, { userEnteredValue: 'Live' }, { userEnteredValue: 'Rejected' }] }, strict: true, showCustomUi: true } } },
-      { addConditionalFormatRule: { index: 0, rule: { ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 3, endColumnIndex: 4 }], booleanRule: { condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Live' }] }, format: { backgroundColor: { red: 0.82, green: 0.93, blue: 0.84 }, textFormat: { foregroundColor: { red: 0.08, green: 0.42, blue: 0.2 }, bold: true } } } } } },
-    ] } }));
-    const drive = getDriveClient();
-    for (const email of [...new Set((input.shareEmails ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean))]) {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error(`Invalid sharing email: ${email}`);
-      await withGoogleRetry(() => drive.permissions.create({ fileId: spreadsheetId, requestBody: { type: 'user', role: 'writer', emailAddress: email }, sendNotificationEmail: true, fields: 'id,emailAddress,role' }));
-    }
+  let credentials: Record<string, unknown>;
+  try {
+    const raw = Buffer.from(encoded, 'base64').toString('utf8');
+    credentials = JSON.parse(raw);
+  } catch {
+    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid base64-encoded JSON');
   }
-  return { spreadsheetId, url, tabName, serviceAccountEmail: getServiceAccountEmail(), sheetColumnConfig: { liveLink: 'Live Link', anchor: 'Anchor', targetUrl: 'Target Page', status: 'Status', ...(input.includeDrTraffic ? { dr: 'DR', traffic: 'Traffic' } : {}) }, shareEmails: input.shareEmails ?? [] };
+
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+  return google.sheets({ version: 'v4', auth });
 }
 
 function quoteTab(tab: string) {
@@ -155,9 +161,8 @@ async function withGoogleRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T
 }
 
 async function getTabTitles(sheets: sheets_v4.Sheets, spreadsheetId: string) {
-  if (metadataCache && metadataCache.spreadsheetId === spreadsheetId && metadataCache.expiresAt > Date.now()) {
-    return metadataCache.titles;
-  }
+  const cached = metadataCache.get(spreadsheetId);
+  if (cached && cached.expiresAt > Date.now()) return cached.titles;
 
   const response = await withGoogleRetry(() =>
     sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties.title' })
@@ -167,7 +172,8 @@ async function getTabTitles(sheets: sheets_v4.Sheets, spreadsheetId: string) {
       .map((sheet) => sheet.properties?.title)
       .filter((title): title is string => Boolean(title))
   );
-  metadataCache = { spreadsheetId, expiresAt: Date.now() + METADATA_TTL_MS, titles };
+  metadataCache.set(spreadsheetId, { expiresAt: Date.now() + METADATA_TTL_MS, titles });
+  if (metadataCache.size > 100) metadataCache.delete(metadataCache.keys().next().value!);
   return titles;
 }
 
@@ -182,11 +188,12 @@ function lastNonEmptyRow(values: unknown[][]) {
   return 0;
 }
 
-function rowMatches(row: unknown[] | undefined, website: string, anchor: string) {
+function rowMatches(row: unknown[] | undefined, website: string, anchor: string, project?: SyncableProject) {
   if (!row) return false;
+  const layout = project ? sheetLayout(project) : { websiteIndex: 0, anchorIndex: 2 };
   return (
-    normalizeForDuplicate(String(row[0] ?? '')) === normalizeForDuplicate(website) &&
-    normalizeForDuplicate(String(row[2] ?? '')) === normalizeForDuplicate(anchor)
+    normalizeForDuplicate(String(row[layout.websiteIndex] ?? '')) === normalizeForDuplicate(website) &&
+    normalizeForDuplicate(String(row[layout.anchorIndex] ?? '')) === normalizeForDuplicate(anchor)
   );
 }
 
@@ -256,94 +263,34 @@ async function releaseAppendLock(lockKey: string, ownerToken: string) {
   if (error) throw new Error(error.message);
 }
 
-function syncPreflight(project: SyncableProject, tabOverride?: string | null): { state: 'ok'; tab: string; spreadsheetId: string; mode: 'own' | 'team' } | SheetSyncResult {
-  if (!project.sync_enabled) return { state: 'skipped', text: '⚪ Sheet sync is disabled for this project (saved here only).' };
-  const ownSheetId = String(project.google_sheet_id ?? '').trim();
-  const ownTab = String(project.sheet_tab_name ?? '').trim();
-  const isOwnSheet = Boolean(ownSheetId && ownTab);
-  const tab = tabOverride?.trim() || (isOwnSheet ? ownTab : project.guest_post_tab_name?.trim());
-  if (!tab) return { state: 'skipped', text: '⚪ This project has no configured Google Sheet tab (saved here only).' };
-  const spreadsheetId = isOwnSheet ? ownSheetId : getTeamSheetId();
+function syncPreflight(project: SyncableProject, tabOverride?: string | null): { state: 'ok'; tab: string; spreadsheetId: string } | SheetSyncResult {
+  if (!project.sync_enabled) {
+    return { state: 'skipped', text: '⚪ Sheet sync is disabled for this project (saved here only).' };
+  }
+  const tab = tabOverride?.trim() || project.guest_post_tab_name?.trim();
+  if (!tab) {
+    const reason = 'This project has no Google Sheet tab configured. Ask an admin to set the tab in Project > Sheet Details.';
+    return { state: 'failed', text: `❌ ${reason} Request is saved in the app.`, error: reason };
+  }
+  const spreadsheetId = getTeamSheetId(project);
   if (!spreadsheetId) {
-    const error = isOwnSheet ? 'Project Google Sheet is not configured' : 'TEAM_SHEET_ID is not configured';
-    return { state: 'failed', text: `❌ Google Sheet sync failed: ${error}. Request is still saved.`, error };
+    const reason = project.sheet_source === 'custom_sheet'
+      ? 'This project has no Google Sheet ID configured. Ask an admin to reconnect its Sheet in Project > Sheet Details.'
+      : 'TEAM_SHEET_ID is not configured for Guest Post Anchor.';
+    return {
+      state: 'failed',
+      text: `❌ ${reason} Request is saved in the app.`,
+      error: reason,
+    };
   }
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { state: 'failed', text: '❌ Google Sheet sync failed: Google service-account credentials are not configured. Request is still saved.', error: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured' };
-  return { state: 'ok', tab, spreadsheetId, mode: isOwnSheet ? 'own' : 'team' };
-}
-
-function ownSheetHeaderIndex(headers: unknown[], configuredName: string | undefined, fallbackName: string): number {
-  const name = String(configuredName || fallbackName).trim().toLowerCase();
-  return headers.findIndex((value) => String(value ?? '').trim().toLowerCase() === name);
-}
-
-async function appendRequestToOwnSheet(sheets: sheets_v4.Sheets, spreadsheetId: string, tab: string, project: SyncableProject, request: RequestSheetRecord) {
-  const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!1:1` })) as { data: { values?: unknown[][] } };
-  const headers = (response.data.values?.[0] ?? []) as unknown[];
-  const config = project.sheet_column_config ?? {};
-  const indexes = {
-    liveLink: ownSheetHeaderIndex(headers, config.liveLink, 'Live Link'),
-    anchor: ownSheetHeaderIndex(headers, config.anchor, 'Anchor'),
-    targetUrl: ownSheetHeaderIndex(headers, config.targetUrl, 'Target Page'),
-    status: ownSheetHeaderIndex(headers, config.status, 'Status'),
-    dr: ownSheetHeaderIndex(headers, config.dr, 'DR'),
-    traffic: ownSheetHeaderIndex(headers, config.traffic, 'Traffic'),
-  };
-  if (indexes.liveLink < 0 || indexes.anchor < 0 || indexes.targetUrl < 0 || indexes.status < 0) throw new Error('Project sheet must have Live Link, Anchor, Target Page, and Status headers.');
-  const rowsResponse = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:Z` })) as { data: { values?: unknown[][] } };
-  const rows = rowsResponse.data.values ?? [];
-  const rowNumber = Math.max(2, rows.length + 1);
-  const values = Array.from({ length: Math.max(headers.length, 4) }, () => '');
-  values[indexes.liveLink] = request.approved_site;
-  values[indexes.anchor] = request.anchor;
-  values[indexes.targetUrl] = request.target_url ?? '';
-  values[indexes.status] = request.status;
-  if (indexes.dr >= 0) values[indexes.dr] = '';
-  if (indexes.traffic >= 0) values[indexes.traffic] = '';
-  await withGoogleRetry(() => sheets.spreadsheets.values.update({ spreadsheetId, range: `${quoteTab(tab)}!A${rowNumber}:${columnLetter(values.length)}${rowNumber}`, valueInputOption: 'RAW', requestBody: { values: [values] } }));
-  return rowNumber;
-}
-
-function columnLetter(column: number) { let n = column; let out = ''; while (n > 0) { const r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = Math.floor((n - 1) / 26); } return out; }
-
-
-export async function ensureTeamSheetTab(tabName: string): Promise<{ tab: string; created: boolean }> {
-  const invalid = validateSheetTabName(tabName);
-  if (invalid) throw new Error(invalid);
-  const spreadsheetId = getTeamSheetId();
-  if (!spreadsheetId) throw new Error('TEAM_SHEET_ID is not configured.');
-  const sheets = getSheetsClient();
-  const titles = await getTabTitles(sheets, spreadsheetId);
-  const expected = ['Website', 'Opportunity', 'Anchor', 'DR', 'Traffic', 'Status', 'Note', 'Created By Email'];
-  if (titles.has(tabName)) {
-    const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tabName)}!A1:H1` }));
-    const headers = (response.data.values?.[0] ?? []).map((value) => String(value ?? '').trim());
-    if (expected.slice(0, 7).some((header, index) => headers[index] !== header)) {
-      throw new Error(`A tab named “${tabName}” already exists but its headers do not match the Inhouse template. Choose another tab name or fix the existing headers first.`);
-    }
-    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tabName);
-    return { tab: tabName, created: false };
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    return {
+      state: 'failed',
+      text: '❌ Team sheet sync failed: Google service-account credentials are not configured. Request is still saved.',
+      error: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured',
+    };
   }
-  const created = await withGoogleRetry(() => sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: { requests: [{ addSheet: { properties: { title: tabName, gridProperties: { frozenRowCount: 1 } } } }] },
-  }));
-  const sheetId = Number(created.data.replies?.[0]?.addSheet?.properties?.sheetId);
-  await withGoogleRetry(() => sheets.spreadsheets.values.update({
-    spreadsheetId, range: `${quoteTab(tabName)}!A1:H1`, valueInputOption: 'RAW',
-    requestBody: { values: [expected] },
-  }));
-  if (Number.isFinite(sheetId)) {
-    await withGoogleRetry(() => sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [
-      { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.12, green: 0.38, blue: 0.25 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)' } },
-      { setDataValidation: { range: { sheetId, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 }, rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: 'Request shared' }, { userEnteredValue: 'Live' }, { userEnteredValue: 'Rejected' }] }, strict: true, showCustomUi: true } } },
-      { addConditionalFormatRule: { index: 0, rule: { ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 }], booleanRule: { condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Live' }] }, format: { backgroundColor: { red: 0.82, green: 0.93, blue: 0.84 }, textFormat: { foregroundColor: { red: 0.08, green: 0.42, blue: 0.2 }, bold: true } } } } } },
-      { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 8 }, properties: { pixelSize: 150 }, fields: 'pixelSize' } },
-    ] } }));
-  }
-  metadataCache = null;
-  await logSync({ direction: 'to_sheet', sheetName: tabName, status: 'success', detail: 'Created Inhouse project tab with standard headers and status validation.' });
-  return { tab: tabName, created: true };
+  return { state: 'ok', tab, spreadsheetId };
 }
 
 export async function appendRequestToTeamSheet(
@@ -365,20 +312,6 @@ export async function appendRequestToTeamSheet(
   }
 
   const { tab, spreadsheetId } = preflight;
-  if (preflight.mode === 'own') {
-    try {
-      const sheets = getSheetsClient();
-      const titles = await getTabTitles(sheets, spreadsheetId);
-      if (!titles.has(tab)) throw new Error(`Project sheet tab “${tab}” was not found. Check the Tab name in project settings.`);
-      const row = await appendRequestToOwnSheet(sheets, spreadsheetId, tab, project, request);
-      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: row, status: 'success', detail: 'Request appended to project-owned sheet.' });
-      return { state: 'synced', text: `✅ Request added to this project's Google Sheet tab “${tab}”, row ${row}.`, tab, row };
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
-      return { state: 'failed', text: `❌ Project Google Sheet sync failed: ${reason}. Request is still saved.`, tab, error: reason };
-    }
-  }
   const ownerToken = randomUUID();
   const lockKey = `team-sheet:${spreadsheetId}:${tab}`;
 
@@ -386,29 +319,55 @@ export async function appendRequestToTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) {
+      const reason = `Tab "${tab}" does not exist in this project's connected Google Sheet. Check Project > Sheet Details.`;
       const result: SheetSyncResult = {
-        state: 'skipped',
-        text: '⚪ This client has no tab in the team sheet (saved here only).',
+        state: 'failed',
+        text: `❌ ${reason} Request is saved in the app.`,
         tab,
+        error: reason,
       };
-      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
       return result;
     }
 
-    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
+    await ensureMappedHeaders(sheets, spreadsheetId, tab, project);
     await acquireAppendLock(lockKey, ownerToken);
     try {
+      const layout = sheetLayout(project);
       let allRows = await withGoogleRetry(() =>
-        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
       ) as { data: { values?: unknown[][] } };
-      let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
+      // A prior Google write may have succeeded before the DB was able to store
+      // its row number. Reusing an existing website+anchor row makes retries
+      // idempotent and avoids duplicate rows on a user retry.
+      const existingRows = (allRows.data.values ?? []) as unknown[][];
+      const matchingIndex = existingRows.findIndex((row, index) =>
+        index > 0 && rowMatches(row, request.approved_site, request.anchor, project)
+      );
+      if (matchingIndex >= 1) {
+        const existingRow = matchingIndex + 1;
+        // The stored row may already exist after a partial success; keep its
+        // status aligned with the current request without inserting a duplicate.
+        const statusColumn = layout.mapping.find((entry) => entry.field === 'status')?.column;
+        if (statusColumn) {
+          await withGoogleRetry(() => sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${quoteTab(tab)}!${statusColumn}${existingRow}`,
+            valueInputOption: 'RAW',
+            requestBody: { values: [[request.status]] },
+          }));
+        }
+        await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: existingRow, status: 'success', detail: 'Reused existing matching row; avoided duplicate Sheet append' });
+        return { state: 'synced', text: `✅ Existing matching row ${existingRow} found in "${tab}"; no duplicate added.`, tab, row: existingRow };
+      }
+      let targetRow = Math.max(2, lastNonEmptyRow(existingRows) + 2);
 
       // The lock prevents app/app races. Re-check the exact target as a
       // second guard against a person writing to the sheet at the same time.
       let freeTargetConfirmed = false;
       for (let check = 0; check < 10; check += 1) {
         const target = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}` })
         ) as { data: { values?: unknown[][] } };
         const occupied = rowHasContent((target.data.values ?? [])[0]);
         if (!occupied) {
@@ -416,7 +375,7 @@ export async function appendRequestToTeamSheet(
           break;
         }
         allRows = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
         ) as { data: { values?: unknown[][] } };
         targetRow = Math.max(targetRow + 1, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
       }
@@ -425,19 +384,10 @@ export async function appendRequestToTeamSheet(
       await withGoogleRetry(() =>
         sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}`,
+          range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}`,
           valueInputOption: 'RAW',
           requestBody: {
-            values: [[
-              request.approved_site,
-              request.placement_page ?? '',
-              request.anchor,
-              '',
-              '',
-              request.status,
-              request.assign_to ?? '',
-              request.created_by_email ?? '',
-            ]],
+            values: [mappedRow(project, request as unknown as Record<string, any>)],
           },
         })
       );
@@ -476,22 +426,24 @@ async function findVerifiedRow(
   tab: string,
   storedRow: number | null,
   website: string,
-  anchor: string
+  anchor: string,
+  project?: SyncableProject
 ) {
+  const layout = project ? sheetLayout(project) : { maxColumn: 'H' };
   if (storedRow && storedRow >= 2) {
     const response = await withGoogleRetry(() =>
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${storedRow}:C${storedRow}` })
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${storedRow}:${layout.maxColumn}${storedRow}` })
     ) as { data: { values?: unknown[][] } };
-    if (rowMatches((response.data.values ?? [])[0] as unknown[] | undefined, website, anchor)) {
+    if (rowMatches((response.data.values ?? [])[0] as unknown[] | undefined, website, anchor, project)) {
       return { row: storedRow, repaired: false };
     }
   }
 
   const response = await withGoogleRetry(() =>
-    sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:C` })
+    sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:${layout.maxColumn}` })
   ) as { data: { values?: unknown[][] } };
   const rows = (response.data.values ?? []) as unknown[][];
-  const index = rows.findIndex((row) => rowMatches(row, website, anchor));
+  const index = rows.findIndex((row) => rowMatches(row, website, anchor, project));
   return index >= 0 ? { row: index + 2, repaired: storedRow !== index + 2 } : null;
 }
 
@@ -516,28 +468,13 @@ export async function syncRequestStatusToTeamSheet(
   const { tab, spreadsheetId } = preflight;
   try {
     const sheets = getSheetsClient();
-    if (preflight.mode === 'own') {
-      const response = await withGoogleRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:Z` })) as { data: { values?: unknown[][] } };
-      const rows = response.data.values ?? [];
-      const headers = (rows[0] ?? []) as unknown[];
-      const config = project.sheet_column_config ?? {};
-      const liveIndex = ownSheetHeaderIndex(headers, config.liveLink, 'Live Link');
-      const anchorIndex = ownSheetHeaderIndex(headers, config.anchor, 'Anchor');
-      const statusIndex = ownSheetHeaderIndex(headers, config.status, 'Status');
-      if (liveIndex < 0 || anchorIndex < 0 || statusIndex < 0) throw new Error('Project sheet is missing required Live Link, Anchor, or Status headers.');
-      const rowIndex = rows.findIndex((row, index) => index > 0 && String(row[liveIndex] ?? '').trim().toLowerCase() === request.approved_site.trim().toLowerCase() && String(row[anchorIndex] ?? '').trim().toLowerCase() === request.anchor.trim().toLowerCase());
-      if (rowIndex < 1) throw new Error(`Could not find a matching row for “${request.approved_site}” and anchor “${request.anchor}”.`);
-      await withGoogleRetry(() => sheets.spreadsheets.values.update({ spreadsheetId, range: `${quoteTab(tab)}!${columnLetter(statusIndex + 1)}${rowIndex + 1}`, valueInputOption: 'RAW', requestBody: { values: [[request.status]] } }));
-      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: rowIndex + 1, status: 'success', detail: 'Project-owned sheet status updated.' });
-      return { state: 'synced', text: `✅ Status updated in project sheet “${tab}”, row ${rowIndex + 1}.`, tab, row: rowIndex + 1 };
-    }
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) {
-      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
-      return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: 'Configured Sheet tab does not exist' });
+      return { state: 'failed', text: `❌ Tab "${tab}" is missing in the connected Google Sheet. Check Project > Sheet Details.`, tab, error: 'Configured Sheet tab does not exist' };
     }
 
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project);
     if (!verified) {
       const reason = `Could not find a row in "${tab}" matching both website "${request.approved_site}" and anchor "${request.anchor}".`;
       await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -547,7 +484,7 @@ export async function syncRequestStatusToTeamSheet(
     await withGoogleRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${quoteTab(tab)}!F${verified.row}`,
+        range: `${quoteTab(tab)}!${sheetLayout(project).mapping.find((item) => item.field === 'status')?.column || 'F'}${verified.row}`,
         valueInputOption: 'RAW',
         requestBody: { values: [[request.status]] },
       })
@@ -582,11 +519,10 @@ export async function syncRequestFullRowToTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) {
-      await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
-      return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
+      await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: 'Configured Sheet tab does not exist' });
+      return { state: 'failed', text: `❌ Tab "${tab}" is missing in the connected Google Sheet. Check Project > Sheet Details.`, tab, error: 'Configured Sheet tab does not exist' };
     }
-    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, original.team_row, original.approved_site, original.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, original.team_row, original.approved_site, original.anchor, project);
     if (!verified) {
       const reason = `Could not find a row in "${tab}" matching the original website "${original.approved_site}" and anchor "${original.anchor}".`;
       await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -594,23 +530,14 @@ export async function syncRequestFullRowToTeamSheet(
     }
     const existingResponse = await withGoogleRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+      range: `${quoteTab(tab)}!A${verified.row}:${sheetLayout(project).maxColumn}${verified.row}`,
     })) as { data: { values?: unknown[][] } };
     const existingRow = (existingResponse.data.values ?? [])[0] ?? [];
     await withGoogleRetry(() => sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+      range: `${quoteTab(tab)}!A${verified.row}:${sheetLayout(project).maxColumn}${verified.row}`,
       valueInputOption: 'RAW',
-      requestBody: { values: [[
-        updated.approved_site,
-        updated.placement_page ?? '',
-        updated.anchor,
-        existingRow[3] ?? '',
-        existingRow[4] ?? '',
-        updated.status,
-        updated.assign_to ?? '',
-        updated.created_by_email ?? existingRow[7] ?? '',
-      ]] },
+      requestBody: { values: [mappedRow(project, updated as unknown as Record<string, any>, existingRow)] },
     }));
     await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: verified.repaired ? 'Full row updated after stored-row repair' : 'Full row updated' });
     return { state: 'synced', text: `✅ Team sheet row ${verified.row} updated in "${tab}".`, tab, row: verified.row, repairedRow: verified.repaired };
@@ -633,7 +560,7 @@ export async function clearRequestFromTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) return { state: 'skipped', text: '⚪ Mapped team tab does not exist; archived in app only.', tab };
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project);
     if (!verified) {
       const reason = `Could not find the linked team-sheet row for ${request.approved_site} + ${request.anchor}.`;
       await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -641,7 +568,7 @@ export async function clearRequestFromTeamSheet(
     }
     await withGoogleRetry(() => sheets.spreadsheets.values.clear({
       spreadsheetId,
-      range: `${quoteTab(tab)}!A${verified.row}:H${verified.row}`,
+      range: `${quoteTab(tab)}!A${verified.row}:${sheetLayout(project).maxColumn}${verified.row}`,
     }));
     await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: 'Archived request row cleared from team sheet' });
     return { state: 'synced', text: `✅ Archived and cleared team sheet row ${verified.row} in "${tab}".`, tab, row: verified.row };
@@ -679,24 +606,25 @@ export async function appendProjectSiteToTeamSheet(
       return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
     }
 
-    await ensureCreatedByEmailHeader(sheets, spreadsheetId, tab);
     await acquireAppendLock(lockKey, ownerToken);
     try {
+      const layout = sheetLayout(project);
+      await ensureMappedHeaders(sheets, spreadsheetId, tab, project);
       const allRows = await withGoogleRetry(() =>
-        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+        sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
       ) as { data: { values?: unknown[][] } };
       let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
       let freeTargetConfirmed = false;
       for (let check = 0; check < 10; check += 1) {
         const target = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}` })
         ) as { data: { values?: unknown[][] } };
         if (!rowHasContent((target.data.values ?? [])[0])) {
           freeTargetConfirmed = true;
           break;
         }
         const reread = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:H` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
         ) as { data: { values?: unknown[][] } };
         targetRow = Math.max(targetRow + 1, lastNonEmptyRow((reread.data.values ?? []) as unknown[][]) + 2);
       }
@@ -705,18 +633,9 @@ export async function appendProjectSiteToTeamSheet(
       await withGoogleRetry(() =>
         sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${quoteTab(tab)}!A${targetRow}:H${targetRow}`,
+          range: `${quoteTab(tab)}!A${targetRow}:${layout.maxColumn}${targetRow}`,
           valueInputOption: 'RAW',
-          requestBody: { values: [[
-            site.website,
-            site.opportunity ?? '',
-            site.anchor ?? '',
-            site.dr ?? '',
-            site.traffic ?? '',
-            site.status,
-            site.note ?? '',
-            site.created_by_email ?? '',
-          ]] },
+          requestBody: { values: [mappedRow(project, site as unknown as Record<string, any>)] },
         })
       );
       await logSync({ projectSiteId: site.id, direction: 'to_sheet', sheetName: tab, sheetRow: targetRow, status: 'success', detail: 'Imported project-site row pushed to team sheet' });
@@ -748,28 +667,30 @@ export async function verifyRequestTeamRow(request: {
   team_tab: string | null;
   team_row: number | null;
   project_site_id?: string | null;
+  project?: SyncableProject | null;
 }, persistRepair = false): Promise<VerifiedTeamRowResult> {
   const tab = request.team_tab?.trim();
   if (!tab) return { state: 'failed', reason: 'Request has no stored team_tab.' };
-  const spreadsheetId = getTeamSheetId();
+  const spreadsheetId = getTeamSheetId(request.project);
   if (!spreadsheetId) return { state: 'failed', tab, reason: 'TEAM_SHEET_ID is not configured.' };
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { state: 'failed', tab, reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
 
   try {
+    const layout = request.project ? sheetLayout(request.project) : { maxColumn: 'F', statusIndex: 5 };
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) return { state: 'failed', tab, reason: `Team-sheet tab "${tab}" does not exist.` };
 
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, request.project || undefined);
     if (!verified) {
       return { state: 'failed', tab, reason: `No row in "${tab}" matches both website "${request.approved_site}" and anchor "${request.anchor}".` };
     }
 
     const response = await withGoogleRetry(() =>
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${verified.row}:F${verified.row}` })
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${verified.row}:${layout.maxColumn}${verified.row}` })
     ) as { data: { values?: unknown[][] } };
     const row = (response.data.values ?? [])[0] ?? [];
-    if (!rowMatches(row as unknown[], request.approved_site, request.anchor)) {
+    if (!rowMatches(row as unknown[], request.approved_site, request.anchor, request.project || undefined)) {
       return { state: 'failed', tab, reason: `Verified row ${verified.row} changed before it could be read again.` };
     }
 
@@ -779,7 +700,7 @@ export async function verifyRequestTeamRow(request: {
       await logSync({ requestId: request.id, projectSiteId: request.project_site_id, direction: 'from_sheet', sheetName: tab, sheetRow: verified.row, status: 'success', detail: 'Stored row repaired by verify-and-search' });
     }
 
-    return { state: 'ok', tab, row: verified.row, repaired: verified.repaired, sheetStatus: String(row[5] ?? '').trim() };
+    return { state: 'ok', tab, row: verified.row, repaired: verified.repaired, sheetStatus: String(row[layout.statusIndex] ?? '').trim() };
   } catch (error) {
     return { state: 'failed', tab, reason: error instanceof Error ? error.message : String(error) };
   }
@@ -787,33 +708,19 @@ export async function verifyRequestTeamRow(request: {
 
 export async function applyStatusFromSheet(payload: {
   tab: string;
+  spreadsheetId?: string;
   row: number;
   website: string;
   anchor: string;
-  status: 'Request shared' | 'Live' | 'Rejected' | 'Removed';
-  spreadsheetId?: string;
-  liveLink?: string;
+  status: 'Request shared' | 'Live' | 'Rejected';
 }) {
-  // The main team sheet remains backward-compatible. For project-owned sheets,
-  // resolve the project by spreadsheet ID + tab before matching the request.
-  let data: any; let error: any;
-  if (payload.spreadsheetId) {
-    const { data: project, error: projectError } = await adminClient.from('projects').select('id,google_sheet_id,sheet_tab_name,guest_post_tab_name').eq('google_sheet_id', payload.spreadsheetId).or(`sheet_tab_name.eq.${payload.tab},guest_post_tab_name.eq.${payload.tab}`).maybeSingle();
-    if (projectError) { data = null; error = projectError; }
-    else if (project) {
-      const siteKey = String(payload.liveLink ?? payload.website ?? '').trim();
-      const { data: requestRows, error: requestError } = await adminClient.from('requests').select('id,project_id,approved_site,placement_page,anchor,status,team_tab,team_row').eq('project_id', project.id).eq('anchor', payload.anchor).is('deleted_at', null).limit(100);
-      if (requestError) { data = null; error = requestError; }
-      else {
-        const found = (requestRows ?? []).find((row: any) => String(row.placement_page ?? row.approved_site ?? '').trim() === siteKey || String(row.approved_site ?? '').trim() === siteKey);
-        data = found ? [{ request_id: found.id, match_type: 'project_sheet_identity' }] : [];
-        error = null;
-      }
-    } else { data = []; error = null; }
-  } else {
-    const rpcResult = await adminClient.rpc('find_request_from_sheet', { p_tab: payload.tab, p_website: payload.website, p_anchor: payload.anchor, p_row: payload.row });
-    data = rpcResult.data; error = rpcResult.error;
-  }
+  const { data, error } = await adminClient.rpc('find_request_from_sheet_scoped', {
+    p_tab: payload.tab,
+    p_website: payload.website,
+    p_anchor: payload.anchor,
+    p_row: payload.row,
+    p_sheet_id: payload.spreadsheetId || null,
+  });
   if (error) {
     await logSync({ direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'error', detail: `Request lookup failed: ${error.message}` });
     throw new Error(`Request lookup failed: ${error.message}`);
@@ -828,13 +735,6 @@ export async function applyStatusFromSheet(payload: {
 
   const requestId = String(match.request_id);
   const { data: site } = await adminClient.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
-  if (payload.status === 'Removed') {
-    const { error: flagError } = await adminClient.from('requests').update({ sheet_flag: 'Removed', sheet_flag_at: new Date().toISOString(), team_tab: payload.tab, team_row: payload.row, sync_state: 'synced', sync_error: null }).eq('id', requestId);
-    if (flagError) throw new Error(`Could not save Removed flag: ${flagError.message}`);
-    await logSync({ requestId, projectSiteId: site?.id ?? null, direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'success', detail: 'Sheet-only Removed flag set; tool request status was preserved.' });
-    return { ok: true, requestId, flag: 'Removed', statusPreserved: true };
-  }
-  await adminClient.from('requests').update({ sheet_flag: null, sheet_flag_at: null }).eq('id', requestId);
   const { setRequestStatusCore } = await import('@/services/request-status-core');
   const result = await setRequestStatusCore(requestId, payload.status, 'team sheet', {
     pushToSheet: false,
@@ -892,7 +792,7 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
   for (let from = 0; ; from += 1000) {
     const { data, error } = await adminClient
       .from('requests')
-      .select('id,approved_site,anchor,status,team_tab,team_row,project_sites(id)')
+      .select('id,approved_site,anchor,status,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping),project_sites(id)')
       .is('deleted_at', null)
       .not('team_tab', 'is', null)
       .not('team_row', 'is', null)
@@ -902,35 +802,37 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
     if ((data ?? []).length < 1000) break;
   }
 
-  const spreadsheetId = getTeamSheetId();
-  if (!spreadsheetId || !process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    throw new Error(!spreadsheetId ? 'TEAM_SHEET_ID is not configured.' : 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.');
-  }
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not configured.');
   const sheets = getSheetsClient();
-  const titles = await getTabTitles(sheets, spreadsheetId);
   const rowsByTab = new Map<string, unknown[][]>();
 
   for (const request of requests) {
     report.checked += 1;
     const tab = String(request.team_tab ?? '').trim();
+    const project = request.projects as SyncableProject | null;
+    const spreadsheetId = getTeamSheetId(project);
+    const projectLayout = project ? sheetLayout(project) : null;
+    const tabKey = `${spreadsheetId}\u0000${tab}`;
     const projectSiteId = Array.isArray(request.project_sites) ? request.project_sites[0]?.id ?? null : request.project_sites?.id ?? null;
     try {
-      if (!titles.has(tab)) throw new Error(`Tab "${tab}" does not exist.`);
-      let rows = rowsByTab.get(tab);
+      if (!spreadsheetId || !projectLayout || !project) throw new Error('Project Google Sheet is not configured.');
+      const titles = await getTabTitles(sheets, spreadsheetId);
+      if (!titles.has(tab)) throw new Error(`Tab "${tab}" does not exist in this project Sheet.`);
+      let rows = rowsByTab.get(tabKey);
       if (!rows) {
         const response = await withGoogleRetry(() =>
-          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:F` })
+          sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:${projectLayout.maxColumn}` })
         ) as { data: { values?: unknown[][] } };
         rows = (response.data.values ?? []) as unknown[][];
-        rowsByTab.set(tab, rows);
+        rowsByTab.set(tabKey, rows);
       }
 
       const storedIndex = Number(request.team_row) - 2;
-      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor) ? storedIndex : -1;
-      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor));
+      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor, project) ? storedIndex : -1;
+      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor, project));
       if (index < 0) throw new Error(`No matching row for ${request.approved_site} + ${request.anchor}.`);
       const verifiedRow = index + 2;
-      const sheetStatus = String(rows[index]?.[5] ?? '').trim();
+      const sheetStatus = String(rows[index]?.[projectLayout.statusIndex] ?? '').trim();
       const repaired = verifiedRow !== Number(request.team_row);
       if (repaired) report.repairedRows += 1;
 
@@ -1015,23 +917,31 @@ export async function readTeamSheetProjectRows(project: {
   id: string;
   name: string;
   guest_post_tab_name: string | null;
+  google_sheet_id?: string | null;
+  sheet_source?: string | null;
+  column_mapping?: unknown;
+  sync_enabled?: boolean;
 }): Promise<TeamSheetReadResult> {
   const tab = project.guest_post_tab_name?.trim();
-  if (!tab) return { state: 'skipped', rows: [], reason: 'Project has no team-sheet tab mapping.' };
-
-  const spreadsheetId = getTeamSheetId();
-  if (!spreadsheetId) return { state: 'failed', tab, rows: [], reason: 'TEAM_SHEET_ID is not configured.' };
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return { state: 'failed', tab, rows: [], reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
-  }
+  if (!tab) return { state: 'skipped', rows: [], reason: 'Project has no Sheet tab mapping.' };
+  const syncProject: SyncableProject = { ...project, sync_enabled: true };
+  const spreadsheetId = getTeamSheetId(syncProject);
+  if (!spreadsheetId) return { state: 'failed', tab, rows: [], reason: 'Project Google Sheet ID is missing.' };
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return { state: 'failed', tab, rows: [], reason: 'GOOGLE_SERVICE_ACCOUNT_JSON is not configured.' };
 
   try {
+    const layout = sheetLayout(syncProject);
+    const fieldIndex = (field: string, fallback: number) => {
+      const item = layout.mapping.find((entry) => entry.field === field);
+      return item ? columnNumber(item.column) - 1 : fallback;
+    };
+    const readCell = (row: unknown[], field: string, fallback: number) => String(row[fieldIndex(field, fallback)] ?? '').trim();
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
-    if (!titles.has(tab)) return { state: 'skipped', tab, rows: [], reason: 'Mapped tab does not exist in the team sheet.' };
+    if (!titles.has(tab)) return { state: 'skipped', tab, rows: [], reason: 'Mapped tab does not exist in this project Sheet.' };
 
     const response = await withGoogleRetry(() =>
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:H` })
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:${layout.maxColumn}` })
     ) as { data: { values?: unknown[][] } };
 
     const rows: TeamSheetProjectRow[] = [];
@@ -1040,14 +950,14 @@ export async function readTeamSheetProjectRows(project: {
       if (!rowHasContent(row)) continue;
       rows.push({
         teamRow: index + 2,
-        website: String(row[0] ?? '').trim(),
-        opportunity: String(row[1] ?? '').trim(),
-        anchor: String(row[2] ?? '').trim(),
-        dr: row[3] == null || String(row[3]).trim() === '' ? null : String(row[3]).trim(),
-        traffic: row[4] == null || String(row[4]).trim() === '' ? null : String(row[4]).trim(),
-        status: String(row[5] ?? '').trim(),
-        note: String(row[6] ?? '').trim(),
-        createdByEmail: String(row[7] ?? '').trim(),
+        website: readCell(row, 'approved_site', 0),
+        opportunity: readCell(row, 'placement_page', 1),
+        anchor: readCell(row, 'anchor', 2),
+        dr: readCell(row, 'dr', 3) || null,
+        traffic: readCell(row, 'traffic', 4) || null,
+        status: readCell(row, 'status', 5),
+        note: readCell(row, 'note', fieldIndex('assign_to', 6)),
+        createdByEmail: readCell(row, 'created_by_email', 7),
       });
     }
     return { state: 'ok', tab, rows };

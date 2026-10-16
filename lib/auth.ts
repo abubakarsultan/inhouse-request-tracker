@@ -7,6 +7,17 @@ import { adminClient } from '@/lib/supabase-admin';
 import { createAuthServerClient } from '@/lib/supabase-auth';
 
 import { isRankvizEmail, parseAdminEmails } from '@/lib/auth-rules';
+
+const RANKVIZ_TEAM: Record<string, string> = {
+  'abubakarsultan@rankviz.com': 'Abubakar',
+  'atiflatif@rankviz.com': 'Atif latif',
+  'rizwaniftikhar@rankviz.com': 'Rizwan',
+  'muhammadatif@rankviz.com': 'M.ATIF',
+  'sohailahmad@rankviz.com': 'Sohail Ahmad',
+  'zunnorainali@rankviz.com': 'Zunnorain Ali',
+  'wasif@rankviz.com': 'Wasif',
+};
+export function getFixedRankvizName(email: string) { return RANKVIZ_TEAM[email.trim().toLowerCase()] ?? null; }
 import type { AccountStatus, AppRole, UserProfile } from '@/lib/auth-types';
 export { isRankvizEmail };
 export type { AccountStatus, AppRole, UserProfile };
@@ -34,7 +45,7 @@ function normalizeProfile(row: any): UserProfile {
     google_name: row.google_name ? String(row.google_name) : null,
     avatar_url: row.avatar_url ? String(row.avatar_url) : null,
     sheet_name: row.sheet_name ? String(row.sheet_name) : null,
-    role: row.role === 'admin' ? 'admin' : row.role === 'viewer' ? 'viewer' : 'member',
+    role: row.role === 'admin' ? 'admin' : 'member',
     account_status: row.account_status === 'active' ? 'active' : row.account_status === 'disabled' ? 'disabled' : 'pending',
     onboarding_completed: Boolean(row.onboarding_completed),
     approved_at: row.approved_at ? String(row.approved_at) : null,
@@ -49,8 +60,10 @@ function normalizeProfile(row: any): UserProfile {
  */
 export async function ensureUserProfile(user: User): Promise<UserProfile> {
   const email = String(user.email ?? '').trim().toLowerCase();
-  if (!isRankvizEmail(email)) throw new Error('Only @rankviz.com Google accounts can use this app.');
-
+  const fixedName = getFixedRankvizName(email);
+  const invitationResult = fixedName ? { data: null, error: null } : await adminClient.from('user_invitations').select('email,role,status,display_name').eq('email', email).eq('status', 'pending').maybeSingle();
+  if (!fixedName && (invitationResult.error || !invitationResult.data)) throw new Error('This email has not been invited.');
+  const invitation = invitationResult.data as any;
   const adminEmails = configuredAdminEmails();
   const explicitlyAdmin = adminEmails.has(email);
   const { data: existing, error: existingError } = await adminClient
@@ -60,28 +73,24 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
     .maybeSingle();
   if (existingError) throw new Error(existingError.message);
 
-  // ADMIN_EMAILS bootstraps only a brand-new profile. Existing manual role changes are preserved.
-  const bootstrapAdmin = !existing && explicitlyAdmin;
+  const bootstrapAdmin = explicitlyAdmin || email === 'abubakarsultan@rankviz.com';
+  const approvedTeamMember = Boolean(fixedName);
   const now = new Date().toISOString();
-  const role: AppRole = existing?.role === 'admin' || existing?.role === 'viewer' || existing?.role === 'member'
-    ? existing.role
-    : bootstrapAdmin ? 'admin' : 'member';
-  const accountStatus: AccountStatus = existing?.account_status
-    ? (String(existing.account_status) as AccountStatus)
-    : bootstrapAdmin
-      ? 'active'
-      : 'pending';
+  const role: AppRole = existing?.role === 'admin' || bootstrapAdmin || invitation?.role === 'admin' ? 'admin' : 'member';
+  const accountStatus: AccountStatus = existing?.account_status === 'disabled' ? 'disabled' : approvedTeamMember || bootstrapAdmin || Boolean(existing?.account_status === 'active') || Boolean(invitation) ? 'active' : 'pending';
 
   const payload = {
     id: user.id,
     email,
-    name: googleName(user),
+    name: fixedName ?? invitation?.display_name ?? googleName(user),
     google_name: googleName(user),
     avatar: avatarUrl(user),
     avatar_url: avatarUrl(user),
     role,
     active: accountStatus === 'active',
-    account_status: bootstrapAdmin && accountStatus !== 'disabled' ? 'active' : accountStatus,
+    account_status: approvedTeamMember && accountStatus !== 'disabled' ? 'active' : bootstrapAdmin && accountStatus !== 'disabled' ? 'active' : accountStatus,
+    sheet_name: fixedName ?? (existing as any)?.sheet_name ?? null,
+    onboarding_completed: Boolean(fixedName) || Boolean(invitation) || Boolean((existing as any)?.onboarding_completed),
     last_login_at: now,
   };
 
@@ -95,13 +104,13 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
   return normalizeProfile(data);
 }
 
-/** Request-scoped cached auth lookup. Layout + page can share this call. */
-export const getSessionUser = cache(async () => {
+/** Request-scoped signed JWT verification without a remote /user call on each page. */
+export const getSessionUser = cache(async (): Promise<{ id: string; email: string } | null> => {
   const supabase = await createAuthServerClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user) return null;
-  if (!isRankvizEmail(user.email)) return null;
-  return user;
+  const { data, error } = await supabase.auth.getClaims();
+  if (error || !data?.claims?.sub) return null;
+  const email = String(data.claims.email || '').trim().toLowerCase();
+  return { id: String(data.claims.sub), email };
 });
 
 /** Request-scoped cached profile lookup; no write on normal navigation. */
@@ -115,7 +124,13 @@ export const getCurrentProfile = cache(async (): Promise<UserProfile | null> => 
     .eq('id', user.id)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  if (!data) return ensureUserProfile(user);
+  if (!data) {
+    // Only the rare missing-profile fallback needs the full Auth user record.
+    const supabase = await createAuthServerClient();
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user || authData.user.id !== user.id) return null;
+    return ensureUserProfile(authData.user);
+  }
   return normalizeProfile(data);
 });
 
@@ -127,7 +142,7 @@ export async function requireAuthenticatedProfile(): Promise<UserProfile> {
 
 export async function requireActiveProfile(): Promise<UserProfile> {
   const profile = await requireAuthenticatedProfile();
-  if (!profile.onboarding_completed || (profile.role !== 'viewer' && !profile.sheet_name)) redirect('/onboarding');
+  if (!profile.onboarding_completed || (!profile.sheet_name && isRankvizEmail(profile.email))) redirect('/onboarding');
   if (profile.account_status === 'pending') redirect('/pending');
   if (profile.account_status === 'disabled') redirect('/login?error=disabled');
   return profile;
@@ -142,7 +157,7 @@ export async function requireAdminProfile(): Promise<UserProfile> {
 export async function requireActiveUserForAction(): Promise<UserProfile> {
   const profile = await getCurrentProfile();
   if (!profile) throw new Error('Please sign in again.');
-  if (!profile.onboarding_completed || (profile.role !== 'viewer' && !profile.sheet_name)) throw new Error('Complete your profile first.');
+  if (!profile.onboarding_completed || (!profile.sheet_name && isRankvizEmail(profile.email))) throw new Error('Complete your profile first.');
   if (profile.account_status !== 'active') throw new Error(profile.account_status === 'disabled' ? 'Your account is disabled.' : 'Your account is waiting for admin approval.');
   return profile;
 }
@@ -150,12 +165,5 @@ export async function requireActiveUserForAction(): Promise<UserProfile> {
 export async function requireAdminForAction(): Promise<UserProfile> {
   const profile = await requireActiveUserForAction();
   if (profile.role !== 'admin') throw new Error('Admin access required.');
-  return profile;
-}
-
-/** Use at the start of every member/admin mutation. Viewers are strictly read-only. */
-export async function requireMutableUserForAction(): Promise<UserProfile> {
-  const profile = await requireActiveUserForAction();
-  if (profile.role === 'viewer') throw new Error('Viewer accounts have read-only access.');
   return profile;
 }
