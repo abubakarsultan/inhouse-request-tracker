@@ -8,6 +8,7 @@ import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
 import { resolveGoogleSheetUrl, inspectProjectSpreadsheet, inspectProjectTab, createBlankProjectSpreadsheet } from '@/lib/google-sheet-setup';
 import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 import { adminClient } from '@/lib/supabase-admin';
+import { describeProjectSaveError } from '@/lib/project-save-error';
 
 export async function getProjects(search?: string, activeOnly = false) {
   const supabase = await createClient();
@@ -203,6 +204,33 @@ export async function updateProject(id: string, input: ProjectInput) {
   revalidatePath('/projects');
   revalidatePath('/requests/new');
   revalidatePath('/projects/[slug]', 'page');
+}
+
+/**
+ * A Server Action exception is masked as React #441 in production. Return
+ * serializable feedback so the wizard can display a real, actionable message.
+ * Never return raw SQL or Google API errors to the browser.
+ */
+type ProjectSaveFeedback = { ok: true } | { ok: false; message: string };
+
+export async function createProjectWithFeedback(input: ProjectInput): Promise<ProjectSaveFeedback> {
+  try {
+    await createProject(input);
+    return { ok: true };
+  } catch (error) {
+    console.error('[project:save] create failed:', error);
+    return { ok: false, message: describeProjectSaveError(error) };
+  }
+}
+
+export async function updateProjectWithFeedback(id: string, input: ProjectInput): Promise<ProjectSaveFeedback> {
+  try {
+    await updateProject(id, input);
+    return { ok: true };
+  } catch (error) {
+    console.error('[project:save] update failed:', error);
+    return { ok: false, message: describeProjectSaveError(error) };
+  }
 }
 
 export async function toggleProjectActive(id: string, active: boolean) {

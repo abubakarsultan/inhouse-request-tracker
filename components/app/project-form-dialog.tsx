@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Plus, Pencil, Copy, Check, Trash2, ArrowUp, ArrowDown, ExternalLink } from 'lucide-react';
-import { createProject, updateProject, listProjectSheetTabs, testProjectSheetConnection, inspectSharedProjectTab } from '@/services/projects';
+import { listProjectSheetTabs, testProjectSheetConnection, inspectSharedProjectTab } from '@/services/projects';
 import { DEFAULT_COLUMN_MAPPING, NEW_SHEET_COLUMN_MAPPING, PROJECT_CATEGORIES, SHEET_DATA_FIELDS, normalizeColumnMapping, reindexColumns, previewMappedRow, type ColumnMapping } from '@/lib/project-sheet';
 import { buildGoogleSheetUrl, parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 import type { ProjectInput } from '@/lib/validators';
@@ -152,9 +152,31 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
       create_new_sheet: newSheet, new_sheet_title: newSheet ? newTitle : null,
     };
     try {
-      if (isEdit) await updateProject(project!.id, input); else await createProject(input);
-      setOpen(false); router.refresh();
-    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not save the project.'); }
+      const response = await fetch('/api/projects/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        cache: 'no-store',
+        body: JSON.stringify({ mode: isEdit ? 'update' : 'create', projectId: project?.id, input }),
+      });
+      // A proxy or expired session can return HTML instead of JSON. Show a
+      // useful message rather than exposing React's masked Server Action error.
+      const result = await response.json().catch(() => null) as
+        | { ok: boolean; message?: string; reference?: string }
+        | null;
+      if (!response.ok || !result?.ok) {
+        const reason = result?.message || (response.status === 401 || response.status === 403
+          ? 'Your session or project permissions may have expired. Reload and sign in again.'
+          : `Project save failed (HTTP ${response.status}). Check Vercel Runtime Logs.`);
+        setError(`${reason}${result?.reference ? ` Reference: ${result.reference}` : ''}`);
+        return;
+      }
+      setOpen(false);
+      router.refresh();
+    } catch (caught) {
+      console.error('[project-form] Project save request failed:', caught);
+      setError('Network error while saving this project. Check your connection, then retry once.');
+    }
     finally { setPending(false); }
   }
   const sample = previewMappedRow(columns);
