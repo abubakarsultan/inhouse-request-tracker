@@ -8,7 +8,7 @@ const cls='w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-3
 export function ConnectPartnerSheet({partnerId}:{partnerId:string}){
   const router=useRouter();const[url,setUrl]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   return <form className="flex flex-col gap-2" onSubmit={async e=>{e.preventDefault();setBusy(true);setError('');try{const msg=await connectPartnerSheet(partnerId,url);setError(msg);router.refresh();}catch(e){setError(e instanceof Error?e.message:'Connection failed');}finally{setBusy(false);}}}>
-    <input aria-label="Google Sheet URL" className={cls} placeholder="Paste Google Sheet URL after importing CSV" value={url} onChange={e=>setUrl(e.target.value)} required/>
+    <input aria-label="Google Sheet URL" className={cls} placeholder="Paste Google Sheet URL after uploading and converting Excel template" value={url} onChange={e=>setUrl(e.target.value)} required/>
     <button disabled={busy} className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy?'Connecting…':'Connect & Validate Sheet'}</button>
     {error&&<p role="status" className="text-xs text-[var(--muted)]">{error}</p>}
   </form>;

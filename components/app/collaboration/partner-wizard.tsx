@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createCollaborationPartner } from '@/services/collaboration';
-import { partnerTabName } from '@/lib/collaboration-core';
+import { partnerTabName, templatePartnerTabName } from '@/lib/collaboration-core';
 
 export default function PartnerWizard({serviceAccountEmail}:{serviceAccountEmail:string|null}){
   const router=useRouter();
@@ -34,23 +34,24 @@ export default function PartnerWizard({serviceAccountEmail}:{serviceAccountEmail
       <p className="rounded-lg bg-[var(--canvas)] p-3 text-sm">Default: <b>{give} Given : {receive} Received</b></p>
     </div>}
     {step===3&&<div className="space-y-4">
-      <p className="text-sm text-[var(--muted)]">Choose automatic creation or download the exact CSV headings and connect your own Google Sheet.</p>
-      <div className="grid gap-3 sm:grid-cols-3">{([['automatic','Create Sheet Automatically'],['manual','CSV & Connect Manually'],['later','Set up later']] as const).map(([value,label])=><label key={value} className={`cursor-pointer rounded-xl border p-3 text-sm ${setup===value?'border-[var(--brand)] bg-[var(--brand-soft)]':'border-[var(--border)]'}`}><input className="mr-2" type="radio" checked={setup===value} onChange={()=>setSetup(value)}/>{label}</label>)}</div>
+      <p className="text-sm text-[var(--muted)]">Choose automatic creation or download one Excel workbook with all three tabs and connect your own Google Sheet.</p>
+      <div className="grid gap-3 sm:grid-cols-3">{([['automatic','Create Sheet Automatically'],['manual','Excel Template & Connect'],['later','Set up later']] as const).map(([value,label])=><label key={value} className={`cursor-pointer rounded-xl border p-3 text-sm ${setup===value?'border-[var(--brand)] bg-[var(--brand-soft)]':'border-[var(--border)]'}`}><input className="mr-2" type="radio" checked={setup===value} onChange={()=>setSetup(value)}/>{label}</label>)}</div>
       {setup==='automatic'&&<div className="rounded-xl bg-[var(--canvas)] p-4 text-sm"><b>One-click Google Sheet setup</b><p className="mt-1 text-[var(--muted)]">The app will create Rankviz, {partnerTabName(name)}, and Summary tabs and connect them. Google credentials with Drive creation permissions are required; if creation fails your partner will be saved as Setup Pending.</p></div>}
       {setup==='manual'&&<div className="space-y-3 rounded-xl border border-[var(--border)] p-4 text-sm">
-        <h3 className="font-bold">Manual Google Sheet Setup — 5 steps</h3>
+        <h3 className="font-bold">Connect One Google Spreadsheet — 5 steps</h3>
+        <p className="text-xs text-[var(--muted)]">Only one file and one Google Spreadsheet are needed. The .xlsx template contains all three tabs: Rankviz, {templatePartnerTabName(name)}, and Summary. CSV cannot hold multiple tabs.</p>
         <ol className="list-inside list-decimal space-y-2 text-[var(--muted)]">
-          <li><a className="font-semibold text-[var(--brand)] underline" href={`/api/collaboration/templates?partner=${encodeURIComponent(name||'Partner')}`}>Download CSV Templates (.zip)</a> — 3 CSV files with final headings.</li>
-          <li>Create one blank Google Spreadsheet.</li>
-          <li>Use <b>File → Import → Upload</b> for each CSV; choose <b>Insert new sheet(s)</b>. Rename tabs <b>Rankviz</b>, <b>{partnerTabName(name)}</b>, <b>Summary</b>.</li>
-          <li>Share that spreadsheet with the app's configured Google service account as Editor (or use the connected OAuth account). {serviceAccountEmail&&<span className="font-semibold">Editor email: <code className="select-all">{serviceAccountEmail}</code><button type="button" className="ml-2 rounded border px-2 py-0.5" onClick={()=>navigator.clipboard.writeText(serviceAccountEmail)}>Copy</button></span>}</li>
-          <li>Paste the spreadsheet URL below. We verify the tabs, headings and edit access before connecting.</li>
+          <li><a className="font-semibold text-[var(--brand)] underline" href={`/api/collaboration/templates?partner=${encodeURIComponent(name||'Partner')}`}>Download Collaboration Template (.xlsx)</a> — one Excel workbook with all three ready-made tabs.</li>
+          <li>Open <b>Google Drive → New → File upload</b> and upload the downloaded .xlsx file <b>once</b>.</li>
+          <li>Open the uploaded file with <b>Google Sheets</b>, then choose <b>File → Save as Google Sheets</b> if it is still an Excel file. You will have <b>one spreadsheet</b> with <b>three tabs</b>. Do not import three separate files.</li>
+          <li>Share that <b>same spreadsheet</b> with the app's configured Google service account as Editor (or use the connected OAuth account). {serviceAccountEmail&&<span className="font-semibold">Editor email: <code className="select-all">{serviceAccountEmail}</code><button type="button" className="ml-2 rounded border px-2 py-0.5" onClick={()=>navigator.clipboard.writeText(serviceAccountEmail)}>Copy</button></span>}</li>
+          <li>Copy the <b>Google Sheets URL</b> (not the Excel file link) and paste it below. The app verifies all three tabs and headings before connecting.</li>
         </ol>
         <label className="block font-semibold">Google Sheet URL<input className={input} placeholder="https://docs.google.com/spreadsheets/d/..." value={url} onChange={e=>setUrl(e.target.value)}/></label>
-        <p className="text-xs text-[var(--muted)]">If you have not imported the CSV yet, choose Set up later. You can connect the URL from Partner Details.</p>
+        <p className="text-xs text-[var(--muted)]">If you have not uploaded the workbook yet, choose Set up later. You can connect the URL from Partner Details.</p>
       </div>}
     </div>}
-    {step===4&&<div className="space-y-2 rounded-xl bg-[var(--canvas)] p-4 text-sm"><p><b>Partner:</b> {name||'Not entered'}</p><p><b>Ratio:</b> {give} Given : {receive} Received</p><p><b>Sheet:</b> {setup==='automatic'?'Automatic creation':setup==='manual'?'Connect imported CSV Sheet':'Set up later'}</p><p><b>Tabs:</b> Rankviz, {partnerTabName(name)}, Summary</p><p className="text-[var(--muted)]">Existing Projects, Requests and Guest Post Anchor data will not be changed.</p></div>}
+    {step===4&&<div className="space-y-2 rounded-xl bg-[var(--canvas)] p-4 text-sm"><p><b>Partner:</b> {name||'Not entered'}</p><p><b>Ratio:</b> {give} Given : {receive} Received</p><p><b>Sheet:</b> {setup==='automatic'?'Automatic creation':setup==='manual'?'Connect one imported workbook':'Set up later'}</p><p><b>Tabs:</b> Rankviz, {setup==='manual'?templatePartnerTabName(name):partnerTabName(name)}, Summary</p><p className="text-[var(--muted)]">Existing Projects, Requests and Guest Post Anchor data will not be changed.</p></div>}
     <div className="mt-6 flex justify-between gap-2"><button type="button" disabled={step===1||busy} onClick={()=>setStep(v=>v-1)} className="rounded-xl border border-[var(--border)] px-5 py-2 text-sm disabled:opacity-50">Back</button>{step<4?<button type="button" disabled={step===1&&!name.trim()||step===2&&(give<1||receive<1)} onClick={()=>{setError('');setStep(v=>v+1);}} className="rounded-xl bg-[var(--brand)] px-5 py-2 text-sm font-semibold text-white disabled:opacity-50">Continue</button>:<button type="button" disabled={busy||!name.trim()||setup==='manual'&&!url.trim()} onClick={finish} className="rounded-xl bg-[var(--brand)] px-5 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy?'Creating…':'Create Partner'}</button>}</div>
   </section>;
 }

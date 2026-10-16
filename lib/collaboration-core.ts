@@ -14,6 +14,10 @@ export function partnerTabName(name: string): string {
   const title = cleanTabName(name);
   return title.toLowerCase() === 'rankviz' || title.toLowerCase() === 'summary' ? `${title} Partner` : title;
 }
+/** Excel worksheet names are limited to 31 chars; Google Sheets allows longer titles. */
+export function templatePartnerTabName(name: string): string {
+  return partnerTabName(name).slice(0, 31).trim();
+}
 export function spreadsheetTitle(name: string): string { return `${cleanTabName(name)} - Collaboration`; }
 export function quoteA1(tab: string): string { return `'${tab.replace(/'/g, "''")}'`; }
 export function normalizeCollabStatus(status: string): CollabStatus | null {

@@ -30,12 +30,12 @@ test('prior unallocated Live link cannot be counted twice',()=>{
   assert.match(sql,/revoke all on function public\.create_collaboration_from_request/);
   assert.match(sql,/raise exception 'Collaboration deal does not belong to link partner'/);
 });
-test('CSV download plus Google automatic creation, manual connect and headings checks are implemented',()=>{
+test('one three-tab Excel template plus Google automatic creation, manual connect and headings checks are implemented',()=>{
   const setup=read('lib/collaboration-sheets.ts');
   const zip=read('lib/collaboration-csv.ts');
   const wizard=read('components/app/collaboration/partner-wizard.tsx');
-  assert.match(zip,/deflateRawSync/);assert.match(zip,/Rankviz\.csv/);assert.match(zip,/Summary\.csv/);
-  assert.match(wizard,/Download CSV Templates/);assert.match(wizard,/File → Import → Upload/);
+  assert.match(zip,/collaborationWorkbookTemplate/);assert.match(zip,/book_append_sheet\(workbook, sheet, tab\)/);assert.match(zip,/book_append_sheet\(workbook, summary, 'Summary'\)/);
+  assert.match(wizard,/Download Collaboration Template \(\.xlsx\)/);assert.match(wizard,/Google Drive → New → File upload/);
   assert.match(setup,/spreadsheets\.create/);assert.match(setup,/validateCollabHeaders/);
   assert.match(setup,/Record ID/);assert.match(setup,/refreshCollaborationSummary/);
 });

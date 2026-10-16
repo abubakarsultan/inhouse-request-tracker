@@ -1,7 +1,7 @@
 import 'server-only';
 import { google } from 'googleapis';
 import { adminClient } from '@/lib/supabase-admin';
-import { COLLAB_HEADERS, COLLAB_SUMMARY_HEADERS, cleanTabName, partnerTabName, quoteA1, spreadsheetTitle, validateCollabHeaders, partnerMetrics } from '@/lib/collaboration-core';
+import { COLLAB_HEADERS, COLLAB_SUMMARY_HEADERS, cleanTabName, partnerTabName, quoteA1, spreadsheetTitle, validateCollabHeaders, partnerMetrics, templatePartnerTabName } from '@/lib/collaboration-core';
 
 function googleAuth() {
   const scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file'];
@@ -23,7 +23,7 @@ function googleAuth() {
 function googleSheets() { return google.sheets({ version: 'v4', auth: googleAuth() }); }
 function formatGoogleError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  if (/quota|storage quota/i.test(message)) return 'Google denied creating a Sheet because the service account has no Drive storage quota. Configure GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN for a connected Google user, or use Download CSV & Connect Manually.';
+  if (/quota|storage quota/i.test(message)) return 'Google denied creating a Sheet because the service account has no Drive storage quota. Configure GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN for a connected Google user, or use Download Excel Template & Connect Manually.';
   return message.slice(0, 400);
 }
 
@@ -46,21 +46,21 @@ export async function connectCollaborationSheet(url: string, partnerName: string
   const tabs = (meta.data.sheets || []).map(x => x.properties).filter((p): p is NonNullable<typeof p> => Boolean(p?.title));
   const lookup = (names: string[]) => tabs.find(t => names.some(n => n.toLowerCase() === (t.title || '').toLowerCase()));
   const ourTab = lookup(['Rankviz','Our Links']);
-  const partnerTab = lookup([partnerTabName(partnerName),'Partner Links']);
+  const partnerTab = lookup([partnerTabName(partnerName), templatePartnerTabName(partnerName), 'Partner Links']);
   const summaryTab = lookup(['Summary']);
   if (!ourTab || !partnerTab || !summaryTab || new Set([ourTab.sheetId, partnerTab.sheetId, summaryTab.sheetId]).size !== 3) {
-    throw new Error(`Sheet needs three distinct tabs: Rankviz, ${partnerTabName(partnerName)} (or Partner Links), and Summary. Import each CSV into its own tab.`);
+    throw new Error(`Sheet needs three distinct tabs: Rankviz, ${partnerTabName(partnerName)} (or Partner Links), and Summary. Import the single Excel (.xlsx) workbook so all three tabs appear together.`);
   }
   const names = [String(ourTab.title), String(partnerTab.title)];
   const headers = await sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges: [...names.map(name => `${quoteA1(name)}!A1:H1`), `${quoteA1(String(summaryTab.title))}!A1:C1`] });
   for (let i = 0; i < 2; i++) {
     const row = headers.data.valueRanges?.[i]?.values?.[0] ?? [];
     if (!validateCollabHeaders(row)) throw new Error(`Tab "${names[i]}" has different headings. Expected: ${COLLAB_HEADERS.join(', ')}. Download and import the template without changing the header row.`);
-    if (String(row[7] || '').trim() && String(row[7]).trim() !== 'Record ID') throw new Error(`Tab "${names[i]}" already uses column H. Do not overwrite existing data; use a fresh CSV template.`);
+    if (String(row[7] || '').trim() && String(row[7]).trim() !== 'Record ID') throw new Error(`Tab "${names[i]}" already uses column H. Do not overwrite existing data; use a fresh Excel workbook template.`);
   }
   const summaryHeaders=headers.data.valueRanges?.[2]?.values?.[0] ?? [];
   if (!COLLAB_SUMMARY_HEADERS.every((heading,i)=>String(summaryHeaders[i]||'').trim()===heading)) {
-    throw new Error('Summary tab headings do not match the template. Re-import Summary.csv before connecting.');
+    throw new Error('Summary tab headings do not match the template. Re-import the Excel workbook template before connecting.');
   }
   // H stores a stable record id for retries / move-safe reconciliation. Never overwrite A:G.
   await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: {
