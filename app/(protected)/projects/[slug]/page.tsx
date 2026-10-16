@@ -7,11 +7,12 @@ import { UploadCloud } from 'lucide-react';
 import { headers } from 'next/headers';
 import ProjectSheetDetails from '@/components/app/project-sheet-details';
 import { buildProjectTriggerSnippet } from '@/lib/sheet-webhook';
-import { requireAdminProfile } from '@/lib/auth';
+import { requireActiveProfile } from '@/lib/auth';
 import { normalizeColumnMapping, SHEET_DATA_FIELDS } from '@/lib/project-sheet';
 
 export default async function ProjectPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ page?: string }> }) {
-  await requireAdminProfile();
+  const profile = await requireActiveProfile();
+  const isAdmin = profile.role === 'admin';
   const [{ slug }, { page: pageParam }] = await Promise.all([params, searchParams]);
   const page = Math.max(1, Math.min(100000, Number.isSafeInteger(Number(pageParam)) ? Number(pageParam || 1) : 1));
   const project = await getProjectBySlug(slug);
@@ -33,8 +34,7 @@ export default async function ProjectPage({ params, searchParams }: { params: Pr
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.sync_enabled ? 'Sync on' : 'Sync off'}</span>
-          <ProjectSheetDetails project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={appScript} />
-          <Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]"><UploadCloud size={15} /> Import sites</Link>
+          {isAdmin && <><ProjectSheetDetails project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={appScript} /><Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]"><UploadCloud size={15} /> Import sites</Link></>}
         </div>
       </div>
 
@@ -85,7 +85,7 @@ export default async function ProjectPage({ params, searchParams }: { params: Pr
                 <td className="p-4 text-[var(--muted)]">{site.dr ?? '—'}</td>
                 <td className="p-4 text-[var(--muted)]">{site.traffic ?? '—'}</td>
                 <td className="p-4">
-                  {site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} /><p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p></div>}
+                  {isAdmin && site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} />{!site.request_id && <p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p>}</div>}
                 </td>
                 <td className="max-w-xs truncate p-4 text-[var(--muted)]" title={site.note}>{site.note || '—'}</td>
               </tr>

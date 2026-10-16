@@ -29,7 +29,7 @@ export async function getProjects(search?: string, activeOnly = false) {
  * when the aggregate cannot be obtained.
  */
 export async function getProjectsWithCounts(search?: string) {
-  await requireAdminForAction();
+  await requireActiveUserForAction();
   const [projects, stats] = await Promise.all([
     getProjects(search),
     Promise.resolve()
@@ -71,7 +71,7 @@ export async function getActiveProjects() {
 }
 
 export async function getProjectBySlug(slug: string) {
-  await requireAdminForAction();
+  await requireActiveUserForAction();
   const supabase = await createClient();
   const { data, error } = await supabase.from('projects').select('*').eq('slug', slug).single();
   if (error) throw error;

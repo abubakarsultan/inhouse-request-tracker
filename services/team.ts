@@ -10,7 +10,9 @@ export async function createUserInvitation(emailInput: string, displayNameInput:
   const admin = await requireAdminForAction();
   const email = String(emailInput ?? '').trim().toLowerCase();
   const displayName = String(displayNameInput ?? '').trim() || null;
-  if (!email || !email.includes('@') || email.endsWith('@rankviz.com')) throw new Error('External invitations require a valid non-Rankviz email.');
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid email address.');
+  const fixedRankvizEmails = new Set(['atiflatif@rankviz.com','rizwaniftikhar@rankviz.com','muhammadatif@rankviz.com','sohailahmad@rankviz.com','zunnorainali@rankviz.com','wasif@rankviz.com','abubakarsultan@rankviz.com']);
+  if (fixedRankvizEmails.has(email)) throw new Error('This is a fixed Rankviz team account and does not need an invitation.');
   const { data: existing } = await adminClient.from('users').select('id,account_status').eq('email', email).maybeSingle();
   if (existing?.account_status === 'active') throw new Error('This email already has an active account.');
   const { error: revokeError } = await adminClient.from('user_invitations').update({ status: 'revoked' }).eq('email', email).eq('status', 'pending');

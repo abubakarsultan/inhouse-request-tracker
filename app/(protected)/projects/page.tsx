@@ -3,7 +3,7 @@ import { getProjectsWithCounts } from '@/services/projects';
 import ProjectFormDialog from '@/components/app/project-form-dialog';
 import ProjectToggleActive from '@/components/app/project-toggle-active';
 import { ArrowRight, Database, Link2, Clock, XCircle, Sheet } from 'lucide-react';
-import { requireAdminProfile } from '@/lib/auth';
+import { requireActiveProfile } from '@/lib/auth';
 import { PROJECT_CATEGORIES } from '@/lib/project-sheet';
 import { getServiceAccountEmail } from '@/lib/google-sheet-setup';
 import ProjectSheetDetails from '@/components/app/project-sheet-details';
@@ -11,7 +11,8 @@ import { buildProjectTriggerSnippet } from '@/lib/sheet-webhook';
 import { headers } from 'next/headers';
 
 export default async function Projects({ searchParams }: { searchParams: Promise<{ q?: string; category?: string }> }) {
-  await requireAdminProfile();
+  const profile = await requireActiveProfile();
+  const isAdmin = profile.role === 'admin';
   const { q, category } = await searchParams;
   const { projects, statsUnavailable } = await getProjectsWithCounts(q);
   const serviceAccountEmail = getServiceAccountEmail();
@@ -29,12 +30,12 @@ export default async function Projects({ searchParams }: { searchParams: Promise
           <h1 className="text-2xl font-bold text-[var(--text)]">Projects</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">Projects are grouped by workflow, with Sheet configuration kept inside each project.</p>
         </div>
-        <ProjectFormDialog serviceAccountEmail={serviceAccountEmail} />
+        {isAdmin && <ProjectFormDialog serviceAccountEmail={serviceAccountEmail} />}
       </div>
 
       {statsUnavailable && (
         <div role="alert" className="mb-5 rounded-xl border border-[#f3dfad] bg-[#fef7e0] p-4 text-sm text-[#785000]">
-          <strong>Project statistics temporarily unavailable.</strong> Your projects can still be viewed, created, and edited.
+          <strong>Project statistics temporarily unavailable.</strong> Your projects can still be viewed. Admins can create and edit projects.
           To restore request counts, run <code>database/migrations/008_project_url_speed.sql</code> in the Supabase SQL Editor
           and reload this page. No existing data will be deleted.
         </div>
@@ -57,7 +58,7 @@ export default async function Projects({ searchParams }: { searchParams: Promise
           <article key={project.id} className="flex min-h-64 flex-col rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0"><h2 className="truncate text-lg font-bold text-[var(--text)]" title={project.name}>{project.name}</h2><p className="mt-1 truncate text-xs text-[var(--muted)]" title={project.guest_post_tab_name || ''}>{project.sheet_source === 'custom_sheet' ? (project.sheet_name || 'Custom Google Sheet') : 'Guest Post Anchor'} · Tab: {project.guest_post_tab_name || 'No tab mapped'}</p></div>
-              <div className="flex shrink-0 items-center gap-1"><ProjectFormDialog project={project} serviceAccountEmail={serviceAccountEmail} /><ProjectToggleActive id={project.id} active={project.active} /></div>
+              {isAdmin && <div className="flex shrink-0 items-center gap-1"><ProjectFormDialog project={project} serviceAccountEmail={serviceAccountEmail} /><ProjectToggleActive id={project.id} active={project.active} /></div>}
             </div>
 
             <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -72,7 +73,7 @@ export default async function Projects({ searchParams }: { searchParams: Promise
               <span className={`rounded-full px-2.5 py-1 font-medium ${project.active ? 'bg-[#e6f4ea] text-[#188038]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.active ? 'Active' : 'Disabled'}</span>
             </div>
 
-            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5"><Link href={`/projects/${project.slug}`} className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Open Project <ArrowRight size={15} /></Link><ProjectSheetDetails compact project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={buildProjectTriggerSnippet(siteUrl, project)} /></div>
+            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5"><Link href={`/projects/${project.slug}`} className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Open Project <ArrowRight size={15} /></Link>{isAdmin && <ProjectSheetDetails compact project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={buildProjectTriggerSnippet(siteUrl, project)} />}</div>
           </article>
         ))}
       </div>
