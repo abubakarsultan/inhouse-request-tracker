@@ -28,6 +28,12 @@ export type RequestSheetRecord = {
   team_tab: string | null;
   team_row: number | null;
   created_by_email?: string | null;
+  target_url?: string | null;
+  priority?: string | null;
+  deadline?: string | null;
+  created_by_name?: string | null;
+  project_name?: string | null;
+  created_at?: string | null;
 };
 
 export type ProjectSiteSheetRecord = {
@@ -263,14 +269,18 @@ function syncPreflight(project: SyncableProject, tabOverride?: string | null): {
   }
   const tab = tabOverride?.trim() || project.guest_post_tab_name?.trim();
   if (!tab) {
-    return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).' };
+    const reason = 'This project has no Google Sheet tab configured. Ask an admin to set the tab in Project > Sheet Details.';
+    return { state: 'failed', text: `❌ ${reason} Request is saved in the app.`, error: reason };
   }
   const spreadsheetId = getTeamSheetId(project);
   if (!spreadsheetId) {
+    const reason = project.sheet_source === 'custom_sheet'
+      ? 'This project has no Google Sheet ID configured. Ask an admin to reconnect its Sheet in Project > Sheet Details.'
+      : 'TEAM_SHEET_ID is not configured for Guest Post Anchor.';
     return {
       state: 'failed',
-      text: '❌ Team sheet sync failed: TEAM_SHEET_ID is not configured. Request is still saved.',
-      error: 'TEAM_SHEET_ID is not configured',
+      text: `❌ ${reason} Request is saved in the app.`,
+      error: reason,
     };
   }
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
@@ -309,12 +319,14 @@ export async function appendRequestToTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) {
+      const reason = `Tab "${tab}" does not exist in this project's connected Google Sheet. Check Project > Sheet Details.`;
       const result: SheetSyncResult = {
-        state: 'skipped',
-        text: '⚪ This client has no tab in the team sheet (saved here only).',
+        state: 'failed',
+        text: `❌ ${reason} Request is saved in the app.`,
         tab,
+        error: reason,
       };
-      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
       return result;
     }
 
@@ -325,7 +337,30 @@ export async function appendRequestToTeamSheet(
       let allRows = await withGoogleRetry(() =>
         sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A:${layout.maxColumn}` })
       ) as { data: { values?: unknown[][] } };
-      let targetRow = Math.max(2, lastNonEmptyRow((allRows.data.values ?? []) as unknown[][]) + 2);
+      // A prior Google write may have succeeded before the DB was able to store
+      // its row number. Reusing an existing website+anchor row makes retries
+      // idempotent and avoids duplicate rows on a user retry.
+      const existingRows = (allRows.data.values ?? []) as unknown[][];
+      const matchingIndex = existingRows.findIndex((row, index) =>
+        index > 0 && rowMatches(row, request.approved_site, request.anchor, project)
+      );
+      if (matchingIndex >= 1) {
+        const existingRow = matchingIndex + 1;
+        // The stored row may already exist after a partial success; keep its
+        // status aligned with the current request without inserting a duplicate.
+        const statusColumn = layout.mapping.find((entry) => entry.field === 'status')?.column;
+        if (statusColumn) {
+          await withGoogleRetry(() => sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${quoteTab(tab)}!${statusColumn}${existingRow}`,
+            valueInputOption: 'RAW',
+            requestBody: { values: [[request.status]] },
+          }));
+        }
+        await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, sheetRow: existingRow, status: 'success', detail: 'Reused existing matching row; avoided duplicate Sheet append' });
+        return { state: 'synced', text: `✅ Existing matching row ${existingRow} found in "${tab}"; no duplicate added.`, tab, row: existingRow };
+      }
+      let targetRow = Math.max(2, lastNonEmptyRow(existingRows) + 2);
 
       // The lock prevents app/app races. Re-check the exact target as a
       // second guard against a person writing to the sheet at the same time.
@@ -435,8 +470,8 @@ export async function syncRequestStatusToTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) {
-      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
-      return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
+      await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: 'Configured Sheet tab does not exist' });
+      return { state: 'failed', text: `❌ Tab "${tab}" is missing in the connected Google Sheet. Check Project > Sheet Details.`, tab, error: 'Configured Sheet tab does not exist' };
     }
 
     const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project);
@@ -484,8 +519,8 @@ export async function syncRequestFullRowToTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) {
-      await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'skipped', detail: 'Mapped team tab does not exist' });
-      return { state: 'skipped', text: '⚪ This client has no tab in the team sheet (saved here only).', tab };
+      await logSync({ requestId: updated.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: 'Configured Sheet tab does not exist' });
+      return { state: 'failed', text: `❌ Tab "${tab}" is missing in the connected Google Sheet. Check Project > Sheet Details.`, tab, error: 'Configured Sheet tab does not exist' };
     }
     const verified = await findVerifiedRow(sheets, spreadsheetId, tab, original.team_row, original.approved_site, original.anchor, project);
     if (!verified) {

@@ -14,8 +14,8 @@ export default function RetrySyncButton({ requestId }: { requestId: string }) {
     startTransition(async () => {
       try {
         const result = await retryRequestSync(requestId);
-        setMessage(result.state === 'failed' ? result.text : 'Synced ✓');
-        if (result.state !== 'failed') router.refresh();
+        setMessage(result.state === 'synced' ? 'Synced ✓' : result.text);
+        if (result.state === 'synced') router.refresh();
       } catch (error) {
         setMessage(error instanceof Error ? error.message : 'Retry failed');
       }

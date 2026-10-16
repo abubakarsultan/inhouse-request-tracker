@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { createRequest, retryRequestSync, type CreateRequestResult } from '@/services/requests';
 import { REQUEST_PRIORITIES, REQUEST_STATUSES, looksLikeHttpUrl } from '@/lib/validators';
 
-type Project = { id: string; name: string };
+type Project = { id: string; name: string; syncEnabled: boolean; sheetName: string; sheetTab: string | null; hasSheet: boolean };
 type SiteHint = { loading: boolean; used: boolean; matches: Array<{ status: string; anchor: string; assignTo: string | null }>; error?: string };
 
 type Props = {
@@ -26,7 +26,8 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
   const [approvedSite, setApprovedSite] = useState('');
   const [projectId, setProjectId] = useState('');
   const [siteHint, setSiteHint] = useState<SiteHint | null>(null);
-  const currentProjectName = useMemo(() => projects.find((project) => project.id === projectId)?.name ?? '', [projects, projectId]);
+  const currentProject = useMemo(() => projects.find((project) => project.id === projectId), [projects, projectId]);
+  const currentProjectName = currentProject?.name ?? '';
 
   useEffect(() => {
     const value = approvedSite.trim();
@@ -106,7 +107,7 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
       {error && <div className="rounded-xl border border-[#f5b5b1] bg-[#fce8e6] p-4 text-sm text-[#c5221f]">{error}</div>}
       {result && (
         <div className={`rounded-xl border p-4 text-sm ${result.sync.state === 'failed' ? 'border-[#f5b5b1] bg-[#fce8e6] text-[#8a1c16]' : result.sync.state === 'skipped' ? 'border-[var(--border)] bg-[var(--canvas)] text-[var(--muted)]' : 'border-[#b7dfbf] bg-[#e6f4ea] text-[#188038]'}`}>
-          <p className="font-semibold">Request saved</p>
+          <p className="font-semibold">Request saved for {result.summary.client}</p>
           <p className="mt-1">{result.sync.text}</p>
           {result.summary.targetUrlWarning && <p className="mt-2 text-[#b06000]">⚠ {result.summary.targetUrlWarning}</p>}
           {result.sync.state === 'failed' && <Button type="button" variant="secondary" className="mt-3" onClick={retrySync} disabled={pending}>Retry sync</Button>}
@@ -120,6 +121,15 @@ export default function RequestForm({ projects, assignToSuggestions, sharedWithS
             <option value="" disabled>Select a project</option>
             {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
           </Select>
+          {currentProject && (
+            <p className={`mt-2 rounded-lg border px-3 py-2 text-xs ${!currentProject.syncEnabled ? 'border-[var(--border)] bg-[var(--canvas)] text-[var(--muted)]' : currentProject.hasSheet && currentProject.sheetTab ? 'border-[#b7dfbf] bg-[#e6f4ea] text-[#188038]' : 'border-[#f5b5b1] bg-[#fce8e6] text-[#8a1c16]'}`}>
+              {!currentProject.syncEnabled
+                ? 'Google Sheet sync is disabled for this project; requests are saved in the app only.'
+                : !currentProject.hasSheet || !currentProject.sheetTab
+                  ? 'Google Sheet connection is incomplete. An admin must configure this project’s Sheet and tab in Sheet Details before requests can sync.'
+                  : `Sheet target: ${currentProject.sheetName} → ${currentProject.sheetTab}. Values use this project’s column mapping.`}
+            </p>
+          )}
         </div>
         <div><Label htmlFor="sub_project">Sub Project</Label><Input id="sub_project" name="sub_project" placeholder="optional" /></div>
         <div className="sm:col-span-2">

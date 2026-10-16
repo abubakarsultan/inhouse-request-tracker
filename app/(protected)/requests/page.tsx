@@ -49,7 +49,7 @@ export default async function Requests({ searchParams }: { searchParams: Promise
                 <td className="p-3"><DeadlineCell deadline={row.deadline} status={row.status} today={today} /></td>
                 <td className="p-3"><StatusControl id={row.id} status={row.status} syncState={row.sync_state} /></td>
                 <td className="p-3">{row.sync_state === 'failed' ? <div><StatusBadge status={row.status} failedSync /><p className="mt-1 max-w-48 text-xs text-[#c5221f]">{row.sync_error || 'Sheet sync failed'}</p></div> : <span className="text-xs text-[var(--muted)]">{row.sync_state === 'synced' ? `${row.team_tab || 'Team sheet'} · row ${row.team_row ?? '—'}` : 'Saved here only'}</span>}</td>
-                <td className="p-3"><RequestActions id={row.id} /></td>
+                <td className="p-3"><RequestActions id={row.id} syncState={row.sync_state} /></td>
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-[var(--muted)]">No requests match these filters.</td></tr>}

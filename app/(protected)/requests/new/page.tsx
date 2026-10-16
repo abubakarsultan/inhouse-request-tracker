@@ -9,9 +9,16 @@ export default async function NewRequest() {
   return (
     <div>
       <h1 className="mb-2 text-2xl font-bold text-[var(--text)]">Create Request</h1>
-      <p className="mb-6 text-sm text-[var(--muted)]">Save once here. Your Google email is stored with the request and mirrored to column H in Guest Post Anchor.</p>
+      <p className="mb-6 text-sm text-[var(--muted)]">Requests are saved in the app first, then synced to the selected project’s Google Sheet using its column mapping. Your Google email is saved with each request.</p>
       <RequestForm
-        projects={projects}
+        projects={(projects ?? []).map((project: any) => ({
+          id: String(project.id),
+          name: String(project.name),
+          syncEnabled: project.sync_enabled === true,
+          sheetName: String(project.sheet_name || (project.sheet_source === 'custom_sheet' ? 'Google Sheet' : 'Guest Post Anchor')),
+          sheetTab: project.guest_post_tab_name ? String(project.guest_post_tab_name) : null,
+          hasSheet: project.sheet_source === 'custom_sheet' ? Boolean(project.google_sheet_id) : Boolean(process.env.TEAM_SHEET_ID),
+        }))}
         assignToSuggestions={autocomplete.assignTo}
         sharedWithSuggestions={autocomplete.sharedWith}
         currentUser={{ role: profile.role, sheetName: profile.sheet_name || '', email: profile.email }}

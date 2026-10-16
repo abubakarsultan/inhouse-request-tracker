@@ -119,7 +119,7 @@ export async function createRequest(input: RequestInput): Promise<CreateRequestR
 
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id,name,slug,outreach_project_name,guest_post_tab_name,sync_enabled,active')
+    .select('id,name,slug,outreach_project_name,guest_post_tab_name,sync_enabled,active,google_sheet_id,sheet_source,sheet_name,column_mapping')
     .eq('id', parsed.project_id)
     .single();
   if (projectError || !project) throw new Error(projectError?.message ?? 'Project not found');
@@ -202,6 +202,12 @@ export async function createRequest(input: RequestInput): Promise<CreateRequestR
     team_tab: request.team_tab,
     team_row: request.team_row,
     created_by_email: profile.email,
+    target_url: request.target_url,
+    priority: request.priority,
+    deadline: request.deadline,
+    created_by_name: request.created_by_name,
+    project_name: project.name,
+    created_at: request.created_at,
   };
   const sync = await appendRequestToTeamSheet(project, sheetRecord, projectSite.id);
 
@@ -259,6 +265,12 @@ export async function retryRequestSync(requestId: string) {
     status: String(request.status), team_tab: request.team_tab ? String(request.team_tab) : null,
     team_row: request.team_row == null ? null : Number(request.team_row),
     created_by_email: request.created_by_email ? String(request.created_by_email) : null,
+    target_url: request.target_url ? String(request.target_url) : null,
+    priority: request.priority ? String(request.priority) : null,
+    deadline: request.deadline ? String(request.deadline) : null,
+    created_by_name: request.created_by_name ? String(request.created_by_name) : null,
+    project_name: project?.name ? String(project.name) : null,
+    created_at: request.created_at ? String(request.created_at) : null,
   };
 
   let sync = request.team_row
