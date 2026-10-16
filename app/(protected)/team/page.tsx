@@ -2,7 +2,6 @@ import { requireAdminProfile } from '@/lib/auth';
 import { getTeamAdminData } from '@/services/team';
 import TeamAdminPanel from '@/components/app/team-admin-panel';
 import { ShieldCheck } from 'lucide-react';
-import InviteUserPanel from '@/components/app/invite-user-panel';
 
 export default async function TeamPage() {
   await requireAdminProfile();
@@ -19,7 +18,6 @@ export default async function TeamPage() {
         </div>
         <div className="flex gap-2 text-xs"><span className="rounded-full bg-[#fef7e0] px-3 py-1.5 font-semibold text-[#b06000]">{pending} pending approval{pending === 1 ? '' : 's'}</span><span className="rounded-full bg-[#fce8e6] px-3 py-1.5 font-semibold text-[#c5221f]">{invalid} invalid label{invalid === 1 ? '' : 's'}</span></div>
       </div>
-      <InviteUserPanel />
       <TeamAdminPanel data={data} />
     </div>
   );

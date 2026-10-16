@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAuthServerClient } from '@/lib/supabase-auth';
-import { ensureUserProfile } from '@/lib/auth';
+import { ensureUserProfile, isRankvizEmail } from '@/lib/auth';
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -12,17 +12,22 @@ export async function GET(request: Request) {
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
   if (error || !data.user) return NextResponse.redirect(`${origin}/login?error=auth`);
 
+  if (!isRankvizEmail(data.user.email)) {
+    await supabase.auth.signOut();
+    return NextResponse.redirect(`${origin}/login?error=domain`);
+  }
+
   try {
     const profile = await ensureUserProfile(data.user);
-    if (!profile.onboarding_completed || (!profile.sheet_name && profile.email.endsWith('@rankviz.com'))) return NextResponse.redirect(`${origin}/onboarding`);
+    if (!profile.onboarding_completed || !profile.sheet_name) return NextResponse.redirect(`${origin}/onboarding`);
     if (profile.account_status === 'pending') return NextResponse.redirect(`${origin}/pending`);
     if (profile.account_status === 'disabled') {
       await supabase.auth.signOut();
       return NextResponse.redirect(`${origin}/login?error=disabled`);
     }
     return NextResponse.redirect(`${origin}/dashboard`);
-  } catch (error) {
+  } catch {
     await supabase.auth.signOut();
-    return NextResponse.redirect(`${origin}/login?error=${error instanceof Error && error.message.includes('not been invited') ? 'invited' : 'auth'}`);
+    return NextResponse.redirect(`${origin}/login?error=auth`);
   }
 }
