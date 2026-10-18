@@ -35,7 +35,7 @@ export function parseSheetWebhookPayload(input: unknown):
   return { ok: true, value: { tab, spreadsheetId, row, website, anchor, status } };
 }
 
-export function normalizeImportedSiteStatus(value: unknown): RequestStatus {
+export function normalizeImportedSiteStatus(value: unknown): Exclude<RequestStatus, 'Removed'> {
   const cleaned = String(value ?? '').trim().toLowerCase();
   if (cleaned === 'live') return 'Live';
   if (cleaned === 'rejected' || cleaned === 'reject') return 'Rejected';
