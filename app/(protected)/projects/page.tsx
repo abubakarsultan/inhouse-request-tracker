@@ -7,6 +7,7 @@ import { requireActiveProfile } from '@/lib/auth';
 import { PROJECT_CATEGORIES } from '@/lib/project-sheet';
 import { getServiceAccountEmail } from '@/lib/google-sheet-setup';
 import ProjectSheetDetails from '@/components/app/project-sheet-details';
+import ProjectSheetRecovery from '@/components/app/project-sheet-recovery';
 import { buildProjectTriggerSnippet } from '@/lib/sheet-webhook';
 import { headers } from 'next/headers';
 
@@ -68,12 +69,13 @@ export default async function Projects({ searchParams }: { searchParams: Promise
               <div className="rounded-xl bg-[#fce8e6] p-3"><XCircle size={15} className="text-[#c5221f]" /><p className="mt-2 text-2xl font-bold text-[#c5221f]">{project.counts.rejected ?? '—'}</p><p className="text-[11px] text-[#c5221f]">Rejected</p></div>
             </div>
 
+            {(project.sheet_setup_state === 'pending' || project.sheet_setup_state === 'error' || project.tab_setup_state === 'pending' || project.tab_setup_state === 'error') && <div role="status" className={`mt-3 rounded-lg border p-3 text-xs ${project.sheet_setup_state === 'error' ? 'border-[#f2b8b5] bg-[#fce8e6] text-[#b3261e]' : 'border-[#f3dfad] bg-[#fef7e0] text-[#785000]'}`}><strong>Sheet setup {project.sheet_setup_state === 'error' || project.sheet_setup_state === 'pending' ? project.sheet_setup_state : `tab ${project.tab_setup_state}`}</strong>{(project.sheet_setup_error || project.tab_setup_error) && <p className="mt-1">{project.sheet_setup_error || project.tab_setup_error}</p>}</div>}
             <div className="mt-4 flex flex-wrap gap-2 text-xs"><span className="rounded-full bg-[var(--canvas)] px-2.5 py-1 font-medium">{project.category || 'Inhouse'}</span><span className="rounded-full bg-[var(--canvas)] px-2.5 py-1 font-medium">{project.sheet_source === 'guest_post_anchor' || project.google_sheet_id ? 'Sheet configured' : 'Sheet not configured'}</span>
               <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}><Sheet size={12}/>{project.sync_enabled ? 'Sync enabled' : 'Sync off'}</span>
               <span className={`rounded-full px-2.5 py-1 font-medium ${project.active ? 'bg-[#e6f4ea] text-[#188038]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.active ? 'Active' : 'Disabled'}</span>
             </div>
 
-            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5"><Link href={`/projects/${project.slug}`} className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Open Project <ArrowRight size={15} /></Link>{isAdmin && <ProjectSheetDetails compact project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={buildProjectTriggerSnippet(siteUrl, project)} />}</div>
+            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5"><Link href={`/projects/${project.slug}`} className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Open Project <ArrowRight size={15} /></Link>{isAdmin && <><ProjectSheetDetails compact project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={buildProjectTriggerSnippet(siteUrl, project)} /><ProjectSheetRecovery projectId={project.id} hasSheet={Boolean(project.google_sheet_id)} canCreateSheet={project.sheet_source === 'custom_sheet'} setupState={project.sheet_setup_state} tabSetupState={project.tab_setup_state} /></>}</div>
           </article>
         ))}
       </div>

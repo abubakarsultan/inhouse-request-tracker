@@ -1,12 +1,14 @@
 'use server';
 
 import { createClient } from '@/lib/supabase-server';
+import { z } from 'zod';
 import { projectSchema, type ProjectInput } from '@/lib/validators';
 import { slugify } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
 import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
-import { resolveGoogleSheetUrl, inspectProjectSpreadsheet, inspectProjectTab } from '@/lib/google-sheet-setup';
-import { createSpreadsheetForUser } from '@/lib/google-sheet-factory';
+import { resolveGoogleSheetUrl, inspectProjectSpreadsheet, inspectProjectTab, createGuestPostAnchorTab } from '@/lib/google-sheet-setup';
+import { createSpreadsheetForUser, repairServiceAccountAccess } from '@/lib/google-sheet-factory';
+import { getConnectionStatus, getUserGoogleClient } from '@/lib/google-user-auth';
 import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 import { adminClient } from '@/lib/supabase-admin';
 import { describeProjectSaveError } from '@/lib/project-save-error';
@@ -113,7 +115,7 @@ async function resolveProjectSheet(input: ProjectInput, existing?: any, userId?:
   if (input.create_new_sheet) {
     if (!userId) throw new Error('A signed-in administrator is needed to create the sheet in their own Google Drive.');
     if (!input.new_sheet_title?.trim() || !input.guest_post_tab_name?.trim()) throw new Error('New Sheet title and tab name are required.');
-    const created = await createSpreadsheetForUser({ userId, title: input.new_sheet_title, tabs: [{ title: input.guest_post_tab_name, headers: input.column_mapping.map((item) => item.heading), statusValues: ['Pending', 'Approved', 'Live', 'Rejected'] }], onCreated });
+    const created = await createSpreadsheetForUser({ userId, title: input.new_sheet_title, tabs: [{ title: input.guest_post_tab_name, headers: input.column_mapping.map((item) => item.heading), statusValues: ['Request shared', 'Live', 'Rejected'] }], onCreated });
     return { google_sheet_id: created.spreadsheetId, google_sheet_gid: created.tabs[0]?.gid ?? null, sheet_name: input.new_sheet_title, guest_post_tab_name: input.guest_post_tab_name, column_mapping: input.column_mapping, sheet_setup_state: created.setupState, sheet_setup_error: created.setupError };
   }
   if (!input.sheet_url) throw new Error('Paste the Google Sheet URL to connect this project.');
@@ -149,16 +151,22 @@ export async function createProject(input: ProjectInput) {
   const profile = await requireAdminForAction();
   const parsed = projectSchema.parse(input);
   const supabase = await createClient();
+  // Refuse before any draft insert when the admin has not connected their own Drive.
+  if (parsed.create_new_sheet) {
+    const connection = await getConnectionStatus(profile.id);
+    if (!connection.connected) throw new Error('Connect Google Drive before creating a project sheet. Open Profile → Google Drive → Connect. No project draft was created.');
+    try { await getUserGoogleClient(profile.id); } catch (error) { throw new Error(`${error instanceof Error ? error.message : 'Google Drive connection is unavailable.'} No project draft was created.`); }
+  }
   // Validate the FK before creating a Google spreadsheet (no orphan sheets).
   const categoryId = await resolveProjectCategoryId(parsed.category);
   if (parsed.sheet_source === 'guest_post_anchor') {
     const { data: duplicate, error: duplicateError } = await supabase.from('projects')
       .select('id,name').eq('sheet_source', 'guest_post_anchor')
-      .eq('guest_post_tab_name', parsed.guest_post_tab_name).limit(1).maybeSingle();
+      .eq('guest_post_tab_name', parsed.create_new_tab ? (parsed.new_tab_name?.trim() || parsed.name) : parsed.guest_post_tab_name).limit(1).maybeSingle();
     if (duplicateError) throw duplicateError;
     if (duplicate) throw new Error(`This Guest Post Anchor tab is already connected to ${duplicate.name}. Choose another tab.`);
   }
-  const sheet = parsed.create_new_sheet ? null : await resolveProjectSheet(parsed, undefined, profile.id);
+  const sheet = (parsed.create_new_sheet || parsed.create_new_tab) ? null : await resolveProjectSheet(parsed, undefined, profile.id);
   if (parsed.sheet_source === 'custom_sheet' && sheet?.google_sheet_id) {
     const { data: duplicate, error: duplicateError } = await supabase.from('projects')
       .select('id,name').eq('sheet_source', 'custom_sheet')
@@ -179,19 +187,24 @@ export async function createProject(input: ProjectInput) {
   if (parsed.create_new_sheet) {
     const { data: draft, error: draftError } = await supabase.from('projects').insert({
       name: parsed.name, slug, outreach_project_name: parsed.outreach_project_name || parsed.name, category: parsed.category, category_id: categoryId,
-      sheet_source: parsed.sheet_source, google_sheet_id: null, google_sheet_gid: null, sheet_name: parsed.new_sheet_title, guest_post_tab_name: parsed.guest_post_tab_name,
+      sheet_source: parsed.sheet_source, google_sheet_id: null, google_sheet_gid: null, sheet_owner_user_id: profile.id, sheet_name: parsed.new_sheet_title, guest_post_tab_name: parsed.guest_post_tab_name,
       column_mapping: parsed.column_mapping, sync_enabled: false, active: true, sheet_setup_state: 'pending', sheet_setup_error: null,
     }).select('id').single();
     if (draftError || !draft) throw new Error(draftError?.message || 'Could not save project before creating its Google Sheet.');
     try {
-      const created = await createSpreadsheetForUser({ userId: profile.id, title: parsed.new_sheet_title || parsed.name, tabs: [{ title: parsed.guest_post_tab_name || parsed.name, headers: parsed.column_mapping.map((item) => item.heading), statusValues: ['Pending', 'Approved', 'Live', 'Rejected'] }], onCreated: async (newSheet) => {
-        const { error } = await adminClient.from('projects').update({ google_sheet_id: newSheet.spreadsheetId, google_sheet_gid: newSheet.tabs[0]?.gid ?? null, sheet_name: parsed.new_sheet_title || parsed.name, guest_post_tab_name: parsed.guest_post_tab_name || parsed.name, sheet_setup_state: 'pending', sheet_setup_error: null }).eq('id', draft.id);
+      const created = await createSpreadsheetForUser({ userId: profile.id, title: parsed.new_sheet_title || parsed.name, tabs: [{ title: parsed.guest_post_tab_name || parsed.name, headers: parsed.column_mapping.map((item) => item.heading), statusValues: ['Request shared', 'Live', 'Rejected'] }], onCreated: async (newSheet) => {
+        const { error } = await adminClient.from('projects').update({ google_sheet_id: newSheet.spreadsheetId, google_sheet_gid: newSheet.tabs[0]?.gid ?? null, sheet_name: parsed.new_sheet_title || parsed.name, guest_post_tab_name: parsed.guest_post_tab_name || parsed.name, sheet_setup_state: 'pending', sheet_setup_error: null, sheet_owner_user_id: profile.id }).eq('id', draft.id);
         if (error) throw new Error(`Sheet was created but its ID could not be saved for retry: ${error.message}`);
       } });
       const { error: finishError } = await adminClient.from('projects').update({ google_sheet_id: created.spreadsheetId, google_sheet_gid: created.tabs[0]?.gid ?? null, sheet_name: parsed.new_sheet_title || parsed.name, guest_post_tab_name: parsed.guest_post_tab_name || parsed.name, column_mapping: parsed.column_mapping, sync_enabled: parsed.sync_enabled && created.setupState === 'connected', sheet_setup_state: created.setupState, sheet_setup_error: created.setupError }).eq('id', draft.id);
       if (finishError) throw new Error(`Sheet ${created.spreadsheetId} was created, but project setup status could not be saved: ${finishError.message}`);
     } catch (error) {
-      await adminClient.from('projects').update({ sheet_setup_state: 'error', sheet_setup_error: error instanceof Error ? error.message.slice(0, 500) : 'Sheet setup failed.', sync_enabled: false }).eq('id', draft.id);
+      const { data: persisted } = await adminClient.from('projects').select('google_sheet_id').eq('id', draft.id).maybeSingle();
+      if (!persisted?.google_sheet_id) {
+        await adminClient.from('projects').delete().eq('id', draft.id);
+      } else {
+        await adminClient.from('projects').update({ sheet_setup_state: 'error', sheet_setup_error: error instanceof Error ? error.message.slice(0, 500) : 'Sheet setup failed.', sync_enabled: false }).eq('id', draft.id);
+      }
       throw error;
     }
     revalidatePath('/projects'); revalidatePath('/requests/new'); return;
@@ -204,10 +217,22 @@ export async function createProject(input: ProjectInput) {
     category_id: categoryId,
     sheet_source: parsed.sheet_source,
     ...(sheet || {}),
+    ...(parsed.create_new_tab ? { guest_post_tab_name: parsed.new_tab_name?.trim() || parsed.name, tab_setup_state: 'pending', tab_setup_error: null } : {}),
     sync_enabled: parsed.sync_enabled,
     active: true,
   });
   if (error) throw error;
+  if (parsed.create_new_tab) {
+    const { data: saved } = await supabase.from('projects').select('id').eq('slug', slug).single();
+    if (saved?.id) {
+      try {
+        await createGuestPostAnchorTab(parsed.new_tab_name?.trim() || parsed.name, parsed.column_mapping.map(item => item.heading));
+        await adminClient.from('projects').update({ tab_setup_state: 'connected', tab_setup_error: null }).eq('id', saved.id);
+      } catch (tabError) {
+        await adminClient.from('projects').update({ tab_setup_state: 'error', tab_setup_error: tabError instanceof Error ? tabError.message.slice(0,500) : 'Tab setup failed.' }).eq('id', saved.id);
+      }
+    }
+  }
   revalidatePath('/projects');
   revalidatePath('/requests/new');
 }
@@ -220,6 +245,7 @@ export async function updateProject(id: string, input: ProjectInput) {
   const { data: existing, error: lookupError } = await supabase.from('projects').select('google_sheet_id,google_sheet_gid,guest_post_tab_name,sheet_source,column_mapping').eq('id', id).single();
   if (lookupError || !existing) throw new Error(lookupError?.message || 'Project not found');
   if (parsed.create_new_sheet) throw new Error('Create a new Google Sheet only while adding a project. Connect an existing Sheet URL to change this project.');
+  if (parsed.create_new_tab) throw new Error('Create a new Guest Post Anchor tab only while adding a project.');
   if (existing.sheet_source === 'guest_post_anchor' && parsed.sheet_source === 'guest_post_anchor' &&
       existing.guest_post_tab_name !== parsed.guest_post_tab_name) {
     throw new Error('Existing Guest Post Anchor project tabs cannot be reassigned. Create a new project instead to protect linked requests and Sheet rows.');
@@ -279,6 +305,67 @@ export async function updateProjectWithFeedback(id: string, input: ProjectInput)
     console.error('[project:save] update failed:', error);
     return { ok: false, message: describeProjectSaveError(error) };
   }
+}
+
+export async function retryProjectTabSetup(projectId: string) {
+  await requireAdminForAction();
+  const id = z.string().uuid().parse(projectId);
+  const { data: project, error } = await adminClient.from('projects').select('id,name,guest_post_tab_name,column_mapping,sheet_source').eq('id',id).single();
+  if (error || !project) throw new Error(error?.message || 'Project not found.');
+  if (project.sheet_source !== 'guest_post_anchor') throw new Error('This is not a Guest Post Anchor project.');
+  try {
+    await createGuestPostAnchorTab(String(project.guest_post_tab_name || project.name), (Array.isArray(project.column_mapping) ? project.column_mapping as Array<{heading:string}> : []).map(item => item.heading));
+    const { error: updateError } = await adminClient.from('projects').update({ tab_setup_state:'connected',tab_setup_error:null }).eq('id',id);
+    if (updateError) throw new Error(updateError.message);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message.slice(0,500) : 'Tab setup failed.';
+    await adminClient.from('projects').update({ tab_setup_state:'error',tab_setup_error:message }).eq('id',id);
+    throw new Error(message);
+  }
+  revalidatePath('/projects'); revalidatePath('/projects/[slug]','page');
+  return 'Guest Post Anchor tab verified or created without duplicating an existing tab.';
+}
+
+export async function retryProjectSheetSetup(projectId: string) {
+  const profile = await requireAdminForAction();
+  const id = z.string().uuid().parse(projectId);
+  const { data: project, error } = await adminClient.from('projects').select('id,google_sheet_id,sheet_setup_state,sheet_name,guest_post_tab_name,sheet_owner_user_id').eq('id', id).single();
+  if (error || !project) throw new Error(error?.message || 'Project not found.');
+  if (!project.google_sheet_id) throw new Error('This project has no saved spreadsheet ID. Use Create sheet now to create one.');
+  try {
+    await repairServiceAccountAccess(String(project.sheet_owner_user_id || profile.id), String(project.google_sheet_id));
+    const { error: updateError } = await adminClient.from('projects').update({ sheet_setup_state: 'connected', sheet_setup_error: null }).eq('id', id);
+    if (updateError) throw new Error(updateError.message);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message.slice(0, 500) : 'Sheet repair failed.';
+    await adminClient.from('projects').update({ sheet_setup_state: 'error', sheet_setup_error: message }).eq('id', id);
+    throw new Error(message);
+  }
+  revalidatePath('/projects');
+  revalidatePath('/projects/[slug]', 'page');
+  return 'Service-account access repaired. The existing spreadsheet was reused.';
+}
+
+export async function createSheetForExistingProject(projectId: string) {
+  const profile = await requireAdminForAction();
+  const id = z.string().uuid().parse(projectId);
+  const { data: project, error } = await adminClient.from('projects').select('id,name,google_sheet_id,sheet_name,guest_post_tab_name,column_mapping,sheet_owner_user_id').eq('id', id).single();
+  if (error || !project) throw new Error(error?.message || 'Project not found.');
+  if (project.google_sheet_id) throw new Error('This project already has a spreadsheet ID. Use Retry setup / Repair access instead.');
+  const connection = await getConnectionStatus(profile.id);
+  if (!connection.connected) throw new Error('Connect Google Drive from Profile before creating this project sheet.');
+  const mapping = Array.isArray(project.column_mapping) ? project.column_mapping as Array<{heading:string}> : [];
+  if (!mapping.length) throw new Error('This project has no saved column mapping. Edit the project and configure its headings first.');
+  const title = String(project.sheet_name || project.name).trim();
+  const tab = String(project.guest_post_tab_name || project.name).trim();
+  const created = await createSpreadsheetForUser({ userId: profile.id, title, tabs: [{ title: tab, headers: mapping.map((item) => item.heading), statusValues: ['Request shared', 'Live', 'Rejected'] }], onCreated: async (sheet) => {
+    const { error: persistError } = await adminClient.from('projects').update({ google_sheet_id: sheet.spreadsheetId, google_sheet_gid: sheet.tabs[0]?.gid ?? null, sheet_owner_user_id: profile.id, sheet_setup_state: 'pending', sheet_setup_error: null, sync_enabled: false }).eq('id', id).is('google_sheet_id', null);
+    if (persistError) throw new Error(`Sheet was created but its ID could not be saved for retry: ${persistError.message}`);
+  } });
+  const { error: updateError } = await adminClient.from('projects').update({ google_sheet_id: created.spreadsheetId, google_sheet_gid: created.tabs[0]?.gid ?? null, sheet_owner_user_id: profile.id, sheet_setup_state: created.setupState, sheet_setup_error: created.setupError, sync_enabled: created.setupState === 'connected' }).eq('id', id);
+  if (updateError) throw new Error(`Sheet ${created.spreadsheetId} was created, but project setup status could not be saved: ${updateError.message}`);
+  revalidatePath('/projects'); revalidatePath('/projects/[slug]', 'page');
+  return created.setupState === 'connected' ? 'Sheet created and connected.' : `Sheet created, but setup needs repair: ${created.setupError || 'Unknown setup error'}`;
 }
 
 export async function toggleProjectActive(id: string, active: boolean) {

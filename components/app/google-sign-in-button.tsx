@@ -11,11 +11,13 @@ export default function GoogleSignInButton({ mode = 'google' }: { mode?: 'rankvi
     setPending(true);
     setError(null);
     try {
+      const modeResponse = await fetch('/api/auth/mode', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode }) });
+      if (!modeResponse.ok) throw new Error('Could not set the sign-in mode. Refresh and try again.');
       const supabase = createAuthBrowserClient();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/auth/callback?mode=${mode}`, 
+          redirectTo: `${window.location.origin}/auth/callback`, 
           queryParams: { ...(mode === 'rankviz' ? { hd: 'rankviz.com' } : {}), prompt: 'select_account' },
         },
       });

@@ -19,7 +19,7 @@ test('create and update both resolve and save category_id UUID, not a hardcoded 
   assert.match(src, /\.maybeSingle\(\)/);
   assert.equal((src.match(/category_id: categoryId/g) || []).length, 3);
   assert.equal((src.match(/await resolveProjectCategoryId\(parsed\.category\)/g) || []).length, 2);
-  assert.match(src, /const categoryId = await resolveProjectCategoryId\(parsed\.category\);[\s\S]*?const sheet = parsed\.create_new_sheet \? null : await resolveProjectSheet\(parsed, undefined, profile\.id\)/);
+  assert.match(src, /const categoryId = await resolveProjectCategoryId\(parsed\.category\);[\s\S]*?const sheet = \(parsed\.create_new_sheet \|\| parsed\.create_new_tab\) \? null : await resolveProjectSheet\(parsed, undefined, profile\.id\)/);
   assert.doesNotMatch(src, /category_id: ['"][0-9a-f]{8}-/);
 });
 

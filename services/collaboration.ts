@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { requireActiveUserForAction } from '@/lib/auth';
 import { adminClient } from '@/lib/supabase-admin';
-import { autoCreateCollaborationSheet, connectCollaborationSheet, refreshCollaborationSummary, syncCollaborationLink } from '@/lib/collaboration-sheets';
+import { autoCreateCollaborationSheet, connectCollaborationSheet, prepareCollaborationSheet, refreshCollaborationSummary, syncCollaborationLink } from '@/lib/collaboration-sheets';
+import { repairServiceAccountAccess } from '@/lib/google-sheet-factory';
 import {updateRequestFromCollaboration} from '@/lib/collaboration-status-bridge';
 import { COLLAB_STATUSES, dealProgress, partnerMetrics, normalizeCollabStatus, type CollabStatus, type CollabDirection } from '@/lib/collaboration-core';
 
@@ -109,6 +110,63 @@ export async function connectPartnerSheet(partnerId:string,url:string){
   refresh(partnerId);
   return `Sheet connected. ${links?.length||0} existing links checked; ${failures} sync errors${(links?.length||0)===200?' (only first 200 processed; retry remaining links manually)':''}.`;
 }
+export async function assignCollaborationOwner(partnerId: string, ownerId: string) {
+  const admin = await (await import('@/lib/auth')).requireAdminForAction();
+  const partnerKey = uuid.parse(partnerId); const ownerKey = uuid.parse(ownerId);
+  const [{ data: partner, error: partnerError }, { data: owner, error: ownerError }] = await Promise.all([
+    adminClient.from('collaboration_partners').select('id,name,created_by').eq('id', partnerKey).single(),
+    adminClient.from('users').select('id,email,account_status').eq('id', ownerKey).single(),
+  ]);
+  if (partnerError || !partner) throw new Error(partnerError?.message || 'Partner not found.');
+  if (ownerError || !owner || owner.account_status !== 'active') throw new Error(ownerError?.message || 'Choose an active user.');
+  const { error } = await adminClient.from('collaboration_partners').update({ created_by: ownerKey }).eq('id', partnerKey);
+  if (error) throw new Error(error.message);
+  await adminClient.from('user_role_name_audit').insert({ user_id: ownerKey, changed_by: admin.id, email: owner.email, field_name: 'collaboration_owner', old_value: String(partner.created_by || ''), new_value: ownerKey });
+  refresh(partnerKey);
+  return `Owner assigned to ${owner.email}.`;
+}
+
+export async function fixCollaborationSheetAccess(partnerId: string) {
+  const { profile } = await requirePartnerAccess(partnerId);
+  const { data: partner, error } = await adminClient.from('collaboration_partners').select('id,created_by,spreadsheet_id').eq('id', partnerId).single();
+  const row = check(partner, error, 'Partner not found');
+  if (!row.spreadsheet_id) throw new Error('No saved spreadsheet ID exists. Connect or create a Sheet first.');
+  if (!row.created_by) throw new Error('This legacy partner has no owner. An admin must assign an owner before access can be repaired.');
+  if (profile.role !== 'admin' && row.created_by !== profile.id) throw new Error('You do not have access to this collaboration.');
+  await repairServiceAccountAccess(String(row.created_by), String(row.spreadsheet_id));
+  const { error: updateError } = await adminClient.from('collaboration_partners').update({ sheet_setup_state: 'connected', sheet_setup_error: null, sync_enabled: true }).eq('id', partnerId);
+  if (updateError) throw new Error(updateError.message);
+  refresh(partnerId);
+  return 'Service-account access repaired on the existing Sheet.';
+}
+export async function fixAccessForPastedCollaborationSheet(partnerId: string, url: string) {
+  const { profile } = await requirePartnerAccess(partnerId);
+  const parsedUrl = z.string().url().max(1000).parse(url);
+  const { parseGoogleSheetUrl } = await import('@/lib/google-sheet-url');
+  const { spreadsheetId } = parseGoogleSheetUrl(parsedUrl);
+  await repairServiceAccountAccess(profile.id, spreadsheetId);
+  const { data: partner, error } = await adminClient.from('collaboration_partners').select('name').eq('id',partnerId).single();
+  if (error || !partner) throw new Error(error?.message || 'Partner not found.');
+  const details = await connectCollaborationSheet(parsedUrl,String(partner.name));
+  const { error: updateError } = await adminClient.from('collaboration_partners').update({ ...details, sheet_setup_state:'connected',sheet_setup_error:null,sync_enabled:true }).eq('id',partnerId);
+  if (updateError) throw new Error(updateError.message);
+  refresh(partnerId);
+  return 'Access fixed and the existing Sheet connected. No new spreadsheet was created.';
+}
+
+export async function prepareExistingCollaborationSheet(partnerId: string, url: string) {
+  await requirePartnerAccess(partnerId);
+  const parsedUrl = z.string().url().max(1000).parse(url);
+  const { data: partner, error } = await adminClient.from('collaboration_partners').select('id,name,spreadsheet_id').eq('id', partnerId).single();
+  const row = check(partner, error, 'Partner not found');
+  const connection = await prepareCollaborationSheet(parsedUrl, String(row.name));
+  if (row.spreadsheet_id && row.spreadsheet_id !== connection.spreadsheet_id) throw new Error('A different Sheet is already connected to this partner.');
+  const { error: updateError } = await adminClient.from('collaboration_partners').update({ ...connection, sheet_setup_state: 'connected', sheet_setup_error: null, sync_enabled: true }).eq('id', partnerId);
+  if (updateError) throw new Error(updateError.message);
+  refresh(partnerId);
+  return 'Sheet prepared. Existing A:G rows were preserved.';
+}
+
 export async function createCollaborationDeal(raw:z.input<typeof dealInput>){
   const profile=await requireActiveUserForAction();const input=dealInput.parse(raw);
   await requirePartnerAccess(input.partnerId);

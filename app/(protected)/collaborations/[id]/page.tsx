@@ -1,16 +1,18 @@
 import Link from 'next/link';
 import {headers} from 'next/headers';
+import {adminClient} from '@/lib/supabase-admin';
 import {getCollaborationPartner} from '@/services/collaboration';
 import {requireActiveProfile} from '@/lib/auth';
 import {collaborationAppsScript} from '@/lib/collaboration-sheets';
 import {dealProgress} from '@/lib/collaboration-core';
-import {ConnectPartnerSheet, DealCreator, LinkCreator, LinkRowActions, AllocateGiven} from '@/components/app/collaboration/partner-actions';
+import {ConnectPartnerSheet, AssignCollaborationOwner, CollaborationSheetRepair, DealCreator, LinkCreator, LinkRowActions, AllocateGiven} from '@/components/app/collaboration/partner-actions';
 import CopyCode from '@/components/app/collaboration/script-copy';
 
 const panel='rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm';
 export default async function PartnerDetails({params}:{params:Promise<{id:string}>}){
   const profile=await requireActiveProfile();const {id}=await params;
   const {partner,deals,links,logs,metrics,truncated,statsUnavailable}=await getCollaborationPartner(id);
+  const {data:activeUsers}=profile.role==='admin' ? await adminClient.from('users').select('id,email,name').eq('account_status','active').order('email') : {data:null};
   const requestHeaders=await headers();const host=requestHeaders.get('x-forwarded-host')||requestHeaders.get('host')||'YOUR-VERCEL-DOMAIN';
   const proto=requestHeaders.get('x-forwarded-proto')||(host.includes('localhost')?'http':'https');
   const sheetUrl=partner.spreadsheet_id?`https://docs.google.com/spreadsheets/d/${encodeURIComponent(partner.spreadsheet_id)}/edit`:null;
@@ -26,13 +28,15 @@ export default async function PartnerDetails({params}:{params:Promise<{id:string
     <section className={panel}><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-bold">Google Sheet Details</h2>{sheetUrl&&<a href={sheetUrl} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-[var(--brand)]">Open Sheet ↗</a>}</div>
       <p className="text-sm">Connection: <b>{partner.sheet_setup_state==='connected'?'Connected':'Setup Pending'}</b> · Sync: {partner.sync_enabled?'Enabled':'Disabled'}</p>
       {sheetUrl&&<p className="mt-1 text-xs text-[var(--muted)]">{partner.spreadsheet_title} · {partner.our_tab_name} / {partner.partner_tab_name} / {partner.summary_tab_name}</p>}
+      {profile.role==='admin' && (!partner.created_by || !activeUsers?.some((u:any)=>u.id===partner.created_by)) && <div className="mt-3 rounded-lg border border-[#f3dfad] bg-[#fef7e0] p-3"><p className="mb-2 text-xs text-[#785000]">Legacy partner owner is missing or no longer active. Assign an owner before repairing access.</p><AssignCollaborationOwner partnerId={partner.id} users={(activeUsers||[]) as any}/></div>}
       {partner.sheet_setup_error&&<p className="mt-3 rounded-lg bg-[#fef7e0] p-2 text-xs text-[#795000]">{partner.sheet_setup_error}</p>}
       <p className="mt-3 text-xs text-[var(--muted)]">Last sync: {partner.last_synced_at?new Date(partner.last_synced_at).toLocaleString():'Not yet synced'}</p>
+      <div className="mt-3"><CollaborationSheetRepair partnerId={partner.id} sheetUrl={sheetUrl || ''} showFix={partner.sheet_setup_state === 'error' && Boolean(partner.spreadsheet_id)} /></div>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <div><h3 className="mb-2 text-sm font-bold">Connect / Reconnect</h3><ConnectPartnerSheet partnerId={partner.id}/></div>
         <div className="space-y-2"><h3 className="text-sm font-bold">One-File Google Sheets Template</h3><p className="text-xs text-[var(--muted)]">Download one .xlsx workbook containing all 3 tabs. Upload it once to Google Drive, open/convert it to Google Sheets, share Editor access, then paste the Google Sheets URL.</p><a className="inline-block rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold" href={`/api/collaboration/templates?partner=${encodeURIComponent(partner.name)}`}>Download Excel Template (.xlsx)</a></div>
       </div>
-      {partner.sheet_setup_state==='connected'&&<div className="mt-5 border-t border-[var(--border)] pt-4"><h3 className="mb-2 text-sm font-bold">Sheet → App Apps Script</h3><p className="mb-2 text-xs text-[var(--muted)]">Copy code into this spreadsheet's Extensions → Apps Script. Run installCollaborationTrigger once and authorize Google. App → Sheet sync works without this trigger; Sheet → App requires it.</p><CopyCode script={script}/></div>}
+      {Boolean(partner.spreadsheet_id)&&<div className="mt-5 border-t border-[var(--border)] pt-4"><h3 className="mb-2 text-sm font-bold">Sheet → App Apps Script</h3><p className="mb-2 text-xs text-[var(--muted)]">1) Extensions → Apps Script open karein. 2) Code paste karein. 3) installCollaborationTrigger ek dafa run karein aur authorize karein. Google app ko trigger auto-install nahi karne deti. App → Sheet sync works without this trigger; Sheet → App requires it.</p><CopyCode script={script}/></div>}
     </section>
     <section className={panel}><h2 className="mb-3 text-lg font-bold">Exchange Deals</h2><DealCreator partnerId={partner.id} give={partner.default_give_qty} receive={partner.default_receive_qty}/>
       <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[620px] text-left text-sm"><thead><tr className="border-b border-[var(--border)] text-xs text-[var(--muted)]"><th className="p-2">Deal ID</th><th className="p-2">Give</th><th className="p-2">Receive</th><th className="p-2">Remaining (Us / Partner)</th><th className="p-2">State</th></tr></thead><tbody>

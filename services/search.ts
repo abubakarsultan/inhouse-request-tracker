@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase-server';
 import { normalizeSearchText } from '@/lib/domain';
 import { requireActiveUserForAction } from '@/lib/auth';
+import { getMissingRequestFields } from '@/lib/request-completeness';
 
 export type SearchRequestRow = {
   id: string;
@@ -17,6 +18,10 @@ export type SearchRequestRow = {
   target_url: string;
   created_at: string;
   sync_state: string | null;
+  sheet_flag?: string | null;
+  placement_page?: string | null;
+  deadline?: string | null;
+  missing_fields?: string[];
 };
 
 export type SearchDatabaseResult = {
@@ -41,5 +46,11 @@ export async function searchDatabase(query: string): Promise<SearchDatabaseResul
 
   const rows = (data ?? []) as SearchRequestRow[];
   const capped = rows.length > 100;
-  return { ok: true, count: Math.min(rows.length, 100), capped, rows: rows.slice(0, 100) };
+  const visibleRows = rows.slice(0,100);
+  if (!visibleRows.length) return { ok:true,count:0,capped:false,rows:[] };
+  const { data: flags, error: flagsError } = await supabase.from('requests').select('id,sheet_flag,placement_page,target_url,anchor,assign_to,deadline,projects(column_mapping),project_sites(dr,traffic)').in('id',visibleRows.map(row=>row.id));
+  if (flagsError) throw new Error(`Search status details failed: ${flagsError.message}`);
+  const detailById = new Map((flags||[]).map((row:any)=>[String(row.id),row]));
+  const enriched = visibleRows.map(row=>{const detail:any=detailById.get(row.id);const project=Array.isArray(detail?.projects)?detail.projects[0]:detail?.projects;return {...row,sheet_flag:detail?.sheet_flag==null?null:String(detail.sheet_flag),placement_page:detail?.placement_page==null?null:String(detail.placement_page),deadline:detail?.deadline==null?null:String(detail.deadline),missing_fields:getMissingRequestFields({...row,...detail,dr:detail?.project_sites?.[0]?.dr,traffic:detail?.project_sites?.[0]?.traffic},{column_mapping:project?.column_mapping})};});
+  return { ok: true, count: Math.min(rows.length, 100), capped, rows: enriched };
 }

@@ -13,7 +13,8 @@ test('migration includes per-user connection and access-request tables', () => {
 });
 test('invitation is accepted after first profile creation', () => {
   assert.match(auth, /accepted_user_id: user\.id/);
-  assert.match(auth, /if \(!existing && invitation\?\.id\)/);
+  assert.match(auth, /if \(invitation\?\.id\)/);
+  assert.match(auth, /Existing profiles are authoritative/);
 });
 test('guide warns about secrets and describes rollback', () => {
   assert.match(guide, /TOKEN_ENCRYPTION_KEY/);

@@ -188,11 +188,16 @@ function lastNonEmptyRow(values: unknown[][]) {
   return 0;
 }
 
-function rowMatches(row: unknown[] | undefined, website: string, anchor: string, project?: SyncableProject) {
+function rowMatches(row: unknown[] | undefined, website: string, anchor: string, project?: SyncableProject, placementPage?: string | null) {
   if (!row) return false;
   const layout = project ? sheetLayout(project) : { websiteIndex: 0, anchorIndex: 2 };
+  const mapping = project ? normalizeColumnMapping(project.column_mapping) : [];
+  const liveLinkColumn = mapping.find((item) => item.field === 'placement_page' && item.heading.trim().toLowerCase() === 'live link');
+  const liveLinkIndex = liveLinkColumn ? columnNumber(liveLinkColumn.column) - 1 : layout.websiteIndex;
+  const liveLinkValue = normalizeForDuplicate(String(row[liveLinkIndex] ?? ''));
+  const websiteMatches = liveLinkValue === normalizeForDuplicate(website) || (Boolean(placementPage) && liveLinkValue === normalizeForDuplicate(String(placementPage)));
   return (
-    normalizeForDuplicate(String(row[layout.websiteIndex] ?? '')) === normalizeForDuplicate(website) &&
+    websiteMatches &&
     normalizeForDuplicate(String(row[layout.anchorIndex] ?? '')) === normalizeForDuplicate(anchor)
   );
 }
@@ -342,7 +347,7 @@ export async function appendRequestToTeamSheet(
       // idempotent and avoids duplicate rows on a user retry.
       const existingRows = (allRows.data.values ?? []) as unknown[][];
       const matchingIndex = existingRows.findIndex((row, index) =>
-        index > 0 && rowMatches(row, request.approved_site, request.anchor, project)
+        index > 0 && rowMatches(row, request.approved_site, request.anchor, project, request.placement_page)
       );
       if (matchingIndex >= 1) {
         const existingRow = matchingIndex + 1;
@@ -427,14 +432,15 @@ async function findVerifiedRow(
   storedRow: number | null,
   website: string,
   anchor: string,
-  project?: SyncableProject
+  project?: SyncableProject,
+  placementPage?: string | null
 ) {
   const layout = project ? sheetLayout(project) : { maxColumn: 'H' };
   if (storedRow && storedRow >= 2) {
     const response = await withGoogleRetry(() =>
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${storedRow}:${layout.maxColumn}${storedRow}` })
     ) as { data: { values?: unknown[][] } };
-    if (rowMatches((response.data.values ?? [])[0] as unknown[] | undefined, website, anchor, project)) {
+    if (rowMatches((response.data.values ?? [])[0] as unknown[] | undefined, website, anchor, project, placementPage)) {
       return { row: storedRow, repaired: false };
     }
   }
@@ -443,7 +449,7 @@ async function findVerifiedRow(
     sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A2:${layout.maxColumn}` })
   ) as { data: { values?: unknown[][] } };
   const rows = (response.data.values ?? []) as unknown[][];
-  const index = rows.findIndex((row) => rowMatches(row, website, anchor, project));
+  const index = rows.findIndex((row) => rowMatches(row, website, anchor, project, placementPage));
   return index >= 0 ? { row: index + 2, repaired: storedRow !== index + 2 } : null;
 }
 
@@ -474,7 +480,7 @@ export async function syncRequestStatusToTeamSheet(
       return { state: 'failed', text: `❌ Tab "${tab}" is missing in the connected Google Sheet. Check Project > Sheet Details.`, tab, error: 'Configured Sheet tab does not exist' };
     }
 
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project, request.placement_page);
     if (!verified) {
       const reason = `Could not find a row in "${tab}" matching both website "${request.approved_site}" and anchor "${request.anchor}".`;
       await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -560,7 +566,7 @@ export async function clearRequestFromTeamSheet(
     const sheets = getSheetsClient();
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) return { state: 'skipped', text: '⚪ Mapped team tab does not exist; archived in app only.', tab };
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, project, request.placement_page);
     if (!verified) {
       const reason = `Could not find the linked team-sheet row for ${request.approved_site} + ${request.anchor}.`;
       await logSync({ requestId: request.id, projectSiteId, direction: 'to_sheet', sheetName: tab, status: 'error', detail: reason });
@@ -664,6 +670,7 @@ export async function verifyRequestTeamRow(request: {
   id: string;
   approved_site: string;
   anchor: string;
+  placement_page?: string | null;
   team_tab: string | null;
   team_row: number | null;
   project_site_id?: string | null;
@@ -681,7 +688,7 @@ export async function verifyRequestTeamRow(request: {
     const titles = await getTabTitles(sheets, spreadsheetId);
     if (!titles.has(tab)) return { state: 'failed', tab, reason: `Team-sheet tab "${tab}" does not exist.` };
 
-    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, request.project || undefined);
+    const verified = await findVerifiedRow(sheets, spreadsheetId, tab, request.team_row, request.approved_site, request.anchor, request.project || undefined, request.placement_page);
     if (!verified) {
       return { state: 'failed', tab, reason: `No row in "${tab}" matches both website "${request.approved_site}" and anchor "${request.anchor}".` };
     }
@@ -690,7 +697,7 @@ export async function verifyRequestTeamRow(request: {
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(tab)}!A${verified.row}:${layout.maxColumn}${verified.row}` })
     ) as { data: { values?: unknown[][] } };
     const row = (response.data.values ?? [])[0] ?? [];
-    if (!rowMatches(row as unknown[], request.approved_site, request.anchor, request.project || undefined)) {
+    if (!rowMatches(row as unknown[], request.approved_site, request.anchor, request.project || undefined, request.placement_page)) {
       return { state: 'failed', tab, reason: `Verified row ${verified.row} changed before it could be read again.` };
     }
 
@@ -712,7 +719,7 @@ export async function applyStatusFromSheet(payload: {
   row: number;
   website: string;
   anchor: string;
-  status: 'Request shared' | 'Live' | 'Rejected';
+  status: 'Request shared' | 'Live' | 'Rejected' | 'Removed';
 }) {
   const { data, error } = await adminClient.rpc('find_request_from_sheet_scoped', {
     p_tab: payload.tab,
@@ -735,6 +742,14 @@ export async function applyStatusFromSheet(payload: {
 
   const requestId = String(match.request_id);
   const { data: site } = await adminClient.from('project_sites').select('id').eq('request_id', requestId).maybeSingle();
+  if (payload.status === 'Removed') {
+    const { error: flagError } = await adminClient.from('requests').update({ sheet_flag: 'Removed', team_tab: payload.tab, team_row: payload.row }).eq('id', requestId);
+    if (flagError) throw new Error(`Could not flag request as removed in Sheet: ${flagError.message}`);
+    await logSync({ requestId, projectSiteId: site?.id ?? null, direction: 'from_sheet', sheetName: payload.tab, sheetRow: payload.row, status: 'success', detail: 'Sheet status is Removed; app request status preserved.' });
+    return { ok: true, requestId, sheetFlag: 'Removed' };
+  }
+  const { error: clearFlagError } = await adminClient.from('requests').update({ sheet_flag: null }).eq('id', requestId);
+  if (clearFlagError) throw new Error(`Could not clear sheet flag: ${clearFlagError.message}`);
   const { setRequestStatusCore } = await import('@/services/request-status-core');
   const result = await setRequestStatusCore(requestId, payload.status, 'team sheet', {
     pushToSheet: false,
@@ -792,7 +807,7 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
   for (let from = 0; ; from += 1000) {
     const { data, error } = await adminClient
       .from('requests')
-      .select('id,approved_site,anchor,status,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping),project_sites(id)')
+      .select('id,approved_site,placement_page,anchor,status,team_tab,team_row,projects(id,google_sheet_id,sheet_source,column_mapping),project_sites(id)')
       .is('deleted_at', null)
       .not('team_tab', 'is', null)
       .not('team_row', 'is', null)
@@ -828,12 +843,19 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
       }
 
       const storedIndex = Number(request.team_row) - 2;
-      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor, project) ? storedIndex : -1;
-      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor, project));
+      let index = storedIndex >= 0 && rowMatches(rows[storedIndex], request.approved_site, request.anchor, project, request.placement_page) ? storedIndex : -1;
+      if (index < 0) index = rows.findIndex((row) => rowMatches(row, request.approved_site, request.anchor, project, request.placement_page));
       if (index < 0) throw new Error(`No matching row for ${request.approved_site} + ${request.anchor}.`);
       const verifiedRow = index + 2;
       const sheetStatus = String(rows[index]?.[projectLayout.statusIndex] ?? '').trim();
       const repaired = verifiedRow !== Number(request.team_row);
+      if (sheetStatus === 'Removed') {
+        const { error: flagError } = await adminClient.from('requests').update({ sheet_flag: 'Removed', team_tab: tab, team_row: verifiedRow }).eq('id', request.id);
+        if (flagError) throw new Error(`Could not flag Removed status: ${flagError.message}`);
+        report.updated += 1;
+        await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'success', detail: 'Sheet status is Removed; app status preserved.' });
+        continue;
+      }
       if (repaired) report.repairedRows += 1;
 
       if (sheetStatus !== 'Request shared' && sheetStatus !== 'Live' && sheetStatus !== 'Rejected') {
@@ -844,6 +866,7 @@ export async function refreshStatusesFromTeamSheet(): Promise<RefreshSheetStatus
         await logSync({ requestId: request.id, projectSiteId, direction: 'from_sheet', sheetName: tab, sheetRow: verifiedRow, status: 'error', detail: `Invalid status: ${sheetStatus || '(blank)'}` });
         continue;
       }
+      await adminClient.from('requests').update({ sheet_flag: null }).eq('id', request.id);
 
       const { setRequestStatusCore } = await import('@/services/request-status-core');
       const statusResult = await setRequestStatusCore(request.id, sheetStatus, 'team sheet refresh', { pushToSheet: false, sheetRow: verifiedRow });

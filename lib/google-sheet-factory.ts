@@ -74,6 +74,9 @@ export async function repairServiceAccountAccess(userId: string, spreadsheetId: 
   const owner = await getUserGoogleClient(userId);
   const email = getServiceAccountEmail();
   if (!email) throw new Error('Configure GOOGLE_SERVICE_ACCOUNT_JSON before repairing access.');
-  await google.drive({ version: 'v3', auth: owner }).permissions.create({ fileId: spreadsheetId, sendNotificationEmail: false, requestBody: { type: 'user', role: 'writer', emailAddress: email }, fields: 'id' });
+  const drive = google.drive({ version: 'v3', auth: owner });
+  const existing = await drive.permissions.list({ fileId: spreadsheetId, fields: 'permissions(id,emailAddress,role,type)' });
+  const alreadyShared = (existing.data.permissions || []).some((permission) => String(permission.emailAddress || '').toLowerCase() === email.toLowerCase() && ['writer','owner'].includes(String(permission.role || '').toLowerCase()));
+  if (!alreadyShared) await drive.permissions.create({ fileId: spreadsheetId, sendNotificationEmail: false, requestBody: { type: 'user', role: 'writer', emailAddress: email }, fields: 'id' });
   await google.sheets({ version: 'v4', auth: serviceAccountAuth() }).spreadsheets.get({ spreadsheetId, fields: 'spreadsheetId' });
 }

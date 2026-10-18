@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import GoogleSignInButton from '@/components/app/google-sign-in-button';
+import Link from 'next/link';
 import { getCurrentProfile } from '@/lib/auth';
 
 const ERROR_TEXT: Record<string, string> = {
@@ -28,8 +29,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <h2 className="text-2xl font-bold">Sign in</h2>
         <p className="mt-2 text-sm text-[var(--muted)]">Choose the sign-in option that matches your invitation or company account.</p>
         {error && <p className="mt-4 rounded-xl bg-[#fce8e6] p-3 text-sm text-[#c5221f]">{ERROR_TEXT[error] ?? ERROR_TEXT.auth}</p>}
-        <div className="mt-6 space-y-3"><GoogleSignInButton mode="rankviz" /><GoogleSignInButton mode="google" /></div>
-        <p className="mt-5 text-xs leading-5 text-[var(--muted)]">Rankviz team emails are automatically recognized. External accounts can sign in only after an administrator invites them.</p>
+        <div className="mt-6"><GoogleSignInButton mode="rankviz" /></div>
+        <p className="mt-5 text-sm">External invited user? <Link className="font-semibold text-[var(--brand)]" href="/login/guest">Continue with Google</Link></p>
+        <p className="mt-3 text-xs leading-5 text-[var(--muted)]">Rankviz accounts are managed through the team directory. External accounts need an invitation before sign-in.</p>
       </section>
     </main>
   );

@@ -46,6 +46,8 @@ export const projectSchema = z.object({
   guest_post_tab_name: z.string().trim().optional().nullable(),
   column_mapping: columnMappingSchema,
   create_new_sheet: z.boolean().optional().default(false),
+  create_new_tab: z.boolean().optional().default(false),
+  new_tab_name: z.string().trim().max(100).optional().nullable(),
   new_sheet_title: z.string().trim().max(150).optional().nullable(),
   sync_enabled: z.boolean().default(true),
 });

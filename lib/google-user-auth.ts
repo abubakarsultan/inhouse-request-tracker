@@ -15,10 +15,13 @@ function oauthClient(redirectUri?: string) {
   return new google.auth.OAuth2(id, secret, redirectUri || callbackUrl());
 }
 export function callbackUrl() {
-  const base = process.env.NEXT_PUBLIC_SITE_URL || process.env.SITE_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL;
-  if (!base) throw new Error('Set NEXT_PUBLIC_SITE_URL to your site origin for Google OAuth.');
-  const origin = /^https?:\/\//i.test(base) ? base.replace(/\/$/, '') : `https://${base.replace(/\/$/, '')}`;
-  return `${origin}/api/google/callback`;
+  const base = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (!base) throw new Error('Google Drive setup is incomplete: set NEXT_PUBLIC_SITE_URL to the full site origin (for example https://inhouse.example.com) in Vercel.');
+  let parsed: URL;
+  try { parsed = new URL(base); } catch { throw new Error('NEXT_PUBLIC_SITE_URL must be a valid absolute URL such as https://inhouse.example.com.'); }
+  if (!['https:', 'http:'].includes(parsed.protocol) || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username || parsed.password) throw new Error('NEXT_PUBLIC_SITE_URL must contain only the site origin, for example https://inhouse.example.com.');
+  if (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') throw new Error('NEXT_PUBLIC_SITE_URL must use HTTPS in production.');
+  return `${parsed.origin}/api/google/callback`;
 }
 export function createGoogleConsentUrl(state: string) {
   return oauthClient().generateAuthUrl({ access_type: 'offline', prompt: 'consent', include_granted_scopes: true, scope: [...GOOGLE_DRIVE_SCOPES], state });
