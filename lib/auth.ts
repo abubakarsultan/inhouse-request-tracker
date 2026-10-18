@@ -61,7 +61,7 @@ function normalizeProfile(row: any): UserProfile {
 export async function ensureUserProfile(user: User): Promise<UserProfile> {
   const email = String(user.email ?? '').trim().toLowerCase();
   const fixedName = getFixedRankvizName(email);
-  const invitationResult = fixedName ? { data: null, error: null } : await adminClient.from('user_invitations').select('email,role,status,display_name').eq('email', email).eq('status', 'pending').maybeSingle();
+  const invitationResult = fixedName ? { data: null, error: null } : await adminClient.from('user_invitations').select('id,email,role,status,display_name,sheet_name').eq('email', email).eq('status', 'pending').maybeSingle();
   if (!fixedName && (invitationResult.error || !invitationResult.data)) throw new Error('This email has not been invited.');
   const invitation = invitationResult.data as any;
   const adminEmails = configuredAdminEmails();
@@ -73,7 +73,7 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
     .maybeSingle();
   if (existingError) throw new Error(existingError.message);
 
-  const bootstrapAdmin = explicitlyAdmin || email === 'abubakarsultan@rankviz.com';
+  const bootstrapAdmin = !existing && (explicitlyAdmin || email === 'abubakarsultan@rankviz.com');
   const approvedTeamMember = Boolean(fixedName);
   const now = new Date().toISOString();
   const role: AppRole = existing?.role === 'admin' || bootstrapAdmin || invitation?.role === 'admin' ? 'admin' : 'member';
@@ -89,7 +89,7 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
     role,
     active: accountStatus === 'active',
     account_status: approvedTeamMember && accountStatus !== 'disabled' ? 'active' : bootstrapAdmin && accountStatus !== 'disabled' ? 'active' : accountStatus,
-    sheet_name: fixedName ?? (existing as any)?.sheet_name ?? null,
+    sheet_name: fixedName ?? (existing as any)?.sheet_name ?? invitation?.sheet_name ?? null,
     onboarding_completed: Boolean(fixedName) || Boolean(invitation) || Boolean((existing as any)?.onboarding_completed),
     last_login_at: now,
   };
@@ -100,6 +100,12 @@ export async function ensureUserProfile(user: User): Promise<UserProfile> {
     .select(PROFILE_SELECT)
     .single();
   if (error || !data) throw new Error(error?.message ?? 'Could not create user profile.');
+
+  // Accept an invitation only when this profile is first created. Existing roles are never re-applied.
+  if (!existing && invitation?.id) {
+    const { error: acceptedError } = await adminClient.from('user_invitations').update({ status: 'accepted', accepted_user_id: user.id, accepted_at: now, updated_at: now }).eq('id', invitation.id).eq('status', 'pending');
+    if (acceptedError) throw new Error(`Profile created, but invitation acceptance could not be recorded: ${acceptedError.message}`);
+  }
 
   return normalizeProfile(data);
 }
@@ -142,7 +148,7 @@ export async function requireAuthenticatedProfile(): Promise<UserProfile> {
 
 export async function requireActiveProfile(): Promise<UserProfile> {
   const profile = await requireAuthenticatedProfile();
-  if (!profile.onboarding_completed || (!profile.sheet_name && isRankvizEmail(profile.email))) redirect('/onboarding');
+  if (!profile.onboarding_completed) redirect('/onboarding');
   if (profile.account_status === 'pending') redirect('/pending');
   if (profile.account_status === 'disabled') redirect('/login?error=disabled');
   return profile;
@@ -157,7 +163,7 @@ export async function requireAdminProfile(): Promise<UserProfile> {
 export async function requireActiveUserForAction(): Promise<UserProfile> {
   const profile = await getCurrentProfile();
   if (!profile) throw new Error('Please sign in again.');
-  if (!profile.onboarding_completed || (!profile.sheet_name && isRankvizEmail(profile.email))) throw new Error('Complete your profile first.');
+  if (!profile.onboarding_completed) throw new Error('Complete your profile first.');
   if (profile.account_status !== 'active') throw new Error(profile.account_status === 'disabled' ? 'Your account is disabled.' : 'Your account is waiting for admin approval.');
   return profile;
 }
