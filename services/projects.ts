@@ -5,7 +5,8 @@ import { projectSchema, type ProjectInput } from '@/lib/validators';
 import { slugify } from '@/lib/utils';
 import { revalidatePath } from 'next/cache';
 import { requireActiveUserForAction, requireAdminForAction } from '@/lib/auth';
-import { resolveGoogleSheetUrl, inspectProjectSpreadsheet, inspectProjectTab, createBlankProjectSpreadsheet } from '@/lib/google-sheet-setup';
+import { resolveGoogleSheetUrl, inspectProjectSpreadsheet, inspectProjectTab } from '@/lib/google-sheet-setup';
+import { createSpreadsheetForUser } from '@/lib/google-sheet-factory';
 import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 import { adminClient } from '@/lib/supabase-admin';
 import { describeProjectSaveError } from '@/lib/project-save-error';
@@ -97,7 +98,7 @@ export async function testProjectSheetConnection(sheetUrl: string) {
   return inspectProjectTab(sheetUrl);
 }
 
-async function resolveProjectSheet(input: ProjectInput, existing?: any, adminEmail?: string) {
+async function resolveProjectSheet(input: ProjectInput, existing?: any, userId?: string, onCreated?: (sheet: { spreadsheetId: string; url: string; tabs: Array<{ title: string; gid: number }>; ownerEmail: string }) => Promise<void>) {
   if (input.sheet_source === 'guest_post_anchor') {
     if (!input.guest_post_tab_name?.trim()) throw new Error('Select a Guest Post Anchor project tab.');
     // Validate the existing shared workbook and tab without changing its contents.
@@ -110,10 +111,10 @@ async function resolveProjectSheet(input: ProjectInput, existing?: any, adminEma
     };
   }
   if (input.create_new_sheet) {
-    if (!adminEmail) throw new Error('A signed-in administrator is needed to share the new sheet.');
+    if (!userId) throw new Error('A signed-in administrator is needed to create the sheet in their own Google Drive.');
     if (!input.new_sheet_title?.trim() || !input.guest_post_tab_name?.trim()) throw new Error('New Sheet title and tab name are required.');
-    const created = await createBlankProjectSpreadsheet(input.new_sheet_title, input.guest_post_tab_name, adminEmail, input.column_mapping as any);
-    return { ...created, column_mapping: input.column_mapping };
+    const created = await createSpreadsheetForUser({ userId, title: input.new_sheet_title, tabs: [{ title: input.guest_post_tab_name, headers: input.column_mapping.map((item) => item.heading), statusValues: ['Pending', 'Approved', 'Live', 'Rejected'] }], onCreated });
+    return { google_sheet_id: created.spreadsheetId, google_sheet_gid: created.tabs[0]?.gid ?? null, sheet_name: input.new_sheet_title, guest_post_tab_name: input.guest_post_tab_name, column_mapping: input.column_mapping, sheet_setup_state: created.setupState, sheet_setup_error: created.setupError };
   }
   if (!input.sheet_url) throw new Error('Paste the Google Sheet URL to connect this project.');
   const parsed = parseGoogleSheetUrl(input.sheet_url);
@@ -157,8 +158,8 @@ export async function createProject(input: ProjectInput) {
     if (duplicateError) throw duplicateError;
     if (duplicate) throw new Error(`This Guest Post Anchor tab is already connected to ${duplicate.name}. Choose another tab.`);
   }
-  const sheet = await resolveProjectSheet(parsed, undefined, profile.email);
-  if (parsed.sheet_source === 'custom_sheet' && sheet.google_sheet_id) {
+  const sheet = parsed.create_new_sheet ? null : await resolveProjectSheet(parsed, undefined, profile.id);
+  if (parsed.sheet_source === 'custom_sheet' && sheet?.google_sheet_id) {
     const { data: duplicate, error: duplicateError } = await supabase.from('projects')
       .select('id,name').eq('sheet_source', 'custom_sheet')
       .eq('google_sheet_id', sheet.google_sheet_id)
@@ -175,6 +176,26 @@ export async function createProject(input: ProjectInput) {
     slug = `${baseSlug}-${i + 1}`;
   }
 
+  if (parsed.create_new_sheet) {
+    const { data: draft, error: draftError } = await supabase.from('projects').insert({
+      name: parsed.name, slug, outreach_project_name: parsed.outreach_project_name || parsed.name, category: parsed.category, category_id: categoryId,
+      sheet_source: parsed.sheet_source, google_sheet_id: null, google_sheet_gid: null, sheet_name: parsed.new_sheet_title, guest_post_tab_name: parsed.guest_post_tab_name,
+      column_mapping: parsed.column_mapping, sync_enabled: false, active: true, sheet_setup_state: 'pending', sheet_setup_error: null,
+    }).select('id').single();
+    if (draftError || !draft) throw new Error(draftError?.message || 'Could not save project before creating its Google Sheet.');
+    try {
+      const created = await createSpreadsheetForUser({ userId: profile.id, title: parsed.new_sheet_title || parsed.name, tabs: [{ title: parsed.guest_post_tab_name || parsed.name, headers: parsed.column_mapping.map((item) => item.heading), statusValues: ['Pending', 'Approved', 'Live', 'Rejected'] }], onCreated: async (newSheet) => {
+        const { error } = await adminClient.from('projects').update({ google_sheet_id: newSheet.spreadsheetId, google_sheet_gid: newSheet.tabs[0]?.gid ?? null, sheet_name: parsed.new_sheet_title || parsed.name, guest_post_tab_name: parsed.guest_post_tab_name || parsed.name, sheet_setup_state: 'pending', sheet_setup_error: null }).eq('id', draft.id);
+        if (error) throw new Error(`Sheet was created but its ID could not be saved for retry: ${error.message}`);
+      } });
+      const { error: finishError } = await adminClient.from('projects').update({ google_sheet_id: created.spreadsheetId, google_sheet_gid: created.tabs[0]?.gid ?? null, sheet_name: parsed.new_sheet_title || parsed.name, guest_post_tab_name: parsed.guest_post_tab_name || parsed.name, column_mapping: parsed.column_mapping, sync_enabled: parsed.sync_enabled && created.setupState === 'connected', sheet_setup_state: created.setupState, sheet_setup_error: created.setupError }).eq('id', draft.id);
+      if (finishError) throw new Error(`Sheet ${created.spreadsheetId} was created, but project setup status could not be saved: ${finishError.message}`);
+    } catch (error) {
+      await adminClient.from('projects').update({ sheet_setup_state: 'error', sheet_setup_error: error instanceof Error ? error.message.slice(0, 500) : 'Sheet setup failed.', sync_enabled: false }).eq('id', draft.id);
+      throw error;
+    }
+    revalidatePath('/projects'); revalidatePath('/requests/new'); return;
+  }
   const { error } = await supabase.from('projects').insert({
     name: parsed.name,
     slug,
@@ -182,7 +203,7 @@ export async function createProject(input: ProjectInput) {
     category: parsed.category,
     category_id: categoryId,
     sheet_source: parsed.sheet_source,
-    ...sheet,
+    ...(sheet || {}),
     sync_enabled: parsed.sync_enabled,
     active: true,
   });
@@ -205,7 +226,7 @@ export async function updateProject(id: string, input: ProjectInput) {
   }
   // Never overwrite the A:H mapping of an existing shared Guest Post Anchor project.
   // Its historic rows and the installed workbook-level trigger depend on those positions.
-  const sheet = await resolveProjectSheet(parsed, existing);
+  const sheet = await resolveProjectSheet(parsed, existing, undefined);
   if (existing.sheet_source === 'guest_post_anchor' && parsed.sheet_source === 'guest_post_anchor') {
     sheet.column_mapping = existing.column_mapping;
   }

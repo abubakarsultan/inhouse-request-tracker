@@ -80,11 +80,11 @@ export async function createCollaborationPartner(raw:z.input<typeof partnerInput
     try{
       if(input.setup==='manual'&&!input.sheetUrl?.trim())throw new Error('Paste the Sheet URL after importing the CSV templates, or choose Set up later.');
       const details=input.setup==='automatic'
-        ?await autoCreateCollaborationSheet(input.name,profile.email)
+        ?await autoCreateCollaborationSheet(input.name,profile.id,async (sheetId,_url)=>{ const {error:saveSheetIdError}=await adminClient.from('collaboration_partners').update({spreadsheet_id:sheetId,sheet_setup_state:'pending',sheet_setup_error:null}).eq('id',savedPartner.id); if(saveSheetIdError)throw new Error(`Sheet was created but its ID could not be saved for retry: ${saveSheetIdError.message}`); })
         :await connectCollaborationSheet(input.sheetUrl||'',input.name);
-      const {error:connError}=await adminClient.from('collaboration_partners').update({...details,sheet_setup_state:'connected',sheet_setup_error:null,sync_enabled:true}).eq('id',savedPartner.id);
+      const {error:connError}=await adminClient.from('collaboration_partners').update({...details,sheet_setup_state:details.sheet_setup_state || 'connected',sheet_setup_error:details.sheet_setup_error || null,sync_enabled:details.sheet_setup_state !== 'error'}).eq('id',savedPartner.id);
       if(connError)throw new Error(connError.message);
-      setupMessage='Partner created and Google Sheet connected. Install the Apps Script for Sheet-to-app updates.';
+      setupMessage=details.sheet_setup_state === 'error' ? `Partner saved and sheet created, but setup needs repair: ${details.sheet_setup_error || 'Google access verification failed.'}` : 'Partner created and Google Sheet connected. Install the Apps Script for Sheet-to-app updates.';
       try{await refreshCollaborationSummary(savedPartner.id);}catch(e){console.warn('[collab] initial summary failed:',e);}
     }catch(e){
       setupMessage=`Partner saved, but Sheet setup needs attention: ${e instanceof Error?e.message:String(e)}`;

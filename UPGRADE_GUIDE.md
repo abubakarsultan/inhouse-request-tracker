@@ -1,85 +1,83 @@
-# INHOUSE REQUEST — Upgrade Guide (Roman Urdu + English)
+# INHOUSE REQUEST — Google Drive setup (Phase 1)
 
-Ye guide current release ke database/auth changes ke liye hai. Production par apply karne se pehle backup aur Preview deployment zaroor karein.
+Yeh guide per-user Google Drive connection aur new spreadsheet setup ke liye hai. Har admin apne Google account ko connect karega; har collaboration user apna account connect karega. Naye sheets service account ke naam par create nahi hotay.
 
-## 1. Google Cloud setup (Drive OAuth ke liye)
+## 1. Google Cloud setup
 
-1. Google Cloud Console kholein aur wahi project select karein jahan existing service account hai.
-2. **APIs & Services → Library** mein **Google Drive API** aur **Google Sheets API** enable karein.
-3. **Google Auth Platform → Branding** mein app ka naam, support email aur developer contact set karein.
-4. **Audience** mein External select karein. Testing mode mein refresh tokens 7 din baad expire ho sakte hain; production use se pehle app publish karein.
-5. **Data Access** mein minimum scopes rakhein: `openid`, `email`, `https://www.googleapis.com/auth/drive.file`.
-6. **Clients → Create client → Web application** select karein.
-7. Authorized redirect URI add karein: `https://YOUR-DOMAIN/api/google/callback` aur local testing ke liye `http://localhost:3000/api/google/callback`.
-8. Client ID aur Client Secret ko private rakhein. Supabase Google provider ka redirect alag hota hai: `https://YOUR-PROJECT-REF.supabase.co/auth/v1/callback`. Dono URLs ko mix na karein.
+1. Google Cloud Console mein apna project open karein.
+2. **Google Drive API** aur **Google Sheets API** enable karein.
+3. Google Auth Platform / OAuth consent screen mein audience **External** rakhein. App ko **Publish to production** karein. Testing mode refresh tokens ko 7 din baad expire kar sakta hai; Internal audience outside Google accounts ko block karti hai.
+4. OAuth scopes minimum `https://www.googleapis.com/auth/drive.file`, `openid`, aur `email` hon. `drive.file` app-created/selected files ke liye hai; full Drive scope add na karein.
+5. Credentials mein **Web application** OAuth client banayein.
+6. Authorized redirect URI mein exact URL add karein: `https://YOUR-DOMAIN/api/google/callback`.
 
 ## 2. Vercel environment variables
 
-Vercel → Project → Settings → Environment Variables mein existing variables ko preserve karein. Per-user Drive OAuth implementation ke liye ye variables required hain:
+Vercel → Project → Settings → Environment Variables mein yeh add karein:
 
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `TOKEN_ENCRYPTION_KEY` — 32 random bytes, base64 form mein.
-- Existing `GOOGLE_SERVICE_ACCOUNT_JSON`, `TEAM_SHEET_ID`, `SHEET_WEBHOOK_SECRET`, `ADMIN_EMAILS`, Supabase variables.
+- `GOOGLE_OAUTH_CLIENT_ID` — Google Web client ID.
+- `GOOGLE_OAUTH_CLIENT_SECRET` — usi client ka secret.
+- `TOKEN_ENCRYPTION_KEY` — terminal mein `openssl rand -base64 32` run karein aur output yahan paste karein. Is key ko change/lost karne se stored refresh tokens decrypt nahi honge.
+- `NEXT_PUBLIC_SITE_URL` — deployed site ka origin, misal `https://YOUR-DOMAIN` (ending slash ke baghair).
 
-Encryption key generate karne ke liye local terminal mein run karein:
-
-```bash
-openssl rand -base64 32
-```
-
-Output ko Vercel mein `TOKEN_ENCRYPTION_KEY` ke value ke taur par add karein. Is key ko chat, GitHub ya browser mein paste na karein. `GOOGLE_OAUTH_REFRESH_TOKEN` legacy shared token hai; per-user connection fully verified hone ke baad hi Vercel se remove karein.
+Existing `GOOGLE_SERVICE_ACCOUNT_JSON`, `TEAM_SHEET_ID`, `SHEET_WEBHOOK_SECRET`, aur Supabase variables ko abhi preserve karein. Service account existing sheets ke server-side sync aur owner-created sheets par Editor access ke liye use hota hai. `GOOGLE_OAUTH_REFRESH_TOKEN` code se remove kar diya gaya hai; agar Vercel mein yeh legacy variable maujood ho to deploy verify karne ke baad remove karein.
 
 ## 3. Supabase SQL
 
-1. Supabase Dashboard → SQL Editor → New query kholein.
-2. Pehle database backup lein.
-3. `database/migrations/012_per_user_google_drive_and_access.sql` ka complete content paste karke Run karein.
-4. Migration ko second time run karna idempotency check ke liye mumkin hona chahiye.
-5. Neeche wali verification queries run karein:
+1. Supabase → SQL Editor open karein.
+2. Project ZIP ke `database/migrations/012_per_user_google_drive_and_access.sql` ko pehle apply karein agar pehle apply nahi ki.
+3. Migration apply hone ke baad verify karein:
 
 ```sql
-select table_name from information_schema.tables where table_schema='public'
-  and table_name in ('user_google_connections','access_requests','user_role_name_audit');
-select email, display_name, sheet_name, role, status from user_invitations
-  where lower(email) like '%@rankviz.com' order by email;
+select to_regclass('public.user_google_connections') as google_connections_table;
+select column_name from information_schema.columns
+where table_schema = 'public' and table_name = 'projects'
+  and column_name in ('sheet_setup_state', 'sheet_setup_error');
 ```
 
-## 4. Supabase Auth settings
+Phase 2 migration 013 abhi is Phase 1 delivery ka hissa nahi hai. Existing tables/columns drop ya rename na karein.
 
-- Authentication → URL Configuration → Site URL mein production domain set karein.
-- Redirect URLs mein `https://YOUR-DOMAIN/auth/callback` aur local callback URL add karein.
-- Authentication → Hooks mein agar `hook_restrict_rankviz_signup` configured hai, migration us function ko Google provider sign-ins allow karne ke liye update karti hai. Alternative: hook ko disable kar sakte hain, lekin app-side invitation checks phir bhi required hain.
-- Supabase Google provider ka OAuth client aur redirect Supabase callback ke liye hai. Per-user Drive consent ka OAuth client `/api/google/callback` use karta hai.
+## 4. Supabase Auth
 
-## 5. Deploy steps
+1. Authentication → URL Configuration mein Site URL deployed origin rakhein.
+2. Redirect URLs mein `https://YOUR-DOMAIN/**` aur local development URL add karein.
+3. Agar Supabase Before User Created hook enabled hai, existing login flow ke mutabiq hook ko verify karein. Hook ka response allow ke liye `{}` hona chahiye; reject ke liye `error` object. Hook behavior verify kiye baghair production sign-up policy change na karein.
 
-1. Project ZIP ka backup rakhein.
-2. Updated files ko repo mein replace karein; `.env`/secret files commit na karein.
-3. GitHub par commit/push karein; Vercel Preview deployment check karein.
-4. Preview mein typecheck, build aur tests pass hon to Production deploy karein.
-5. Pehle admin account se test karein; phir ek normal user aur invited external account.
+## 5. Deploy
 
-## 6. Feature test checklist
+1. Updated project GitHub par push karein; Vercel deployment complete hone dein.
+2. Vercel logs mein build errors check karein.
+3. `/profile` open karein, Google Drive card se **Connect Google Drive** select karein, consent approve karein.
+4. Profile par connected Google email verify karein.
+5. Admin ke taur par test project create karein aur confirm karein ke spreadsheet connected Google account ki Drive mein hai.
+6. Google Sheet ka Share dialog open karke verify karein ke service account Editor hai.
+7. Sheet setup error aaye to project record ka `sheet_setup_error` check karein. Existing sheet delete na karein; manually Share permissions repair karein. Automated retry/repair UI abhi complete nahi hai.
 
-- [ ] Admin hi projects create/edit/deactivate kar sakta hai; direct API calls bhi reject hon.
-- [ ] Seven fixed Rankviz accounts correct name aur role ke saath sign in karte hain.
-- [ ] External invited Google account sign in kar sakta hai; uninvited account access nahi le sakta.
-- [ ] Invitation first sign-in par accepted hoti hai; baad mein role change dobara overwrite nahi hota.
-- [ ] User sirf apni collaborations dekh/modify/export kar sakta hai; admin all partners dekh sakta hai.
-- [ ] Project sheet append/status sync aur Apps Script webhook dono directions mein test hon.
-- [ ] New Inhouse tab duplicate name aur retry behaviour test hon.
-- [ ] Removed flag aur Incomplete filter/badge verify hon.
-- [ ] Google Drive connection, reconnect, disconnect, own-drive file creation, service-account editor access aur recovery retry verify hon.
-- [ ] `npx tsc --noEmit`, `npm run build`, `node --experimental-strip-types --test tests/*.test.mjs` pass hon.
+## 6. Phase 1 manual test checklist
+
+- [ ] Profile par Connect Google Drive OAuth consent khulta hai.
+- [ ] Callback wrong/missing state par reject hota hai.
+- [ ] Return path external URL ya `//host` accept nahi hota.
+- [ ] Profile par connected Google email show hota hai.
+- [ ] Disconnect connection row delete karta hai; existing files remain karti hain.
+- [ ] Admin new project banata hai; sheet admin ki own Drive mein hoti hai.
+- [ ] New sheet mein headers, frozen header, green bold heading, Status dropdown, aur Live conditional formatting hain.
+- [ ] Service account Editor hai aur service-account client sheet read kar sakta hai.
+- [ ] Collaboration auto-create current user's Google Drive mein sheet banata hai.
+- [ ] Google OAuth revoked token par Reconnect message milta hai.
+- [ ] Failure after sheet creation par database mein spreadsheet ID retained rehta hai.
 
 ## 7. Rollback plan
 
-1. Vercel → Deployments se previous working deployment promote karein.
-2. Database backup restore karna ho to DBA/owner se coordinate karein. Migration tables ko bina review ke drop na karein, kyun ke woh user data rakh sakti hain.
-3. OAuth issue ho to per-user Drive create flow temporarily disable karein aur existing sheets/manual connect workflow use karein.
-4. Encryption key rotate karne se pehle existing refresh tokens ko re-encrypt karein; warna users ko dobara Google Drive connect karna hoga.
+1. Rollback se pehle Supabase backup/export lein.
+2. App code ko previous known deployment par rollback karein.
+3. `user_google_connections` table ya migration columns manually drop na karein; existing files/sheets independent rehti hain.
+4. `TOKEN_ENCRYPTION_KEY` delete/change na karein jab tak encrypted connections table retained hai.
+5. Legacy shared refresh token code mein wapas add na karein. Agar OAuth setup temporarily disable karna ho, Connect UI use na karein aur previous deployment par rollback karein.
 
-## Current implementation note
+## Current limitations for this delivery
 
-Migration 012 aur invitation/profile lifecycle ke kuch fixes is update mein included hain. Per-user OAuth routes, encrypted token storage, unified spreadsheet factory, full collaboration recovery, access-request UI, request flags, performance RPCs aur end-to-end Google Drive flow ko production se pehle code review/build/manual acceptance tests se verify karna abhi zaroori hai. Guide mein checklist ko complete maan kar tick na karein jab tak actual deployment par test na ho.
+- Retry/Repair access UI for a saved project sheet ID is not implemented.
+- Project creation draft survives the Drive OAuth round trip, but complete recovery UX after a partial setup failure still needs testing.
+- Collaboration factory saves the created sheet ID before setup continues, but dedicated Retry/Repair action and owner privacy verification across all endpoints are not complete.
+- Typecheck and production build could not be verified in this environment because `npm ci` timed out and left incomplete type packages. The full Node test suite did run; see delivery report.

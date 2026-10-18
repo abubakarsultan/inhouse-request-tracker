@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Dialog, DialogTrigger, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,24 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
   const isEdit = Boolean(project);
   const lockedLegacyMapping = isEdit && project?.sheet_source === 'guest_post_anchor' && source === 'guest_post_anchor';
 
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('inhouse-project-draft-before-google-connect');
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      sessionStorage.removeItem('inhouse-project-draft-before-google-connect');
+      setName(draft.name || ''); setOutreach(draft.outreach || ''); setCategory(draft.category || 'Inhouse');
+      setSource(draft.source || 'custom_sheet'); setNewSheet(Boolean(draft.newSheet)); setNewTitle(draft.newTitle || '');
+      setTabName(draft.tabName || ''); setColumns(normalizeColumnMapping(draft.columns || NEW_SHEET_COLUMN_MAPPING)); setSync(draft.sync ?? true);
+      setStep(2); setOpen(true); setNotice('Your project draft was restored after connecting Google Drive. Continue setup.');
+    } catch { sessionStorage.removeItem('inhouse-project-draft-before-google-connect'); }
+  }, []);
+
+  function connectGoogleDrive() {
+    sessionStorage.setItem('inhouse-project-draft-before-google-connect', JSON.stringify({ name, outreach, category, source, newSheet, newTitle, tabName, columns, sync }));
+    window.location.assign('/api/google/connect?return=%2Fprojects');
+  }
+
   function changeSource(next: 'guest_post_anchor' | 'custom_sheet', create = false) {
     setSource(next); setNewSheet(create); setTabs([]); setLoadedUrl(''); setNotice(null); setError(null);
     if (!isEdit) setColumns(normalizeColumnMapping(next === 'guest_post_anchor' ? DEFAULT_COLUMN_MAPPING : NEW_SHEET_COLUMN_MAPPING));
@@ -52,7 +70,7 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
     try {
       if (newSheet) {
         if (!newTitle.trim() || !tabName.trim()) throw new Error('Enter the new Sheet title and tab name.');
-        setNotice('New Sheet will be created and shared with your signed-in admin email when you click Create Project.');
+        setNotice('The new spreadsheet will be created in your connected Google Drive. The server service account is added as Editor for sync.');
         return true;
       }
       const data = await listProjectSheetTabs(source === 'guest_post_anchor' ? undefined : sheetUrl, source === 'guest_post_anchor');
@@ -199,11 +217,11 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
               <label className="rounded-lg border p-3 text-sm"><input type="radio" name="sourceChoice" checked={source === 'custom_sheet' && !newSheet} onChange={() => changeSource('custom_sheet')}/> <strong>Connect Google Sheet URL</strong><p className="mt-1 text-xs text-[var(--muted)]">Use an existing spreadsheet</p></label>
               {!isEdit && <label className="rounded-lg border p-3 text-sm"><input type="radio" name="sourceChoice" checked={source === 'custom_sheet' && newSheet} onChange={() => changeSource('custom_sheet', true)}/> <strong>Create New Google Sheet</strong><p className="mt-1 text-xs text-[var(--muted)]">Create on Save (requires Google permission)</p></label>}
             </div>
-            {newSheet ? <div className="grid gap-3 sm:grid-cols-2"><div><Label>New Sheet title</Label><Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Client Project Sheet" /></div><div><Label>New tab name</Label><Input value={tabName} onChange={(e) => setTabName(e.target.value)} placeholder="Requests" /></div></div>
+            {newSheet ? <div className="space-y-3"><div className="grid gap-3 sm:grid-cols-2"><div><Label>New Sheet title</Label><Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Client Project Sheet" /></div><div><Label>New tab name</Label><Input value={tabName} onChange={(e) => setTabName(e.target.value)} placeholder="Requests" /></div></div><button type="button" onClick={connectGoogleDrive} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold">Connect / reconnect your Google Drive (save draft)</button></div>
               : <><div>{source === 'custom_sheet' && <><Label>Google Sheet URL</Label><Input value={sheetUrl} onChange={(e) => { setSheetUrl(e.target.value); setTabs([]); setLoadedUrl(''); }} placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0" /></>}</div>
                 <Button type="button" variant="outline" disabled={pending} onClick={loadSheet}>{pending ? 'Checking access…' : source === 'guest_post_anchor' ? 'Load Guest Post Anchor tabs' : 'Test connection & load tabs'}</Button>
                 {tabs.length > 0 && <div><Label>Select project tab</Label><select disabled={lockedLegacyMapping} className={inputClass} value={tabName} onChange={(e) => setSelectedTab(e.target.value)}>{tabs.map((tab) => <option key={tab.gid} value={tab.title}>{tab.title}</option>)}</select><p className="mt-1 text-xs text-[var(--muted)]">{sheetTitle} · Tab ID is handled automatically.</p></div>}</>}
-            <div className="rounded-lg border border-[#b8d7f8] p-3"><p className="font-semibold text-sm">Give this email Editor access</p><p className="mb-2 text-xs text-[var(--muted)]">For existing Sheets, use Share → Editor. New Sheets also need permission to be shared with you.</p>{serviceAccountEmail ? <div className="flex gap-2"><Input readOnly value={serviceAccountEmail}/><Button type="button" variant="outline" onClick={copyEmail}><Copy size={14}/>{copied ? 'Copied' : 'Copy'}</Button></div> : <p className="text-xs text-red-600">Google service account has not been configured in Vercel.</p>}</div>
+            {!newSheet && <div className="rounded-lg border border-[#b8d7f8] p-3"><p className="font-semibold text-sm">Share existing sheet with the sync service account</p><p className="mb-2 text-xs text-[var(--muted)]">For an existing spreadsheet, use Google Sheets Share → Editor. New sheets are shared automatically after creation.</p>{serviceAccountEmail ? <div className="flex gap-2"><Input readOnly value={serviceAccountEmail}/><Button type="button" variant="outline" onClick={copyEmail}><Copy size={14}/>{copied ? 'Copied' : 'Copy'}</Button></div> : <p className="text-xs text-red-600">Google service account has not been configured in Vercel.</p>}</div>}
           </div>}
           {step === 3 && <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold">Sheet Structure / Column Mapping</h3><p className="text-xs text-[var(--muted)]">Choose the heading and app data for every column. Reorder with arrows.</p></div><div className="flex gap-2">{!newSheet && <Button type="button" variant="outline" onClick={detectHeaders} disabled={pending || lockedLegacyMapping}>{pending ? 'Reading…' : 'Detect headings'}</Button>}<Button type="button" variant="outline" disabled={lockedLegacyMapping || columns.length >= 26} onClick={() => setColumns((items) => [...items, { column: String.fromCharCode(65+items.length), heading: `Column ${String.fromCharCode(65+items.length)}`, field: 'blank' }])}><Plus size={14}/> Add Column</Button></div></div>

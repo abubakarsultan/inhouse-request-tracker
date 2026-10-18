@@ -1,20 +1,13 @@
 import 'server-only';
 import { google } from 'googleapis';
+import { createSpreadsheetForUser } from '@/lib/google-sheet-factory';
 import { adminClient } from '@/lib/supabase-admin';
 import { COLLAB_HEADERS, COLLAB_SUMMARY_HEADERS, cleanTabName, partnerTabName, quoteA1, spreadsheetTitle, validateCollabHeaders, partnerMetrics, templatePartnerTabName } from '@/lib/collaboration-core';
 
 function googleAuth() {
   const scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file'];
-  const oauthClientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
-  const oauthSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  const oauthRefresh = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
-  if (oauthClientId && oauthSecret && oauthRefresh) {
-    const auth = new google.auth.OAuth2(oauthClientId, oauthSecret);
-    auth.setCredentials({ refresh_token: oauthRefresh });
-    return auth;
-  }
   const encoded = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!encoded) throw new Error('Google credentials missing. Configure Google OAuth refresh token or GOOGLE_SERVICE_ACCOUNT_JSON on Vercel.');
+  if (!encoded) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is missing. Configure the service account used for server-side sheet sync.');
   let key: { client_email: string; private_key: string };
   try { key = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')); }
   catch { throw new Error('Invalid GOOGLE_SERVICE_ACCOUNT_JSON.'); }
@@ -23,13 +16,13 @@ function googleAuth() {
 function googleSheets() { return google.sheets({ version: 'v4', auth: googleAuth() }); }
 function formatGoogleError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  if (/quota|storage quota/i.test(message)) return 'Google denied creating a Sheet because the service account has no Drive storage quota. Configure GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN for a connected Google user, or use Download Excel Template & Connect Manually.';
+  if (/quota|storage quota/i.test(message)) return 'Google denied creating a Sheet because the service account has no Drive storage quota. Connect your own Google Drive account, or use Download Excel Template & Connect Manually.';
   return message.slice(0, 400);
 }
 
 export type SheetConnection = {
   spreadsheet_id: string; spreadsheet_title: string; our_tab_name: string; partner_tab_name: string; summary_tab_name: string;
-  our_tab_gid: number; partner_tab_gid: number; summary_tab_gid: number;
+  our_tab_gid: number; partner_tab_gid: number; summary_tab_gid: number; sheet_setup_state?: 'connected' | 'error'; sheet_setup_error?: string | null;
 };
 
 function extractSheetId(url: string): string {
@@ -79,39 +72,25 @@ export async function connectCollaborationSheet(url: string, partnerName: string
   };
 }
 
-export async function autoCreateCollaborationSheet(name: string, adminEmail: string): Promise<SheetConnection> {
-  const sheets = googleSheets();
+export async function autoCreateCollaborationSheet(name: string, userId: string, onCreated?: (sheetId: string, url: string) => Promise<void>): Promise<SheetConnection> {
   const title = spreadsheetTitle(name);
   const ptab = partnerTabName(name);
-  let created;
-  try {
-    created = await sheets.spreadsheets.create({ requestBody: {
-      properties: { title }, sheets: [{ properties: { title: 'Rankviz' } }, { properties: { title: ptab } }, { properties: { title: 'Summary' } }],
-    }, fields: 'spreadsheetId' });
-  } catch (error) { throw new Error(`Automatic Google Sheet creation failed: ${formatGoogleError(error)}`); }
-  const sheetId = created.data.spreadsheetId;
-  if (!sheetId) throw new Error('Google did not return the newly created spreadsheet ID.');
-  try {
-    await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetId, requestBody: { valueInputOption: 'RAW', data: [
-      { range: "'Rankviz'!A1:H1", values: [[...COLLAB_HEADERS, 'Record ID']] },
-      { range: `${quoteA1(ptab)}!A1:H1`, values: [[...COLLAB_HEADERS, 'Record ID']] },
-      { range: "'Summary'!A1:C1", values: [[...COLLAB_SUMMARY_HEADERS]] },
-    ] } });
-    // Service-account-owned files should be explicitly shared. OAuth-owned files
-    // can also be shared (if the permission already exists, a duplicate is harmless).
-    if (adminEmail) {
-      try {
-        await google.drive({ version: 'v3', auth: googleAuth() }).permissions.create({ fileId: sheetId, sendNotificationEmail: false, requestBody: { type: 'user', role: 'writer', emailAddress: adminEmail } });
-      } catch (error) {
-        console.warn('[collab] sheet created but sharing failed:', formatGoogleError(error));
-        throw new Error(`Sheet was created (ID: ${sheetId}), but granting ${adminEmail} Editor access failed. Connect this Sheet manually after granting permission: ${formatGoogleError(error)}`);
-      }
-    }
-    return await connectCollaborationSheet(`https://docs.google.com/spreadsheets/d/${sheetId}/edit`, name);
-  } catch (error) {
-    // Give the user the ID for recovery instead of creating another sheet on retry.
-    throw new Error(`Google Sheet ${sheetId} was created but setup was incomplete. Open https://docs.google.com/spreadsheets/d/${sheetId}/edit and connect it manually. ${formatGoogleError(error)}`);
-  }
+  const result = await createSpreadsheetForUser({
+    userId, title,
+    tabs: [
+      { title: 'Rankviz', headers: [...COLLAB_HEADERS, 'Record ID'], statusValues: ['Pending', 'Live', 'Removed', 'Rejected'], hiddenColumns: [7] },
+      { title: ptab, headers: [...COLLAB_HEADERS, 'Record ID'], statusValues: ['Pending', 'Live', 'Removed', 'Rejected'], hiddenColumns: [7] },
+      { title: 'Summary', headers: [...COLLAB_SUMMARY_HEADERS] },
+    ],
+    onCreated: async (sheet) => { await onCreated?.(sheet.spreadsheetId, sheet.url); },
+  });
+  const byName = (tab: string) => result.tabs.find((item) => item.title === tab)?.gid ?? 0;
+  return {
+    spreadsheet_id: result.spreadsheetId, spreadsheet_title: title,
+    our_tab_name: 'Rankviz', partner_tab_name: ptab, summary_tab_name: 'Summary',
+    our_tab_gid: byName('Rankviz'), partner_tab_gid: byName(ptab), summary_tab_gid: byName('Summary'),
+    sheet_setup_state: result.setupState, sheet_setup_error: result.setupError,
+  };
 }
 
 function rowForLink(link: any, dealRef: string | null): string[] {

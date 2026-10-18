@@ -1,11 +1,15 @@
 import { requireActiveProfile } from '@/lib/auth';
 import LogoutButton from '@/components/app/logout-button';
+import GoogleDriveConnectionCard from '@/components/app/google-drive-connection-card';
+import { getConnectionStatus } from '@/lib/google-user-auth';
 
 export default async function ProfilePage() {
   const profile = await requireActiveProfile();
+  const drive = await getConnectionStatus(profile.id);
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-6"><h1 className="text-2xl font-bold">Profile</h1><p className="mt-1 text-sm text-[var(--muted)]">Your Google identity and Guest Post Anchor mapping.</p></div>
+      <GoogleDriveConnectionCard status={drive.status} email={drive.email} lastError={drive.lastError} />
       <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
         <div className="flex flex-wrap items-center gap-4">
           {profile.avatar_url ? <img src={profile.avatar_url} alt="" className="h-16 w-16 rounded-full object-cover" referrerPolicy="no-referrer" /> : <div className="grid h-16 w-16 place-items-center rounded-full bg-[var(--brand-soft)] text-xl font-bold text-[var(--brand-dark)]">{(profile.sheet_name || profile.email).slice(0, 2).toUpperCase()}</div>}
