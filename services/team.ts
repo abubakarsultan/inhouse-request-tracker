@@ -5,6 +5,100 @@ import { adminClient } from '@/lib/supabase-admin';
 import { requireAdminForAction, type UserProfile } from '@/lib/auth';
 import { syncRequestFullRowToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
 
+
+export async function createUserInvitation(emailInput: string, displayNameInput: string, role: 'admin' | 'member') {
+  const admin = await requireAdminForAction();
+  const email = String(emailInput ?? '').trim().toLowerCase();
+  const displayName = String(displayNameInput ?? '').trim() || null;
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid email address.');
+  const { data: existing } = await adminClient.from('users').select('id,account_status').eq('email', email).maybeSingle();
+  if (existing?.account_status === 'active') throw new Error('This email already has an active account.');
+  const { error: revokeError } = await adminClient.from('user_invitations').update({ status: 'revoked' }).eq('email', email).eq('status', 'pending');
+  if (revokeError) throw new Error(revokeError.message);
+  const { error } = await adminClient.from('user_invitations').insert({ email, display_name: displayName, role, status: 'pending', invited_by: admin.id });
+  if (error) throw new Error(error.message);
+  revalidatePath('/team');
+}
+
+export async function getRecentUserAudits() {
+  await requireAdminForAction();
+  const { data, error } = await adminClient.from('user_role_name_audit').select('id,email,field_name,old_value,new_value,created_at').order('created_at',{ascending:false}).limit(50);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+export async function getTeamDirectory() {
+  await requireAdminForAction();
+  const { data, error } = await adminClient.from('team_directory').select('email,sheet_name,role,active,created_at,updated_at').order('email');
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+export async function saveTeamDirectoryEntry(raw: { email: string; sheetName: string; role: 'member'|'admin'; active: boolean }) {
+  const admin = await requireAdminForAction();
+  const email = String(raw.email || '').trim().toLowerCase(); const sheetName = String(raw.sheetName || '').trim();
+  if (!/^[^\s@]+@rankviz\.com$/.test(email)) throw new Error('Directory email must be a valid @rankviz.com address.');
+  if (sheetName.length < 2 || sheetName.length > 100) throw new Error('Sheet name must contain 2–100 characters.');
+  if (raw.role !== 'member' && raw.role !== 'admin') throw new Error('Invalid directory role.');
+  const { data: previous } = await adminClient.from('team_directory').select('sheet_name,role,active').eq('email', email).maybeSingle();
+  const { data: claimed } = await adminClient.from('team_directory').select('email').ilike('sheet_name', sheetName).neq('email', email).eq('active', true).maybeSingle();
+  if (claimed && raw.active) throw new Error('That sheet name is already assigned to another active directory entry.');
+  const { data: existingUser } = await adminClient.from('users').select('id,role,account_status').eq('email',email).maybeSingle();
+  if (!raw.active && existingUser?.account_status === 'active' && existingUser.role === 'admin') {
+    const { count, error: countError } = await adminClient.from('users').select('id',{count:'exact',head:true}).eq('role','admin').eq('account_status','active');
+    if (countError) throw new Error(countError.message);
+    if ((count ?? 0) <= 1) throw new Error('Cannot deactivate the last active admin directory entry.');
+  }
+  const { error } = await adminClient.from('team_directory').upsert({ email, sheet_name: sheetName, role: raw.role, active: Boolean(raw.active), updated_at: new Date().toISOString() }, { onConflict: 'email' });
+  if (error) throw new Error(error.message);
+  if (!raw.active && existingUser?.account_status === 'active') {
+    await adminClient.from('users').update({account_status:'disabled',active:false}).eq('id',existingUser.id);
+    await adminClient.from('user_role_name_audit').insert({user_id:existingUser.id,changed_by:admin.id,email,field_name:'account_status',old_value:'active',new_value:'disabled'});
+  }
+  for (const [field, oldValue, newValue] of [['sheet_name',previous?.sheet_name,sheetName],['role',previous?.role,raw.role],['active',String(previous?.active ?? ''),String(raw.active)]] as const) {
+    if (String(oldValue ?? '') !== String(newValue ?? '')) await adminClient.from('user_role_name_audit').insert({ user_id: null, changed_by: admin.id, email, field_name: `directory_${field}`, old_value: String(oldValue ?? ''), new_value: String(newValue ?? '') });
+  }
+  revalidateTeamPaths();
+}
+
+export async function revokeUserInvitation(invitationId: string) {
+  await requireAdminForAction();
+  const id = String(invitationId || '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid invitation ID.');
+  const { error } = await adminClient.from('user_invitations').update({ status: 'revoked', updated_at: new Date().toISOString() }).eq('id', id).eq('status', 'pending');
+  if (error) throw new Error(error.message);
+  revalidateTeamPaths();
+}
+export async function getAccessRequests() {
+  await requireAdminForAction();
+  const { data, error } = await adminClient.from('access_requests').select('id,email,display_name,note,status,created_at').eq('status','open').order('created_at',{ascending:false}).limit(200);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+export async function inviteAccessRequest(requestId: string, role: 'member'|'admin') {
+  await requireAdminForAction();
+  const id = String(requestId || '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid request ID.');
+  const { data: request, error } = await adminClient.from('access_requests').select('id,email,display_name,status').eq('id',id).eq('status','open').single();
+  if (error || !request) throw new Error(error?.message || 'Request is no longer open.');
+  await createUserInvitation(String(request.email), String(request.display_name || String(request.email).split('@')[0]), role);
+  const { error: updateError } = await adminClient.from('access_requests').update({ status:'invited',updated_at:new Date().toISOString() }).eq('id',id);
+  if (updateError) throw new Error(updateError.message);
+  revalidateTeamPaths();
+}
+export async function dismissAccessRequest(requestId: string) {
+  await requireAdminForAction();
+  const id = String(requestId || '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid request ID.');
+  const { error } = await adminClient.from('access_requests').update({status:'dismissed',updated_at:new Date().toISOString()}).eq('id',id).eq('status','open');
+  if (error) throw new Error(error.message);
+  revalidateTeamPaths();
+}
+export async function getPendingInvitations() {
+  await requireAdminForAction();
+  const { data, error } = await adminClient.from('user_invitations').select('id,email,display_name,role,created_at').eq('status','pending').order('created_at',{ascending:false}).limit(200);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
 export type TeamNameOption = { id: string; name: string; badge_bg: string; badge_text: string; active: boolean; claimedBy: string | null };
 
 export async function getAvailableTeamNames(): Promise<TeamNameOption[]> {
@@ -127,16 +221,55 @@ export async function approveTeamUser(userId: string) {
 export async function setTeamUserStatus(userId: string, status: 'active' | 'disabled') {
   const admin = await requireAdminForAction();
   if (admin.id === userId && status === 'disabled') throw new Error('You cannot disable your own admin account.');
+  const { data: target, error: targetError } = await adminClient.from('users').select('id,email,role,account_status,sheet_name').eq('id', userId).single();
+  if (targetError || !target) throw new Error(targetError?.message || 'User not found.');
+  if (status === 'disabled' && target.role === 'admin' && target.account_status === 'active') {
+    const { count, error: countError } = await adminClient.from('users').select('id', { count: 'exact', head: true }).eq('role', 'admin').eq('account_status', 'active');
+    if (countError) throw new Error(countError.message);
+    if ((count ?? 0) <= 1) throw new Error('The last active admin cannot be disabled. Promote another active user first.');
+  }
   const update: Record<string, unknown> = { account_status: status, active: status === 'active' };
   if (status === 'active') { update.approved_by = admin.id; update.approved_at = new Date().toISOString(); }
   const { error } = await adminClient.from('users').update(update).eq('id', userId); if (error) throw new Error(error.message);
+  await adminClient.from('user_role_name_audit').insert({ user_id: userId, changed_by: admin.id, email: target.email, field_name: 'account_status', old_value: target.account_status, new_value: status });
   if (status === 'active') await linkUserHistory(userId); revalidateTeamPaths();
 }
 
 export async function setTeamUserRole(userId: string, role: 'admin' | 'member') {
   const admin = await requireAdminForAction();
   if (admin.id === userId && role === 'member') throw new Error('You cannot remove your own admin role.');
-  const { error } = await adminClient.from('users').update({ role }).eq('id', userId); if (error) throw new Error(error.message); revalidateTeamPaths();
+  const { data: target, error: targetError } = await adminClient.from('users').select('id,email,role,account_status').eq('id', userId).single();
+  if (targetError || !target) throw new Error(targetError?.message || 'User not found.');
+  if (role === 'member' && target.role === 'admin' && target.account_status === 'active') {
+    const { count, error: countError } = await adminClient.from('users').select('id', { count: 'exact', head: true }).eq('role', 'admin').eq('account_status', 'active');
+    if (countError) throw new Error(countError.message);
+    if ((count ?? 0) <= 1) throw new Error('The last active admin cannot be demoted. Promote another active user first.');
+  }
+  const { error } = await adminClient.from('users').update({ role }).eq('id', userId); if (error) throw new Error(error.message);
+  await adminClient.from('user_role_name_audit').insert({ user_id: userId, changed_by: admin.id, email: target.email, field_name: 'role', old_value: target.role, new_value: role });
+  revalidateTeamPaths();
+}
+
+export async function setTeamUserSheetName(userId: string, requestedName: string | null) {
+  const admin = await requireAdminForAction();
+  const id = String(userId || '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid user ID.');
+  const { data: target, error: targetError } = await adminClient.from('users').select('id,email,sheet_name').eq('id',id).single();
+  if (targetError || !target) throw new Error(targetError?.message || 'User not found.');
+  let canonical: string | null = null;
+  if (requestedName) {
+    const { data: roster, error: rosterError } = await adminClient.from('team_names').select('name').eq('active',true).ilike('name',requestedName.trim()).maybeSingle();
+    if (rosterError || !roster) throw new Error(rosterError?.message || 'Choose a name from the approved team_names roster.');
+    canonical = String(roster.name);
+    const { data: claim, error: claimError } = await adminClient.from('users').select('id').ilike('sheet_name',canonical).neq('id',id).maybeSingle();
+    if (claimError) throw new Error(claimError.message);
+    if (claim) throw new Error('That sheet name is already claimed by another user.');
+  }
+  const { error } = await adminClient.from('users').update({ sheet_name: canonical, onboarding_completed: true }).eq('id',id);
+  if (error) throw new Error(error.message);
+  await adminClient.from('user_role_name_audit').insert({user_id:id,changed_by:admin.id,email:target.email,field_name:'sheet_name',old_value:String(target.sheet_name||''),new_value:String(canonical||'')});
+  if (canonical) await linkUserHistory(id);
+  revalidateTeamPaths();
 }
 
 export async function resetTeamUserMapping(userId: string) {

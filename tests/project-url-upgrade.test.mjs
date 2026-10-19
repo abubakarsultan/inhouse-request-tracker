@@ -19,7 +19,7 @@ test('extracts sheet id + exact gid from URL, and preserves selected tab', () =>
 test('project form asks for URL, and shows service account email to share as Editor', () => {
   const form = read('components/app/project-form-dialog.tsx');
   assert.match(form, /Google Sheet URL/);
-  assert.match(form, /Give this email Editor access/);
+  assert.match(form, /Share existing sheet with the sync service account/);
   assert.match(form, /serviceAccountEmail/);
   assert.doesNotMatch(form, /name="google_sheet_id"/);
 });

@@ -6,6 +6,7 @@ import { formatKarachiDateTime } from '@/lib/date';
 import { Link2, Clock, AlertTriangle, LayoutGrid, CalendarDays, Activity, CheckCircle2, BarChart3, XCircle, ShieldCheck } from 'lucide-react';
 import RefreshLiveStatusButton from '@/components/app/refresh-live-status-button';
 import { requireActiveProfile } from '@/lib/auth';
+import { getMissingRequestFields } from '@/lib/request-completeness';
 import { getMemberDashboardWorkspace } from '@/services/member-workspace';
 import MemberWorkspaceView from '@/components/app/member-workspace-view';
 import { getAdminTeamAttention } from '@/services/team';
@@ -16,6 +17,7 @@ const CARDS = [
   { key: 'pending', label: 'Pending', icon: Clock },
   { key: 'rejected', label: 'Rejected', icon: XCircle },
   { key: 'failedSync', label: 'Failed Sync', icon: AlertTriangle },
+  { key: 'incomplete', label: 'Incomplete Requests', icon: AlertTriangle },
   { key: 'thisMonth', label: 'This Month', icon: CalendarDays },
 ] as const;
 
@@ -58,8 +60,8 @@ export default async function Dashboard() {
               <p className="text-sm text-[var(--muted)]">{label}</p>
             </>
           );
-          return key === 'failedSync' && stats.failedSync > 0 ? (
-            <Link key={key} href="#failed-sync" className="rounded-2xl border border-[#f4b7b2] bg-[var(--card)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">{content}</Link>
+          return (key === 'failedSync' && stats.failedSync > 0) || (key === 'incomplete' && stats.incomplete > 0) ? (
+            <Link key={key} href={key === 'incomplete' ? '/requests?incomplete=1' : '#failed-sync'} className="rounded-2xl border border-[#f4b7b2] bg-[var(--card)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">{content}</Link>
           ) : (
             <div key={key} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm">{content}</div>
           );
@@ -103,7 +105,7 @@ export default async function Dashboard() {
                     <td className="p-3 font-medium">{row.projects ? <Link href={`/projects/${row.projects.slug}`} className="hover:text-[var(--brand)]">{row.projects.name}</Link> : '—'}</td>
                     <td className="p-3 text-[var(--muted)]">{row.approved_site}</td>
                     <td className="p-3 text-[var(--muted)]">{row.assign_to || 'Unassigned'}</td>
-                    <td className="p-3"><div className="flex flex-wrap gap-1"><StatusBadge status={row.status} />{row.sync_state === 'failed' && <StatusBadge status={row.status} failedSync />}</div></td>
+                    <td className="p-3"><div className="flex flex-wrap gap-1"><StatusBadge status={row.status} />{row.sheet_flag === 'Removed' && <span title="Sheet status is Removed; app status is preserved." className="rounded-full bg-[#fce8e6] px-2 py-1 text-[10px] font-bold text-[#b3261e]">Removed in sheet</span>}{getMissingRequestFields(row,{column_mapping:row.project_column_mapping}).length>0 && <span title={`Missing: ${getMissingRequestFields(row,{column_mapping:row.project_column_mapping}).join(', ')}`} className="rounded-full bg-[#fef7e0] px-2 py-1 text-[10px] font-bold text-[#8a6200]">Incomplete</span>}{row.sync_state === 'failed' && <StatusBadge status={row.status} failedSync />}</div></td>
                   </tr>
                 ))}
                 {data.recent.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-[var(--muted)]">No activity yet.</td></tr>}

@@ -1,0 +1,5 @@
+import Link from 'next/link';
+import GoogleSignInButton from '@/components/app/google-sign-in-button';
+export default function GuestLoginPage() {
+  return <main className="grid min-h-screen place-items-center bg-[var(--canvas)] px-4 py-10"><section className="w-full max-w-md rounded-3xl border border-[var(--border)] bg-[var(--card)] p-8 shadow-sm"><div className="mb-8 flex items-center gap-3"><img src="/rankviz-logo.jpg" alt="Rankviz" className="h-12 w-12 rounded-xl object-contain"/><div><h1 className="text-xl font-bold">INHOUSE REQUEST</h1><p className="text-sm text-[var(--muted)]">External invited accounts</p></div></div><h2 className="text-2xl font-bold">Continue with Google</h2><p className="my-3 text-sm text-[var(--muted)]">Use the Google email address that received your invitation.</p><GoogleSignInButton mode="google"/><p className="mt-5 text-sm">Rankviz team member? <Link className="font-semibold text-[var(--brand)]" href="/login">Continue with Rankviz</Link></p></section></main>;
+}

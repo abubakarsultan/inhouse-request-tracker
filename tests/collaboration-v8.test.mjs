@@ -36,7 +36,7 @@ test('one three-tab Excel template plus Google automatic creation, manual connec
   const wizard=read('components/app/collaboration/partner-wizard.tsx');
   assert.match(zip,/collaborationWorkbookTemplate/);assert.match(zip,/book_append_sheet\(workbook, sheet, tab\)/);assert.match(zip,/book_append_sheet\(workbook, summary, 'Summary'\)/);
   assert.match(wizard,/Download Collaboration Template \(\.xlsx\)/);assert.match(wizard,/Google Drive → New → File upload/);
-  assert.match(setup,/spreadsheets\.create/);assert.match(setup,/validateCollabHeaders/);
+  assert.match(setup,/createSpreadsheetForUser/);assert.match(read('lib/google-sheet-factory.ts'),/spreadsheets\.create/);assert.match(setup,/validateCollabHeaders/);
   assert.match(setup,/Record ID/);assert.match(setup,/refreshCollaborationSummary/);
 });
 test('Google inbound webhook requires partner specific token and verifies spreadsheet and tab',()=>{

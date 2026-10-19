@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Dialog, DialogTrigger, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -8,18 +8,19 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Plus, Pencil, Copy, Check, Trash2, ArrowUp, ArrowDown, ExternalLink } from 'lucide-react';
 import { listProjectSheetTabs, testProjectSheetConnection, inspectSharedProjectTab } from '@/services/projects';
-import { DEFAULT_COLUMN_MAPPING, NEW_SHEET_COLUMN_MAPPING, PROJECT_CATEGORIES, SHEET_DATA_FIELDS, normalizeColumnMapping, reindexColumns, previewMappedRow, type ColumnMapping } from '@/lib/project-sheet';
+import { DEFAULT_COLUMN_MAPPING, NEW_SHEET_COLUMN_MAPPING, CLIENT_LIVE_LINK_COLUMN_MAPPING, CLIENT_LIVE_LINK_WITH_METRICS_MAPPING, SHEET_DATA_FIELDS, normalizeColumnMapping, reindexColumns, previewMappedRow, type ColumnMapping } from '@/lib/project-sheet';
 import { buildGoogleSheetUrl, parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 import type { ProjectInput } from '@/lib/validators';
+import { projectCategorySlug } from '@/lib/project-category-slugs';
 
 type Project = Omit<ProjectInput, 'sheet_url'> & {
-  id: string; google_sheet_id?: string | null; google_sheet_gid?: number | null;
+  id: string; category_id?: string | null; google_sheet_id?: string | null; google_sheet_gid?: number | null;
   sheet_name?: string | null; guest_post_tab_name?: string | null;
 };
 type Tab = { title: string; gid: number };
 const inputClass = 'mt-1 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm';
 
-export default function ProjectFormDialog({ project, serviceAccountEmail }: { project?: Project; serviceAccountEmail: string | null }) {
+export default function ProjectFormDialog({ project, serviceAccountEmail, categories }: { project?: Project; serviceAccountEmail: string | null; categories: { id: string; slug: string; name: string; sheet_mode: 'team_sheet_tab' | 'own_sheet' }[] }) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(1);
   const [pending, setPending] = useState(false);
@@ -28,9 +29,10 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
   const [notice, setNotice] = useState<string | null>(null);
   const [name, setName] = useState(project?.name || '');
   const [outreach, setOutreach] = useState(project?.outreach_project_name || '');
-  const [category, setCategory] = useState<ProjectInput['category']>(project?.category || 'Inhouse');
+  const [category, setCategory] = useState<ProjectInput['category']>(() => categories.find(item => (project?.category_id && item.id === project.category_id) || (project?.category && item.slug === projectCategorySlug(project.category)))?.name || project?.category || categories[0]?.name || 'Inhouse');
   const [source, setSource] = useState<'guest_post_anchor' | 'custom_sheet'>(project?.sheet_source || 'guest_post_anchor');
   const [newSheet, setNewSheet] = useState(false);
+  const [newTab, setNewTab] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [tabName, setTabName] = useState(project?.guest_post_tab_name || '');
   const [sheetUrl, setSheetUrl] = useState(project?.google_sheet_id ? buildGoogleSheetUrl(project.google_sheet_id, project.google_sheet_gid) : '');
@@ -39,12 +41,33 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
   const [sheetTitle, setSheetTitle] = useState(project?.sheet_name || '');
   const [columns, setColumns] = useState<ColumnMapping[]>(() => normalizeColumnMapping(project?.column_mapping || (project?.sheet_source === 'guest_post_anchor' ? DEFAULT_COLUMN_MAPPING : NEW_SHEET_COLUMN_MAPPING)));
   const [sync, setSync] = useState(project?.sync_enabled ?? true);
+  const [includeMetrics, setIncludeMetrics] = useState(() => normalizeColumnMapping(project?.column_mapping || []).some((item) => ['dr','traffic'].includes(item.field)));
+  function applyClientPreset(withMetrics: boolean) { setIncludeMetrics(withMetrics); setColumns(reindexColumns((withMetrics ? CLIENT_LIVE_LINK_WITH_METRICS_MAPPING : CLIENT_LIVE_LINK_COLUMN_MAPPING).map(item => ({...item})))); setNotice(withMetrics ? 'Client Live Link preset applied with DR and Traffic.' : 'Client Live Link 4-column preset applied.'); }
   const router = useRouter();
   const isEdit = Boolean(project);
-  const lockedLegacyMapping = isEdit && project?.sheet_source === 'guest_post_anchor' && source === 'guest_post_anchor';
+  const sharedMode = categories.find(item => item.name === category)?.sheet_mode === 'team_sheet_tab';
+  const lockedLegacyMapping = newTab || (isEdit && project?.sheet_source === 'guest_post_anchor' && source === 'guest_post_anchor');
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('inhouse-project-draft-before-google-connect');
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      sessionStorage.removeItem('inhouse-project-draft-before-google-connect');
+      setName(draft.name || ''); setOutreach(draft.outreach || ''); setCategory(draft.category || 'Inhouse');
+      setSource(draft.source || 'custom_sheet'); setNewSheet(Boolean(draft.newSheet)); setNewTab(Boolean(draft.newTab)); setNewTitle(draft.newTitle || '');
+      setTabName(draft.tabName || ''); setColumns(normalizeColumnMapping(draft.columns || NEW_SHEET_COLUMN_MAPPING)); setSync(draft.sync ?? true);
+      setStep(2); setOpen(true); setNotice('Your project draft was restored after connecting Google Drive. Continue setup.');
+    } catch { sessionStorage.removeItem('inhouse-project-draft-before-google-connect'); }
+  }, []);
+
+  function connectGoogleDrive() {
+    sessionStorage.setItem('inhouse-project-draft-before-google-connect', JSON.stringify({ name, outreach, category, source, newSheet, newTab, newTitle, tabName, columns, sync }));
+    window.location.assign('/api/google/connect?return=%2Fprojects');
+  }
 
   function changeSource(next: 'guest_post_anchor' | 'custom_sheet', create = false) {
-    setSource(next); setNewSheet(create); setTabs([]); setLoadedUrl(''); setNotice(null); setError(null);
+    setSource(next); setNewSheet(create); setNewTab(false); setTabs([]); setLoadedUrl(''); setNotice(null); setError(null);
     if (!isEdit) setColumns(normalizeColumnMapping(next === 'guest_post_anchor' ? DEFAULT_COLUMN_MAPPING : NEW_SHEET_COLUMN_MAPPING));
   }
   async function loadSheet() {
@@ -52,7 +75,7 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
     try {
       if (newSheet) {
         if (!newTitle.trim() || !tabName.trim()) throw new Error('Enter the new Sheet title and tab name.');
-        setNotice('New Sheet will be created and shared with your signed-in admin email when you click Create Project.');
+        setNotice('The new spreadsheet will be created in your connected Google Drive. The server service account is added as Editor for sync.');
         return true;
       }
       const data = await listProjectSheetTabs(source === 'guest_post_anchor' ? undefined : sheetUrl, source === 'guest_post_anchor');
@@ -123,14 +146,15 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
     setError(null);
     if (step === 1 && !name.trim()) { setError('Project name is required.'); return; }
     if (step === 2) {
-      if (!newSheet && (tabs.length === 0 || loadedUrl !== (source === 'guest_post_anchor' ? 'shared' : sheetUrl))) {
+      if (!newSheet && !newTab && (tabs.length === 0 || loadedUrl !== (source === 'guest_post_anchor' ? 'shared' : sheetUrl))) {
         await loadSheet();
         return; // Choose the correct tab after the spreadsheet's tabs have loaded.
       }
-      if (!tabName.trim()) { setError('Select a project tab.'); return; }
-      if (!newSheet && !tabs.some((item) => item.title === tabName)) { setError('Select an available tab.'); return; }
+      if (newTab && !tabName.trim()) setTabName(name.trim());
+      if (!tabName.trim() && !newTab) { setError('Select a project tab.'); return; }
+      if (!newSheet && !newTab && !tabs.some((item) => item.title === tabName)) { setError('Select an available tab.'); return; }
       // On first connection, automatically suggest mappings from real Sheet headings.
-      if (!newSheet && !isEdit && !(await detectHeaders())) return;
+      if (!newSheet && !newTab && !isEdit && !(await detectHeaders())) return;
     }
     if (step === 3 && !validateMapping()) return;
     setStep(Math.min(step + 1, 4));
@@ -150,6 +174,7 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
       sheet_source: source, sheet_url: source === 'custom_sheet' && !newSheet ? sheetUrl : null,
       guest_post_tab_name: tabName, column_mapping: reindexColumns(columns), sync_enabled: sync,
       create_new_sheet: newSheet, new_sheet_title: newSheet ? newTitle : null,
+      create_new_tab: newTab, new_tab_name: newTab ? (tabName.trim() || name.trim()) : null,
     };
     try {
       const response = await fetch('/api/projects/save', {
@@ -190,23 +215,25 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
           {step === 1 && <div className="space-y-4">
             <div><Label>Project name</Label><Input value={name} onChange={(e) => setName(e.target.value)} required placeholder="e.g. Get Pro Links" /></div>
             <div><Label>Outreach OS project name</Label><Input value={outreach} onChange={(e) => setOutreach(e.target.value)} placeholder="Defaults to project name" /></div>
-            <div><Label>Project category</Label><div className="mt-2 grid gap-2 sm:grid-cols-4">{PROJECT_CATEGORIES.map((item) => <label key={item} className={`flex cursor-pointer items-center gap-2 rounded-lg border p-3 text-sm ${category === item ? 'border-[#1a73e8] bg-[#e8f0fe] text-[#174ea6]' : 'border-[var(--border)]'}`}><input type="radio" checked={category === item} onChange={() => { setCategory(item); if (item !== 'Inhouse' && source === 'guest_post_anchor') changeSource('custom_sheet'); }} />{item}</label>)}</div></div>
+            <div><Label>Project category</Label><div className="mt-2 grid gap-2 sm:grid-cols-4">{categories.map(({ name: item }) => <label key={item} className={`flex cursor-pointer items-center gap-2 rounded-lg border p-3 text-sm ${category === item ? 'border-[#1a73e8] bg-[#e8f0fe] text-[#174ea6]' : 'border-[var(--border)]'}`}><input type="radio" checked={category === item} onChange={() => { setCategory(item); if (categories.find(c => c.name === item)?.sheet_mode !== 'team_sheet_tab' && source === 'guest_post_anchor') changeSource('custom_sheet'); }} />{item}</label>)}</div></div>
           </div>}
           {step === 2 && <div className="space-y-4">
             <h3 className="font-semibold">Select Google Sheet source</h3>
             <div className="grid gap-2 sm:grid-cols-3">
-              {category === 'Inhouse' && <label className="rounded-lg border p-3 text-sm"><input type="radio" name="sourceChoice" checked={source === 'guest_post_anchor'} onChange={() => changeSource('guest_post_anchor')}/> <strong>Existing Guest Post Anchor</strong><p className="mt-1 text-xs text-[var(--muted)]">Preserve the shared team workbook</p></label>}
+              {sharedMode && <label className="rounded-lg border p-3 text-sm"><input type="radio" name="sourceChoice" checked={source === 'guest_post_anchor' && !newTab} onChange={() => { changeSource('guest_post_anchor'); setNewTab(false); }}/> <strong>Use existing tab</strong><p className="mt-1 text-xs text-[var(--muted)]">Preserve the shared team workbook</p></label>}
+              {sharedMode && !isEdit && <label className="rounded-lg border p-3 text-sm"><input type="radio" name="sourceChoice" checked={newTab} onChange={() => { setSource('guest_post_anchor'); setNewSheet(false); setNewTab(true); setTabName(name.trim()); setTabs([]); setLoadedUrl(''); setColumns(normalizeColumnMapping(DEFAULT_COLUMN_MAPPING)); }}/> <strong>Create new tab in Guest Post Anchor</strong><p className="mt-1 text-xs text-[var(--muted)]">Adds a tab to the existing workbook</p></label>}
               <label className="rounded-lg border p-3 text-sm"><input type="radio" name="sourceChoice" checked={source === 'custom_sheet' && !newSheet} onChange={() => changeSource('custom_sheet')}/> <strong>Connect Google Sheet URL</strong><p className="mt-1 text-xs text-[var(--muted)]">Use an existing spreadsheet</p></label>
               {!isEdit && <label className="rounded-lg border p-3 text-sm"><input type="radio" name="sourceChoice" checked={source === 'custom_sheet' && newSheet} onChange={() => changeSource('custom_sheet', true)}/> <strong>Create New Google Sheet</strong><p className="mt-1 text-xs text-[var(--muted)]">Create on Save (requires Google permission)</p></label>}
             </div>
-            {newSheet ? <div className="grid gap-3 sm:grid-cols-2"><div><Label>New Sheet title</Label><Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Client Project Sheet" /></div><div><Label>New tab name</Label><Input value={tabName} onChange={(e) => setTabName(e.target.value)} placeholder="Requests" /></div></div>
+            {newTab ? <div className="space-y-3"><div><Label>Project tab name</Label><Input value={tabName} onChange={e=>setTabName(e.target.value)} placeholder={name || 'Project name'} maxLength={100}/><p className="mt-1 text-xs text-[var(--muted)]">Defaults to project name. Avoid [ ] * ? : / and backslash.</p></div><p className="text-xs text-[var(--muted)]">The workbook-level Apps Script should already cover new tabs. The new tab receives the mapped header row and Status dropdown.</p></div> : newSheet ? <div className="space-y-3"><div className="grid gap-3 sm:grid-cols-2"><div><Label>New Sheet title</Label><Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Client Project Sheet" /></div><div><Label>New tab name</Label><Input value={tabName} onChange={(e) => setTabName(e.target.value)} placeholder="Requests" /></div></div><button type="button" onClick={connectGoogleDrive} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold">Connect / reconnect your Google Drive (save draft)</button></div>
               : <><div>{source === 'custom_sheet' && <><Label>Google Sheet URL</Label><Input value={sheetUrl} onChange={(e) => { setSheetUrl(e.target.value); setTabs([]); setLoadedUrl(''); }} placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0" /></>}</div>
                 <Button type="button" variant="outline" disabled={pending} onClick={loadSheet}>{pending ? 'Checking access…' : source === 'guest_post_anchor' ? 'Load Guest Post Anchor tabs' : 'Test connection & load tabs'}</Button>
                 {tabs.length > 0 && <div><Label>Select project tab</Label><select disabled={lockedLegacyMapping} className={inputClass} value={tabName} onChange={(e) => setSelectedTab(e.target.value)}>{tabs.map((tab) => <option key={tab.gid} value={tab.title}>{tab.title}</option>)}</select><p className="mt-1 text-xs text-[var(--muted)]">{sheetTitle} · Tab ID is handled automatically.</p></div>}</>}
-            <div className="rounded-lg border border-[#b8d7f8] p-3"><p className="font-semibold text-sm">Give this email Editor access</p><p className="mb-2 text-xs text-[var(--muted)]">For existing Sheets, use Share → Editor. New Sheets also need permission to be shared with you.</p>{serviceAccountEmail ? <div className="flex gap-2"><Input readOnly value={serviceAccountEmail}/><Button type="button" variant="outline" onClick={copyEmail}><Copy size={14}/>{copied ? 'Copied' : 'Copy'}</Button></div> : <p className="text-xs text-red-600">Google service account has not been configured in Vercel.</p>}</div>
+            {!newSheet && !newTab && <div className="rounded-lg border border-[#b8d7f8] p-3"><p className="font-semibold text-sm">Share existing sheet with the sync service account</p><p className="mb-2 text-xs text-[var(--muted)]">For an existing spreadsheet, use Google Sheets Share → Editor. New sheets are shared automatically after creation.</p>{serviceAccountEmail ? <div className="flex gap-2"><Input readOnly value={serviceAccountEmail}/><Button type="button" variant="outline" onClick={copyEmail}><Copy size={14}/>{copied ? 'Copied' : 'Copy'}</Button></div> : <p className="text-xs text-red-600">Google service account has not been configured in Vercel.</p>}</div>}
           </div>}
           {step === 3 && <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold">Sheet Structure / Column Mapping</h3><p className="text-xs text-[var(--muted)]">Choose the heading and app data for every column. Reorder with arrows.</p></div><div className="flex gap-2">{!newSheet && <Button type="button" variant="outline" onClick={detectHeaders} disabled={pending || lockedLegacyMapping}>{pending ? 'Reading…' : 'Detect headings'}</Button>}<Button type="button" variant="outline" disabled={lockedLegacyMapping || columns.length >= 26} onClick={() => setColumns((items) => [...items, { column: String.fromCharCode(65+items.length), heading: `Column ${String.fromCharCode(65+items.length)}`, field: 'blank' }])}><Plus size={14}/> Add Column</Button></div></div>
+            {(category === 'Client' || projectCategorySlug(category) === 'onpage') && <div className="rounded-lg border border-[var(--border)] p-3"><p className="mb-2 text-sm font-semibold">Client / Onpage preset</p><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={() => applyClientPreset(false)}>Client Live Link (4 columns)</Button><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={includeMetrics} onChange={e => { setIncludeMetrics(e.target.checked); applyClientPreset(e.target.checked); }}/> Include DR &amp; Traffic</label></div><p className="mt-2 text-xs text-[var(--muted)]">Live Link maps to placement page (fallback: approved site). Manual/unmapped columns are preserved.</p></div>}
             <div className="max-h-[390px] space-y-2 overflow-y-auto pr-1">{columns.map((column, index) => <div key={index} className="grid grid-cols-[35px_minmax(0,1fr)] items-center gap-2 rounded-lg border border-[var(--border)] p-2 sm:grid-cols-[40px_1fr_1fr_90px]">
               <span className="text-center text-sm font-bold">{column.column}</span>
               <div><Label>Heading</Label><Input disabled={lockedLegacyMapping} value={column.heading} onChange={(e) => editColumn(index, { heading: e.target.value })}/></div>
@@ -221,7 +248,7 @@ export default function ProjectFormDialog({ project, serviceAccountEmail }: { pr
             <div className="grid gap-3 sm:grid-cols-3">{[['Category',category],['Sheet',newSheet ? newTitle : sheetTitle || 'Guest Post Anchor'],['Tab',tabName]].map(([label,value]) => <div key={label} className="rounded-lg bg-[var(--canvas)] p-3"><p className="text-xs text-[var(--muted)]">{label}</p><p className="truncate font-medium">{value}</p></div>)}</div>
             <div><h3 className="mb-2 font-semibold">Sheet Preview <span className="text-xs font-normal text-[var(--muted)]">(example values, no writes)</span></h3><div className="overflow-x-auto rounded-lg border border-[var(--border)]"><table className="min-w-max text-sm"><thead><tr>{sample.headings.map((heading,index) => <th key={index} className="border-r border-[var(--border)] bg-[var(--canvas)] p-3 text-left">{heading}</th>)}</tr></thead><tbody><tr>{sample.values.map((value,index) => <td key={index} className="border-r border-[var(--border)] p-3 text-[var(--muted)]">{String(value || '—')}</td>)}</tr></tbody></table></div></div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)}/> Enable Google Sheet sync</label>
-            {source === 'guest_post_anchor' ? <p className="text-xs text-[var(--muted)]">The existing shared Apps Script continues handling Guest Post Anchor statuses; do not install duplicate per-project triggers on the same workbook.</p> : <p className="text-xs text-[var(--muted)]">After saving, copy the project-specific Apps Script from Sheet Details and install its edit trigger once in Google Sheets.</p>}
+            {source === 'guest_post_anchor' ? <p className="text-xs text-[var(--muted)]">The existing workbook-level Apps Script is expected to handle Guest Post Anchor tabs, including this new tab; do not install duplicate per-project triggers on the same workbook.</p> : <p className="text-xs text-[var(--muted)]">After saving, copy the project-specific Apps Script from Sheet Details and install its edit trigger once in Google Sheets.</p>}
             {!newSheet && sheetUrl && <a href={sheetUrl} rel="noreferrer" target="_blank" className="inline-flex items-center gap-1 text-sm text-[var(--brand)]">Open connected Sheet <ExternalLink size={13}/></a>}
           </div>}
           {notice && <p role="status" className="rounded-lg bg-[#e6f4ea] p-3 text-xs text-[#188038]">{notice}</p>}
