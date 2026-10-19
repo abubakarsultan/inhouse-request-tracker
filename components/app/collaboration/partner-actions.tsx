@@ -1,25 +1,17 @@
 'use client';
 import {useState} from 'react';
 import {useRouter} from 'next/navigation';
-import {addCollaborationLink,allocatePreviouslyGivenLink,connectPartnerSheet,createCollaborationDeal,updateCollaborationLinkStatus,retryCollaborationLinkSync,fixCollaborationSheetAccess,prepareExistingCollaborationSheet,assignCollaborationOwner,fixAccessForPastedCollaborationSheet} from '@/services/collaboration';
+import {addCollaborationLink,allocatePreviouslyGivenLink,connectPartnerSheet,createCollaborationDeal,updateCollaborationLinkStatus,retryCollaborationLinkSync} from '@/services/collaboration';
 import {COLLAB_STATUSES} from '@/lib/collaboration-core';
 
 const cls='w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm';
 export function ConnectPartnerSheet({partnerId}:{partnerId:string}){
   const router=useRouter();const[url,setUrl]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
-  async function prepare(){setBusy(true);setError('');try{setError(await prepareExistingCollaborationSheet(partnerId,url));router.refresh();}catch(e){setError(e instanceof Error?e.message:'Preparation failed');}finally{setBusy(false)}}
-  async function fixAccess(){setBusy(true);setError('');try{setError(await fixAccessForPastedCollaborationSheet(partnerId,url));router.refresh();}catch(e){setError(e instanceof Error?e.message:'Access repair failed. Share the Sheet with the service account as Editor, then retry.');}finally{setBusy(false)}}
   return <form className="flex flex-col gap-2" onSubmit={async e=>{e.preventDefault();setBusy(true);setError('');try{const msg=await connectPartnerSheet(partnerId,url);setError(msg);router.refresh();}catch(e){setError(e instanceof Error?e.message:'Connection failed');}finally{setBusy(false);}}}>
     <input aria-label="Google Sheet URL" className={cls} placeholder="Paste Google Sheet URL after uploading and converting Excel template" value={url} onChange={e=>setUrl(e.target.value)} required/>
-    <div className="flex flex-wrap gap-2"><button disabled={busy} className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy?'Connecting…':'Connect & Validate Sheet'}</button><button type="button" disabled={busy||!url.trim()} onClick={prepare} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold disabled:opacity-50">{busy?'Preparing…':'Prepare this sheet'}</button><button type="button" disabled={busy||!url.trim()} onClick={fixAccess} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold disabled:opacity-50">{busy?'Fixing…':'Fix access'}</button></div>
+    <button disabled={busy} className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy?'Connecting…':'Connect & Validate Sheet'}</button>
     {error&&<p role="status" className="text-xs text-[var(--muted)]">{error}</p>}
   </form>;
-}
-export function AssignCollaborationOwner({partnerId,users}:{partnerId:string;users:Array<{id:string;email:string;name:string|null}>}){const router=useRouter();const[owner,setOwner]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState('');return <form className="flex flex-wrap items-center gap-2" onSubmit={async e=>{e.preventDefault();if(!owner)return;setBusy(true);setMessage('');try{setMessage(await assignCollaborationOwner(partnerId,owner));router.refresh()}catch(e){setMessage(e instanceof Error?e.message:'Assignment failed')}finally{setBusy(false)}}}><select aria-label="Assign collaboration owner" required value={owner} onChange={e=>setOwner(e.target.value)} className={cls}><option value="">Choose owner…</option>{users.map(u=><option key={u.id} value={u.id}>{u.name||u.email} · {u.email}</option>)}</select><button disabled={busy||!owner} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold">{busy?'Saving…':'Assign owner'}</button>{message&&<span role="status" className="text-xs text-[var(--muted)]">{message}</span>}</form>}
-export function CollaborationSheetRepair({partnerId, sheetUrl, showFix}:{partnerId:string;sheetUrl:string;showFix:boolean}) {
-  const router=useRouter();const[busy,setBusy]=useState(false),[message,setMessage]=useState('');
-  async function run(kind:'fix'|'prepare'){setBusy(true);setMessage('');try{setMessage(kind==='fix'?await fixCollaborationSheetAccess(partnerId):await prepareExistingCollaborationSheet(partnerId,sheetUrl));router.refresh();}catch(e){setMessage(e instanceof Error?e.message:'Sheet repair failed');}finally{setBusy(false);}}
-  return <div className="flex flex-wrap gap-2">{showFix&&<button type="button" disabled={busy} onClick={()=>run('fix')} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold">{busy?'Working…':'Fix access'}</button>}<button type="button" disabled={busy||!sheetUrl} onClick={()=>run('prepare')} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold">{busy?'Preparing…':'Prepare this sheet'}</button>{message&&<span role="status" className="text-xs text-[var(--muted)]">{message}</span>}</div>;
 }
 export function DealCreator({partnerId,give,receive}:{partnerId:string;give:number;receive:number}){
   const router=useRouter();const[g,setG]=useState(give),[r,setR]=useState(receive),[busy,setBusy]=useState(false),[message,setMessage]=useState('');

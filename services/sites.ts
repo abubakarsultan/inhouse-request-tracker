@@ -7,18 +7,18 @@ import { extractHost } from '@/lib/domain';
 import { revalidatePath } from 'next/cache';
 import { normalizeImportedSiteStatus } from '@/lib/sheet-webhook';
 import { appendRequestToTeamSheet, type RequestSheetRecord } from '@/services/google-sheet-sync';
-import { requireAdminForAction, requireActiveUserForAction } from '@/lib/auth';
+import { requireAdminForAction } from '@/lib/auth';
 import { adminClient } from '@/lib/supabase-admin';
 
 /** Read one page, not the entire history of a project. */
 export async function getProjectSites(projectId: string, page = 1, pageSize = 100) {
-  await requireActiveUserForAction();
+  await requireAdminForAction();
   const supabase = await createClient();
   const safePage = Number.isSafeInteger(page) && page > 0 ? page : 1;
   const size = Math.min(Math.max(pageSize, 1), 100);
   const from = (safePage - 1) * size;
   const { data, error } = await supabase.from('project_sites')
-    .select('id,website,opportunity,anchor,dr,traffic,status,note,request_id,requests(sheet_flag,placement_page,target_url,deadline,assign_to)')
+    .select('id,website,opportunity,anchor,dr,traffic,status,note,request_id')
     .eq('project_id', projectId).is('archived_at', null)
     .order('created_at', { ascending: false }).range(from, from + size - 1);
   if (error) throw error;
@@ -31,7 +31,7 @@ export async function getProjectSites(projectId: string, page = 1, pageSize = 10
  * checked above. A bounded four-count fallback keeps older DBs usable.
  */
 export async function getProjectSiteCounts(projectId: string) {
-  await requireActiveUserForAction();
+  await requireAdminForAction();
   try {
     const { data, error } = await adminClient.rpc('project_site_status_counts', { p_project_id: projectId });
     if (!error) {

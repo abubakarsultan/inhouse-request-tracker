@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SHEET_DATA_FIELDS } from '@/lib/project-sheet';
+import { PROJECT_CATEGORIES, SHEET_DATA_FIELDS } from '@/lib/project-sheet';
 import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 
 export const REQUEST_STATUSES = ['Request shared', 'Live', 'Rejected'] as const;
@@ -37,7 +37,7 @@ const columnMappingSchema = z.array(z.object({
 export const projectSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
   outreach_project_name: z.string().trim().optional().nullable(),
-  category: z.string().trim().min(2).max(70),
+  category: z.enum(PROJECT_CATEGORIES),
   sheet_source: z.enum(['guest_post_anchor', 'custom_sheet']),
   sheet_url: z.string().trim().optional().nullable().superRefine((value, ctx) => {
     if (!value) return;
@@ -46,8 +46,6 @@ export const projectSchema = z.object({
   guest_post_tab_name: z.string().trim().optional().nullable(),
   column_mapping: columnMappingSchema,
   create_new_sheet: z.boolean().optional().default(false),
-  create_new_tab: z.boolean().optional().default(false),
-  new_tab_name: z.string().trim().max(100).optional().nullable(),
   new_sheet_title: z.string().trim().max(150).optional().nullable(),
   sync_enabled: z.boolean().default(true),
 });

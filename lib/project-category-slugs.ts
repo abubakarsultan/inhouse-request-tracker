@@ -9,6 +9,6 @@ export const PROJECT_CATEGORY_SLUGS: Record<ProjectCategory, string> = {
   Others: 'others',
 };
 
-export function projectCategorySlug(category: string): string {
-  return PROJECT_CATEGORY_SLUGS[category as ProjectCategory] ?? category.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+export function projectCategorySlug(category: ProjectCategory): string {
+  return PROJECT_CATEGORY_SLUGS[category];
 }

@@ -49,25 +49,6 @@ export const NEW_SHEET_COLUMN_MAPPING: ColumnMapping[] = [
   { column: 'H', heading: 'Created By Email', field: 'created_by_email' },
 ];
 
-export const CLIENT_LIVE_LINK_COLUMN_MAPPING: ColumnMapping[] = [
-  { column: 'A', heading: 'Live Link', field: 'placement_page' },
-  { column: 'B', heading: 'Anchor', field: 'anchor' },
-  { column: 'C', heading: 'Target Page', field: 'target_url' },
-  { column: 'D', heading: 'Status', field: 'status' },
-];
-export const CLIENT_LIVE_LINK_WITH_METRICS_MAPPING: ColumnMapping[] = [
-  ...CLIENT_LIVE_LINK_COLUMN_MAPPING.slice(0, 3),
-  { column: 'D', heading: 'DR', field: 'dr' },
-  { column: 'E', heading: 'Traffic', field: 'traffic' },
-  { column: 'F', heading: 'Status', field: 'status' },
-];
-
-export function validateGuestPostTabName(value: unknown): string {
-  const name = String(value ?? '').trim();
-  if (!name || name.length > 100 || /[\[\]*?:\/\\]/.test(name)) throw new Error('Tab name must be 1–100 characters and cannot contain [ ] * ? : / or backslash.');
-  return name;
-}
-
 export function normalizeColumnMapping(value: unknown): ColumnMapping[] {
   if (!Array.isArray(value) || value.length === 0) return DEFAULT_COLUMN_MAPPING.map((item) => ({ ...item }));
   return value
@@ -92,7 +73,6 @@ export function columnNumber(column: string) {
 
 export function valueForField(field: SheetDataField, record: Record<string, any>, staticValue = ''): string | number {
   if (field === 'static') return staticValue;
-  if (field === 'placement_page') return String(record.placement_page || record.approved_site || '');
   if (field === 'blank') return '';
   const aliases: Record<string, string[]> = {
     approved_site: ['approved_site', 'website'],

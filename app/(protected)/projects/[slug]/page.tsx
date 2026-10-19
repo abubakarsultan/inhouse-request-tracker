@@ -6,23 +6,15 @@ import Link from 'next/link';
 import { UploadCloud } from 'lucide-react';
 import { headers } from 'next/headers';
 import ProjectSheetDetails from '@/components/app/project-sheet-details';
-import ProjectSheetRecovery from '@/components/app/project-sheet-recovery';
 import { buildProjectTriggerSnippet } from '@/lib/sheet-webhook';
-import { requireActiveProfile } from '@/lib/auth';
+import { requireAdminProfile } from '@/lib/auth';
 import { normalizeColumnMapping, SHEET_DATA_FIELDS } from '@/lib/project-sheet';
-import { getConnectionStatus } from '@/lib/google-user-auth';
-import { getServiceAccountEmail } from '@/lib/google-sheet-setup';
-import { getMissingRequestFields } from '@/lib/request-completeness';
 
 export default async function ProjectPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ page?: string }> }) {
-  const profile = await requireActiveProfile();
-  const isAdmin = profile.role === 'admin';
+  await requireAdminProfile();
   const [{ slug }, { page: pageParam }] = await Promise.all([params, searchParams]);
   const page = Math.max(1, Math.min(100000, Number.isSafeInteger(Number(pageParam)) ? Number(pageParam || 1) : 1));
   const project = await getProjectBySlug(slug);
-  const ownerConnection = project.sheet_owner_user_id ? await getConnectionStatus(String(project.sheet_owner_user_id)).catch(() => null) : null;
-  const serviceAccountEmail = getServiceAccountEmail();
-  const projectForSheetDetails = { ...project, sheet_owner_email: ownerConnection?.email || null };
   const [sites, counts] = await Promise.all([getProjectSites(project.id, page), getProjectSiteCounts(project.id)]);
   const requestHeaders = await headers();
   const host = requestHeaders.get('x-forwarded-host') || requestHeaders.get('host') || 'YOUR-VERCEL-DOMAIN';
@@ -34,7 +26,6 @@ export default async function ProjectPage({ params, searchParams }: { params: Pr
 
   return (
     <div>
-      {(project.sheet_setup_state === 'pending' || project.sheet_setup_state === 'error' || project.tab_setup_state === 'pending' || project.tab_setup_state === 'error') && <div role="status" className={`mb-5 rounded-xl border p-4 text-sm ${project.sheet_setup_state === 'error' ? 'border-[#f2b8b5] bg-[#fce8e6] text-[#b3261e]' : 'border-[#f3dfad] bg-[#fef7e0] text-[#785000]'}`}><strong>Google Sheet setup: {project.sheet_setup_state === 'error' || project.sheet_setup_state === 'pending' ? project.sheet_setup_state : `tab ${project.tab_setup_state}`}</strong>{(project.sheet_setup_error || project.tab_setup_error) && <p className="mt-1">{project.sheet_setup_error || project.tab_setup_error}</p>}</div>}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[var(--text)]">{project.name}</h1>
@@ -42,7 +33,8 @@ export default async function ProjectPage({ params, searchParams }: { params: Pr
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.sync_enabled ? 'bg-[#e8f0fe] text-[#174ea6]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.sync_enabled ? 'Sync on' : 'Sync off'}</span>
-          {isAdmin && <><ProjectSheetDetails project={projectForSheetDetails} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={appScript} serviceAccountEmail={serviceAccountEmail} /><ProjectSheetRecovery projectId={project.id} hasSheet={Boolean(project.google_sheet_id)} canCreateSheet={project.sheet_source === 'custom_sheet'} setupState={project.sheet_setup_state} tabSetupState={project.tab_setup_state} /><Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]"><UploadCloud size={15} /> Import sites</Link></>}
+          <ProjectSheetDetails project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={appScript} />
+          <Link href={`/import?project=${project.id}`} className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]"><UploadCloud size={15} /> Import sites</Link>
         </div>
       </div>
 
@@ -93,9 +85,7 @@ export default async function ProjectPage({ params, searchParams }: { params: Pr
                 <td className="p-4 text-[var(--muted)]">{site.dr ?? '—'}</td>
                 <td className="p-4 text-[var(--muted)]">{site.traffic ?? '—'}</td>
                 <td className="p-4">
-                  {isAdmin && site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} />{!site.request_id && <p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p>}</div>}
-                  {site.requests?.sheet_flag === 'Removed' && <p title="Sheet status is Removed; app status is preserved." className="mt-1 inline-block rounded-full bg-[#fce8e6] px-2 py-1 text-[10px] font-bold text-[#b3261e]">Removed in sheet</p>}
-                  {site.request_id && getMissingRequestFields({placement_page:site.requests?.placement_page || site.opportunity,target_url:site.requests?.target_url,anchor:site.anchor,assign_to:site.requests?.assign_to,deadline:site.requests?.deadline,dr:site.dr,traffic:site.traffic},project).length>0 && <p title={`Missing: ${getMissingRequestFields({placement_page:site.requests?.placement_page || site.opportunity,target_url:site.requests?.target_url,anchor:site.anchor,assign_to:site.requests?.assign_to,deadline:site.requests?.deadline,dr:site.dr,traffic:site.traffic},project).join(', ')}`} className="mt-1 inline-block rounded-full bg-[#fef7e0] px-2 py-1 text-[10px] font-bold text-[#8a6200]">Incomplete</p>}
+                  {site.request_id ? <StatusControl id={site.request_id} status={site.status || 'Request shared'} /> : <div><StatusBadge status={site.status || 'Request shared'} /><p className="mt-1 text-[10px] text-[var(--muted)]">Unlinked row</p></div>}
                 </td>
                 <td className="max-w-xs truncate p-4 text-[var(--muted)]" title={site.note}>{site.note || '—'}</td>
               </tr>

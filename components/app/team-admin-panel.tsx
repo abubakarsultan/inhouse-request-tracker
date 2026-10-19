@@ -10,7 +10,6 @@ import {
   resetTeamUserMapping,
   setTeamUserRole,
   setTeamUserStatus,
-  setTeamUserSheetName,
   type TeamAdminData,
 } from '@/services/team';
 
@@ -24,8 +23,6 @@ export default function TeamAdminPanel({ data }: { data: TeamAdminData }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [reassignTo, setReassignTo] = useState<Record<string, string>>({});
-  const [sheetNames, setSheetNames] = useState<Record<string, string>>({});
-  const [roleSelections, setRoleSelections] = useState<Record<string, 'admin'|'member'>>({});
   const pendingUsers = useMemo(() => data.users.filter((user) => user.status === 'pending'), [data.users]);
   const activeNames = useMemo(() => data.names.filter((name) => name.active), [data.names]);
   const invalidAssignments = useMemo(() => data.unmatched.filter((row) => row.invalid), [data.unmatched]);
@@ -83,8 +80,8 @@ export default function TeamAdminPanel({ data }: { data: TeamAdminData }) {
             <tbody>
               {data.users.map((user) => <tr key={user.id} className="border-t border-[var(--border)] align-top">
                 <td className="p-3"><p className="font-semibold">{user.googleName || user.email}</p><p className="text-xs text-[var(--muted)]">{user.email}</p></td>
-                <td className="p-3 font-medium"><div className="flex min-w-44 flex-col gap-1"><select aria-label={`Sheet name for ${user.email}`} value={sheetNames[user.id] ?? user.sheetName ?? ''} onChange={e=>setSheetNames(old=>({...old,[user.id]:e.target.value}))} className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs"><option value="">No sheet name</option>{activeNames.map(name=><option key={name.id} value={name.name} disabled={Boolean(name.claimedBy && name.name !== user.sheetName)}>{name.name}{name.claimedBy && name.name !== user.sheetName ? ' (claimed)' : ''}</option>)}</select><button disabled={pending || (sheetNames[user.id] ?? user.sheetName ?? '') === (user.sheetName ?? '')} onClick={() => run(() => setTeamUserSheetName(user.id, (sheetNames[user.id] ?? user.sheetName) || null))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs">Save name</button></div></td>
-                <td className="p-3">{user.role === 'admin' ? 'Admin' : 'User'}</td>
+                <td className="p-3 font-medium">{user.sheetName || '—'}</td>
+                <td className="p-3 capitalize">{user.role}</td>
                 <td className="p-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${user.status === 'active' ? 'bg-[#e6f4ea] text-[#188038]' : user.status === 'disabled' ? 'bg-[#fce8e6] text-[#c5221f]' : 'bg-[#fef7e0] text-[#b06000]'}`}>{user.status}</span></td>
                 <td className="p-3 text-right font-semibold">{user.counts.assigned}</td><td className="p-3 text-right text-[#188038]">{user.counts.live}</td><td className="p-3 text-right text-[#b06000]">{user.counts.pending}</td><td className="p-3 text-right text-[#c5221f]">{user.counts.rejected}</td><td className="p-3 text-right text-[#c5221f]">{user.counts.overdue}</td>
                 <td className="p-3 text-xs text-[var(--muted)]">{formatDate(user.lastLoginAt)}</td>
@@ -92,7 +89,7 @@ export default function TeamAdminPanel({ data }: { data: TeamAdminData }) {
                   <Link href={`/team/${user.id}`} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs">View as user</Link>
                   {user.status === 'pending' && <><button disabled={pending || !user.sheetName} onClick={() => run(() => approveTeamUser(user.id))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><UserRoundCheck size={13} className="inline" /> Approve</button><button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'disabled'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[#c5221f]"><UserRoundX size={13} className="inline" /> Reject</button></>}
                   {user.status === 'active' ? <button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'disabled'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><UserRoundX size={13} className="inline" /> Disable</button> : user.status === 'disabled' && <button disabled={pending} onClick={() => run(() => setTeamUserStatus(user.id, 'active'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><UserRoundCheck size={13} className="inline" /> Enable</button>}
-                  <label className="flex items-center gap-1 text-xs"><Shield size={13}/><select aria-label={`Role for ${user.email}`} value={roleSelections[user.id] ?? user.role} disabled={pending} onChange={event=>{const next=event.target.value as 'admin'|'member';setRoleSelections(old=>({...old,[user.id]:next}));if(next!==user.role&&window.confirm(`Change ${user.email} role from ${user.role==='admin'?'Admin':'User'} to ${next==='admin'?'Admin':'User'}?`))run(()=>setTeamUserRole(user.id,next));else setRoleSelections(old=>({...old,[user.id]:user.role}));}} className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-1"><option value="member">User</option><option value="admin">Admin</option></select></label>
+                  {user.role === 'admin' ? <button disabled={pending} onClick={() => run(() => setTeamUserRole(user.id, 'member'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><ShieldOff size={13} className="inline" /> Member</button> : <button disabled={pending} onClick={() => run(() => setTeamUserRole(user.id, 'admin'))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><Shield size={13} className="inline" /> Admin</button>}
                   <button disabled={pending} onClick={() => run(() => resetTeamUserMapping(user.id))} className="rounded-md border border-[var(--border)] px-2 py-1 text-xs"><RotateCcw size={13} className="inline" /> Reset name</button>
                 </div></td>
               </tr>)}

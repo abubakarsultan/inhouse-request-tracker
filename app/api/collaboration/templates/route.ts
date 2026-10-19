@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireActiveUserForAction } from '@/lib/auth';
+import { requireAdminForAction } from '@/lib/auth';
 import { collaborationWorkbookTemplate } from '@/lib/collaboration-csv';
 export const runtime='nodejs';
 export async function GET(request:NextRequest){
-  try { await requireActiveUserForAction(); }
-  catch { return NextResponse.json({error:'Sign in with an active team account to download templates.'},{status:403}); }
+  try { await requireAdminForAction(); }
+  catch { return NextResponse.json({error:'Admin sign-in required'},{status:403}); }
   try {
     const partner=new URL(request.url).searchParams.get('partner')||'Partner';
     const workbook=collaborationWorkbookTemplate(partner.slice(0,90));

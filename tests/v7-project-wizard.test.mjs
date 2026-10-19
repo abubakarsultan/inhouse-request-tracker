@@ -51,7 +51,7 @@ test('existing Guest Post Anchor project mapping is protected on edits', () => {
 
 test('wizard includes 4 categories and all key setup steps', () => {
   const form=read('components/app/project-form-dialog.tsx');
-  for(const fragment of ['Basic info','Sheet source','Columns','Preview & save','Detect headings','Test connection & load tabs','Create New Google Sheet','Existing Guest Post Anchor','Share existing sheet with the sync service account']) {
+  for(const fragment of ['Basic info','Sheet source','Columns','Preview & save','Detect headings','Test connection & load tabs','Create New Google Sheet','Existing Guest Post Anchor','Give this email Editor access']) {
     assert.ok(form.includes(fragment),`wizard missing ${fragment}`);
   }
   assert.match(read('lib/project-sheet.ts'), /\['Inhouse', 'Client', 'On Page', 'Others'\]/);
@@ -64,7 +64,7 @@ test('importer uses configured columns and Google new-sheet creation seeds headi
   assert.match(sync,/readCell\(row, 'traffic', 4\)/);
   assert.match(sync,/readCell\(row, 'status', 5\)/);
   const create=read('lib/google-sheet-setup.ts');
-  assert.match(read('lib/google-sheet-factory.ts'),/headers: string\[\]/);
-  assert.match(read('lib/google-sheet-factory.ts'),/spreadsheets\.values\.update/);
+  assert.match(create,/const headers = columnMapping\.map\(\(item\) => item\.heading\)/);
+  assert.match(create,/spreadsheets\.values\.update/);
   assert.match(read('components/app/project-sheet-details.tsx'), /Open Sheet/);
 });

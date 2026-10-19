@@ -18,8 +18,8 @@ export default async function CollaborationsPage(){
       <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><Sheet className="text-[#188038]" size={18}/><div className="mt-2 text-2xl font-bold">{partners.filter(p=>p.sheet_setup_state==='connected').length}</div><p className="text-xs text-[var(--muted)]">Connected Sheets</p></div>
       <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><Link2 className="text-[var(--brand)]" size={18}/><div className="mt-2 text-2xl font-bold">Flexible</div><p className="text-xs text-[var(--muted)]">1:1, 2:1 and custom ratios</p></div>
     </div>
-    <details className="rounded-2xl" open={!partners.length}><summary className="mb-3 cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 text-sm font-bold">+ Create Collaboration Partner</summary><PartnerWizard serviceAccountEmail={getServiceAccountEmail()}/></details>
-    <section><h2 className="mb-3 text-lg font-bold">{profile.role==='admin' ? 'Team Collaborations' : 'My Partners'}</h2><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+    {profile.role==='admin'&&<details className="rounded-2xl" open={!partners.length}><summary className="mb-3 cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 text-sm font-bold">+ Create Collaboration Partner</summary><PartnerWizard serviceAccountEmail={getServiceAccountEmail()}/></details>}
+    <section><h2 className="mb-3 text-lg font-bold">All Partners</h2><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {partners.map(p=><Link href={`/collaborations/${p.id}`} key={p.id} className="group rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
         <div className="flex items-center justify-between"><h3 className="font-bold">{p.name}</h3><ArrowRight size={17} className="text-[var(--brand)]"/></div>
         <p className="mt-1 text-xs text-[var(--muted)]">{p.email||p.website||'Collaboration partner'}</p>

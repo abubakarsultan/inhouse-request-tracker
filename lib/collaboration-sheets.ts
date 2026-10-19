@@ -1,13 +1,20 @@
 import 'server-only';
 import { google } from 'googleapis';
-import { createSpreadsheetForUser } from '@/lib/google-sheet-factory';
 import { adminClient } from '@/lib/supabase-admin';
-import { COLLAB_STATUSES, COLLAB_HEADERS, COLLAB_SUMMARY_HEADERS, cleanTabName, partnerTabName, quoteA1, spreadsheetTitle, validateCollabHeaders, partnerMetrics, templatePartnerTabName } from '@/lib/collaboration-core';
+import { COLLAB_HEADERS, COLLAB_SUMMARY_HEADERS, cleanTabName, partnerTabName, quoteA1, spreadsheetTitle, validateCollabHeaders, partnerMetrics, templatePartnerTabName } from '@/lib/collaboration-core';
 
 function googleAuth() {
   const scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file'];
+  const oauthClientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const oauthSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const oauthRefresh = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
+  if (oauthClientId && oauthSecret && oauthRefresh) {
+    const auth = new google.auth.OAuth2(oauthClientId, oauthSecret);
+    auth.setCredentials({ refresh_token: oauthRefresh });
+    return auth;
+  }
   const encoded = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!encoded) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is missing. Configure the service account used for server-side sheet sync.');
+  if (!encoded) throw new Error('Google credentials missing. Configure Google OAuth refresh token or GOOGLE_SERVICE_ACCOUNT_JSON on Vercel.');
   let key: { client_email: string; private_key: string };
   try { key = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')); }
   catch { throw new Error('Invalid GOOGLE_SERVICE_ACCOUNT_JSON.'); }
@@ -16,13 +23,13 @@ function googleAuth() {
 function googleSheets() { return google.sheets({ version: 'v4', auth: googleAuth() }); }
 function formatGoogleError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  if (/quota|storage quota/i.test(message)) return 'Google denied creating a Sheet because the service account has no Drive storage quota. Connect your own Google Drive account, or use Download Excel Template & Connect Manually.';
+  if (/quota|storage quota/i.test(message)) return 'Google denied creating a Sheet because the service account has no Drive storage quota. Configure GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN for a connected Google user, or use Download Excel Template & Connect Manually.';
   return message.slice(0, 400);
 }
 
 export type SheetConnection = {
   spreadsheet_id: string; spreadsheet_title: string; our_tab_name: string; partner_tab_name: string; summary_tab_name: string;
-  our_tab_gid: number; partner_tab_gid: number; summary_tab_gid: number; sheet_setup_state?: 'connected' | 'error'; sheet_setup_error?: string | null;
+  our_tab_gid: number; partner_tab_gid: number; summary_tab_gid: number;
 };
 
 function extractSheetId(url: string): string {
@@ -72,63 +79,39 @@ export async function connectCollaborationSheet(url: string, partnerName: string
   };
 }
 
-/** Prepare an existing spreadsheet without overwriting existing A:G rows. Existing header rows are validated before any missing header is written. */
-export async function prepareCollaborationSheet(url: string, partnerName: string): Promise<SheetConnection> {
-  const spreadsheetId = extractSheetId(url);
+export async function autoCreateCollaborationSheet(name: string, adminEmail: string): Promise<SheetConnection> {
   const sheets = googleSheets();
-  let meta;
-  try { meta = await sheets.spreadsheets.get({ spreadsheetId, fields: 'spreadsheetId,properties.title,sheets.properties' }); }
-  catch (error) { throw new Error(`The service account cannot open this Sheet. Share it with the configured service-account email as Editor, then retry. ${formatGoogleError(error)}`); }
-  const ptab = partnerTabName(partnerName);
-  const wanted = [
-    { title: 'Rankviz', headers: [...COLLAB_HEADERS] },
-    { title: ptab, headers: [...COLLAB_HEADERS] },
-    { title: 'Summary', headers: [...COLLAB_SUMMARY_HEADERS] },
-  ];
-  const existing = new Map((meta.data.sheets || []).flatMap(x => x.properties?.title ? [[String(x.properties.title).toLowerCase(), x.properties] as const] : []));
-  const addRequests = wanted.filter(x => !existing.has(x.title.toLowerCase())).map(x => ({ addSheet: { properties: { title: x.title, gridProperties: { frozenRowCount: 1 } } } }));
-  if (addRequests.length) await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: addRequests } });
-  meta = await sheets.spreadsheets.get({ spreadsheetId, fields: 'spreadsheetId,properties.title,sheets.properties' });
-  const props = (meta.data.sheets || []).map(x => x.properties).filter((x): x is NonNullable<typeof x> => Boolean(x?.title));
-  const resolved = wanted.map(x => ({ spec: x, tab: props.find(t => t.title?.toLowerCase() === x.title.toLowerCase())! }));
-  for (const item of resolved) {
-    const range = `${quoteA1(String(item.tab.title))}!A1:${String.fromCharCode(64 + item.spec.headers.length)}1`;
-    const result = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    const row = result.data.values?.[0] || [];
-    if (row.length && item.spec.headers.some((heading, i) => String(row[i] || '').trim().toLowerCase() !== heading.toLowerCase())) {
-      throw new Error(`Tab "${item.tab.title}" has a different header row. Existing data was not changed; use the Excel template or correct the headers manually.`);
-    }
-    if (!row.length) await sheets.spreadsheets.values.update({ spreadsheetId, range, valueInputOption: 'RAW', requestBody: { values: [item.spec.headers] } });
-  }
-  // Hidden Record ID column H is additive; existing A:G data is untouched.
-  for (const item of resolved.slice(0, 2)) {
-    const range = `${quoteA1(String(item.tab.title))}!H1`;
-    const current = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    if (!current.data.values?.[0]?.[0]) await sheets.spreadsheets.values.update({ spreadsheetId, range, valueInputOption: 'RAW', requestBody: { values: [['Record ID']] } });
-  }
-  const gids = new Map<string, number>(props.map(x => [String(x.title).toLowerCase(), Number(x.sheetId)] as [string, number]));
-  return { spreadsheet_id: spreadsheetId, spreadsheet_title: String(meta.data.properties?.title || spreadsheetTitle(partnerName)), our_tab_name: 'Rankviz', partner_tab_name: ptab, summary_tab_name: 'Summary', our_tab_gid: gids.get('rankviz') || 0, partner_tab_gid: gids.get(ptab.toLowerCase()) || 0, summary_tab_gid: gids.get('summary') || 0, sheet_setup_state: 'connected', sheet_setup_error: null };
-}
-
-export async function autoCreateCollaborationSheet(name: string, userId: string, onCreated?: (sheetId: string, url: string) => Promise<void>): Promise<SheetConnection> {
   const title = spreadsheetTitle(name);
   const ptab = partnerTabName(name);
-  const result = await createSpreadsheetForUser({
-    userId, title,
-    tabs: [
-      { title: 'Rankviz', headers: [...COLLAB_HEADERS, 'Record ID'], statusValues: [...COLLAB_STATUSES], hiddenColumns: [7] },
-      { title: ptab, headers: [...COLLAB_HEADERS, 'Record ID'], statusValues: [...COLLAB_STATUSES], hiddenColumns: [7] },
-      { title: 'Summary', headers: [...COLLAB_SUMMARY_HEADERS] },
-    ],
-    onCreated: async (sheet) => { await onCreated?.(sheet.spreadsheetId, sheet.url); },
-  });
-  const byName = (tab: string) => result.tabs.find((item) => item.title === tab)?.gid ?? 0;
-  return {
-    spreadsheet_id: result.spreadsheetId, spreadsheet_title: title,
-    our_tab_name: 'Rankviz', partner_tab_name: ptab, summary_tab_name: 'Summary',
-    our_tab_gid: byName('Rankviz'), partner_tab_gid: byName(ptab), summary_tab_gid: byName('Summary'),
-    sheet_setup_state: result.setupState, sheet_setup_error: result.setupError,
-  };
+  let created;
+  try {
+    created = await sheets.spreadsheets.create({ requestBody: {
+      properties: { title }, sheets: [{ properties: { title: 'Rankviz' } }, { properties: { title: ptab } }, { properties: { title: 'Summary' } }],
+    }, fields: 'spreadsheetId' });
+  } catch (error) { throw new Error(`Automatic Google Sheet creation failed: ${formatGoogleError(error)}`); }
+  const sheetId = created.data.spreadsheetId;
+  if (!sheetId) throw new Error('Google did not return the newly created spreadsheet ID.');
+  try {
+    await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetId, requestBody: { valueInputOption: 'RAW', data: [
+      { range: "'Rankviz'!A1:H1", values: [[...COLLAB_HEADERS, 'Record ID']] },
+      { range: `${quoteA1(ptab)}!A1:H1`, values: [[...COLLAB_HEADERS, 'Record ID']] },
+      { range: "'Summary'!A1:C1", values: [[...COLLAB_SUMMARY_HEADERS]] },
+    ] } });
+    // Service-account-owned files should be explicitly shared. OAuth-owned files
+    // can also be shared (if the permission already exists, a duplicate is harmless).
+    if (adminEmail) {
+      try {
+        await google.drive({ version: 'v3', auth: googleAuth() }).permissions.create({ fileId: sheetId, sendNotificationEmail: false, requestBody: { type: 'user', role: 'writer', emailAddress: adminEmail } });
+      } catch (error) {
+        console.warn('[collab] sheet created but sharing failed:', formatGoogleError(error));
+        throw new Error(`Sheet was created (ID: ${sheetId}), but granting ${adminEmail} Editor access failed. Connect this Sheet manually after granting permission: ${formatGoogleError(error)}`);
+      }
+    }
+    return await connectCollaborationSheet(`https://docs.google.com/spreadsheets/d/${sheetId}/edit`, name);
+  } catch (error) {
+    // Give the user the ID for recovery instead of creating another sheet on retry.
+    throw new Error(`Google Sheet ${sheetId} was created but setup was incomplete. Open https://docs.google.com/spreadsheets/d/${sheetId}/edit and connect it manually. ${formatGoogleError(error)}`);
+  }
 }
 
 function rowForLink(link: any, dealRef: string | null): string[] {

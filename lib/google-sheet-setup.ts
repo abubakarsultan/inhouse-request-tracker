@@ -1,6 +1,6 @@
 import 'server-only';
 import { google } from 'googleapis';
-import { DEFAULT_COLUMN_MAPPING, validateGuestPostTabName, type ColumnMapping, type SheetDataField } from '@/lib/project-sheet';
+import { DEFAULT_COLUMN_MAPPING, type ColumnMapping, type SheetDataField } from '@/lib/project-sheet';
 import { parseGoogleSheetUrl } from '@/lib/google-sheet-url';
 
 function serviceAccountCredentials() {
@@ -103,35 +103,39 @@ export async function inspectProjectTab(sheetUrl: string) {
   return result;
 }
 
-export async function createGuestPostAnchorTab(tabNameInput: string, headers: string[]) {
-  const tabName = validateGuestPostTabName(tabNameInput);
-  const spreadsheetId = process.env.TEAM_SHEET_ID;
-  if (!spreadsheetId) throw new Error('TEAM_SHEET_ID is not configured in Vercel.');
+/** Best effort: some service accounts cannot create files without a Shared Drive. */
+export async function createBlankProjectSpreadsheet(title: string, tab: string, adminEmail: string, columnMapping: ColumnMapping[]) {
   const account = serviceAccountCredentials();
-  const auth = new google.auth.GoogleAuth({ credentials: account, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+  const auth = new google.auth.GoogleAuth({ credentials: account, scopes: [
+    'https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file',
+  ] });
   const sheets = google.sheets({ version: 'v4', auth });
-  const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets(properties(sheetId,title))' });
-  const existing = (meta.data.sheets || []).map(x => x.properties).find(x => String(x?.title || '').toLowerCase() === tabName.toLowerCase());
-  let gid: number;
-  if (existing?.sheetId != null) {
-    gid = Number(existing.sheetId);
-    const row = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${String(existing.title).replace(/'/g,"''")}'!A1:${String.fromCharCode(64 + headers.length)}1` });
-    const values = row.data.values?.[0] || [];
-    if (headers.some((heading,index) => String(values[index] || '').trim().toLowerCase() !== heading.trim().toLowerCase())) throw new Error(`Tab "${existing.title}" already exists but headings do not match. Choose Use Existing Tab and review its mapping; no data was changed.`);
-    return { spreadsheetId, tabName: String(existing.title), gid, created: false };
+  const created = await sheets.spreadsheets.create({ requestBody: {
+    properties: { title }, sheets: [{ properties: { title: tab } }],
+  }, fields: 'spreadsheetId,spreadsheetUrl,sheets(properties(sheetId,title))' });
+  const spreadsheetId = created.data.spreadsheetId;
+  if (!spreadsheetId) throw new Error('Google did not return a spreadsheet ID.');
+  // Initialize column headings in a brand-new spreadsheet. This never touches an
+  // existing Guest Post Anchor workbook or existing row data.
+  const headers = columnMapping.map((item) => item.heading);
+  if (headers.length) {
+    const end = String.fromCharCode(64 + headers.length);
+    const escapedTab = tab.replace(/'/g, "''");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId, range: `'${escapedTab}'!A1:${end}1`, valueInputOption: 'RAW',
+      requestBody: { values: [headers] },
+    });
   }
-  const added = await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: tabName, gridProperties: { frozenRowCount: 1 } } } }] } });
-  gid = Number(added.data.replies?.[0]?.addSheet?.properties?.sheetId);
+  // Never assume the creating service account gave the signed-in user access.
   try {
-    await sheets.spreadsheets.values.update({ spreadsheetId, range: `'${tabName.replace(/'/g,"''")}'!A1:${String.fromCharCode(64 + headers.length)}1`, valueInputOption: 'RAW', requestBody: { values: [headers] } });
-    const statusIndex = headers.findIndex(x => x.trim().toLowerCase() === 'status');
-    const requests: any[] = [{ repeatCell: { range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.78, green: 0.91, blue: 0.80 }, textFormat: { bold: true, foregroundColor: { red: 0.08, green: 0.25, blue: 0.12 } } } }, fields: 'userEnteredFormat(backgroundColor,textFormat)' } }];
-    headers.forEach((heading,index)=>requests.push({updateDimensionProperties:{range:{sheetId:gid,dimension:'COLUMNS',startIndex:index,endIndex:index+1},properties:{pixelSize:Math.min(280,Math.max(110,heading.length*9+36))},fields:'pixelSize'}}));
-    if(statusIndex>=0) requests.push({setDataValidation:{range:{sheetId:gid,startRowIndex:1,endRowIndex:5000,startColumnIndex:statusIndex,endColumnIndex:statusIndex+1},rule:{condition:{type:'ONE_OF_LIST',values:['Request shared','Live','Rejected'].map(userEnteredValue=>({userEnteredValue}))},strict:true,showCustomUi:true}}});
-    await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
-    return { spreadsheetId, tabName, gid, created: true };
+    const drive = google.drive({ version: 'v3', auth });
+    await drive.permissions.create({ fileId: spreadsheetId, sendNotificationEmail: true,
+      requestBody: { type: 'user', role: 'writer', emailAddress: adminEmail }, fields: 'id' });
   } catch (error) {
-    // The project record is retained and the retry action reuses this already-created tab.
-    throw new Error(`Tab "${tabName}" was created but setup failed. Retry tab creation to resume without creating a duplicate. ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Spreadsheet ${spreadsheetId} was created but could not be shared with ${adminEmail}. Share it manually in Google Drive, then connect its URL. ${error instanceof Error ? error.message : ''}`);
   }
+  return {
+    google_sheet_id: spreadsheetId, google_sheet_gid: Number(created.data.sheets?.[0]?.properties?.sheetId ?? 0),
+    sheet_name: title, guest_post_tab_name: tab,
+  };
 }
