@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FolderKanban, ListTodo, Upload, Settings, Search, ScanSearch, HeartPulse, UsersRound, Handshake, PlusCircle, UserRound, type LucideIcon } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, ShieldCheck, ListTodo, Upload, Settings, Search, ScanSearch, HeartPulse, UsersRound, Handshake, PlusCircle, UserRound, type LucideIcon } from 'lucide-react';
 import type { AppRole } from '@/lib/auth-types';
 
 const memberLinks = [
   ['Dashboard', '/dashboard', LayoutDashboard],
+  ['Projects', '/projects', FolderKanban],
   ['My Requests', '/my-requests', ListTodo],
   ['Create Request', '/requests/new', PlusCircle],
   ['Collaborations', '/collaborations', Handshake],
@@ -26,7 +27,7 @@ const adminPrimaryLinks = [
 ] as const;
 
 const adminControlLinks = [
-  ['Team & Approvals', '/team', UsersRound],
+  ['Admin', '/team', ShieldCheck],
   ['Import', '/import', Upload],
   ['Health', '/health', HeartPulse],
   ['Settings', '/settings', Settings],

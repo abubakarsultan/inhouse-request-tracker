@@ -1,7 +1,7 @@
-type RequestStatus = 'Request shared' | 'Live' | 'Rejected';
+type RequestStatus = 'Request shared' | 'Live' | 'Rejected' | 'Removed';
 
 function isRequestStatus(value: string): value is RequestStatus {
-  return value === 'Request shared' || value === 'Live' || value === 'Rejected';
+  return value === 'Request shared' || value === 'Live' || value === 'Rejected' || value === 'Removed';
 }
 
 export type SheetWebhookPayload = {
@@ -30,12 +30,12 @@ export function parseSheetWebhookPayload(input: unknown):
   if (!Number.isInteger(row) || row < 2) return { ok: false, error: 'row must be an integer >= 2.' };
   if (!website) return { ok: false, error: 'website is required.' };
   if (!anchor) return { ok: false, error: 'anchor is required.' };
-  if (!isRequestStatus(status)) return { ok: false, error: 'status must be "Request shared", "Live", or "Rejected".' };
+  if (!isRequestStatus(status)) return { ok: false, error: 'status must be "Request shared", "Live", "Rejected", or "Removed".' };
 
   return { ok: true, value: { tab, spreadsheetId, row, website, anchor, status } };
 }
 
-export function normalizeImportedSiteStatus(value: unknown): RequestStatus {
+export function normalizeImportedSiteStatus(value: unknown): Exclude<RequestStatus, 'Removed'> {
   const cleaned = String(value ?? '').trim().toLowerCase();
   if (cleaned === 'live') return 'Live';
   if (cleaned === 'rejected' || cleaned === 'reject') return 'Rejected';
@@ -83,7 +83,7 @@ function onSheetEdit(e) {
     const anchor = String(row[2] || '').trim();
     const status = String(row[5] || '').trim();
     if (!website || !anchor) return;
-    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected') return;
+    if (status !== 'Request shared' && status !== 'Live' && status !== 'Rejected' && status !== 'Removed') return;
 
     const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
       method: 'post',
@@ -91,6 +91,7 @@ function onSheetEdit(e) {
       headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },
       payload: JSON.stringify({
         tab: sheet.getName(),
+        spreadsheetId: SpreadsheetApp.getActive().getId(),
         row: sheetRow,
         website: website,
         anchor: anchor,
@@ -130,7 +131,7 @@ export function buildProjectTriggerSnippet(siteUrl: string, project: {
   const anchorCol = colNum('anchor', 3);
   const statusCol = colNum('status', 6);
   const tab = String(project.guest_post_tab_name || '');
-  const spreadsheetId = project.sheet_source === 'custom_sheet' ? String(project.google_sheet_id || '') : '';
+  const spreadsheetId = String(project.google_sheet_id || (project.sheet_source === 'guest_post_anchor' ? process.env.TEAM_SHEET_ID || '' : ''));
   // Stable short identifier, independent of Google tab names / special characters.
   const key = String(project.id || `${spreadsheetId}:${tab}`);
   let hash = 2166136261;
@@ -180,7 +181,7 @@ function ${handler}(e) {
     const website = String(sheet.getRange(sheetRow, WEBSITE_COLUMN).getDisplayValue() || '').trim();
     const anchor = String(sheet.getRange(sheetRow, ANCHOR_COLUMN).getDisplayValue() || '').trim();
     const status = String(sheet.getRange(sheetRow, STATUS_COLUMN).getDisplayValue() || '').trim();
-    if (!website || !anchor || !['Request shared', 'Live', 'Rejected'].includes(status)) continue;
+    if (!website || !anchor || !['Request shared', 'Live', 'Rejected', 'Removed'].includes(status)) continue;
     const response = UrlFetchApp.fetch(INHOUSE_REQUEST_WEBHOOK_URL, {
       method: 'post', contentType: 'application/json',
       headers: { 'x-sheet-webhook-secret': SHEET_WEBHOOK_SECRET },

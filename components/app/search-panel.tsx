@@ -63,7 +63,7 @@ export default function SearchPanel() {
                 <p className="mt-1 text-xs leading-5 text-[var(--muted)]"><Highlight text={row.client} query={query} /> · <Highlight text={row.sub_project || '-'} query={query} /> · anchor: <Highlight text={row.anchor || '-'} query={query} /> · <Highlight text={row.assign_to || 'unassigned'} query={query} /> · {new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(row.created_at))}</p>
                 <p className="mt-0.5 truncate text-[11px] text-[var(--muted)]" title={row.target_url}><Highlight text={row.target_url || 'Not available — imported from sheet'} query={query} /></p>
               </div>
-              <StatusControl id={row.id} status={row.status} syncState={row.sync_state} />
+              <div className="flex flex-wrap items-center gap-1.5"><StatusControl id={row.id} status={row.status} syncState={row.sync_state} />{row.sheet_flag === 'Removed' && <span title="Sheet status is Removed; app status is preserved." className="rounded-full bg-[#fce8e6] px-2 py-1 text-[10px] font-bold text-[#b3261e]">Removed in sheet</span>}{Boolean(row.missing_fields?.length) && <span title={`Missing: ${(row.missing_fields||[]).join(', ')}`} className="rounded-full bg-[#fef7e0] px-2 py-1 text-[10px] font-bold text-[#8a6200]">Incomplete</span>}</div>
             </div>
             <div className="mt-2 flex gap-3"><Link href={`/projects/${row.project_slug}`} className="text-xs font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Open project →</Link><Link href={`/requests/${row.id}/edit`} className="text-xs font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Edit request →</Link></div>
           </article>

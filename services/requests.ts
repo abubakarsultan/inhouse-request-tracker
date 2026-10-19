@@ -59,18 +59,19 @@ async function assertProjectDomainAvailable(projectId: string, approvedSite: str
   }
 }
 
-export async function getRequests(filters?: { status?: string; project_id?: string }, page = 1, pageSize = 50) {
+export async function getRequests(filters?: { status?: string; project_id?: string; incomplete?: boolean }, page = 1, pageSize = 50) {
   await requireAdminForAction();
   const supabase = await createClient();
   const safePage = Number.isSafeInteger(page) && page > 0 ? page : 1;
   const size = Math.min(Math.max(pageSize, 1), 100);
   let query = supabase
     .from('requests')
-    .select('id,project_id,approved_site,anchor,assign_to,created_by_email,created_by_name,deadline,status,sync_state,sync_error,team_tab,team_row,source,created_at,projects(id,name,slug)', { count: 'exact' })
+    .select('id,project_id,approved_site,placement_page,target_url,anchor,assign_to,assigned_user_id,created_by_email,created_by_name,deadline,status,sheet_flag,sync_state,sync_error,team_tab,team_row,source,created_at,projects(id,name,slug,category,column_mapping),project_sites(dr,traffic)', { count: 'exact' })
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (filters?.status) query = query.eq('status', filters.status);
   if (filters?.project_id) query = query.eq('project_id', filters.project_id);
+  if (filters?.incomplete) query = query.or('placement_page.is.null,placement_page.eq.,target_url.is.null,target_url.eq.,anchor.is.null,anchor.eq.,assign_to.is.null,assign_to.eq.,deadline.is.null');
   const from = (safePage - 1) * size;
   const { data, error, count } = await query.range(from, from + size - 1);
   if (error) throw error;
@@ -99,6 +100,7 @@ export async function getAutocompleteOptions() {
 
 async function resolveAssignee(profile: Awaited<ReturnType<typeof requireActiveUserForAction>>, requested: string | null) {
   const supabase = await createClient();
+  if (profile.role === 'member' && !profile.sheet_name) return { assignTo: profile.google_name || profile.email.split('@')[0], assignedUserId: profile.id };
   const assignTo = profile.role === 'member' ? profile.sheet_name : (cleanOptional(requested) || profile.sheet_name);
   if (!assignTo) return { assignTo: null, assignedUserId: null };
   const { data: allowedName, error: nameError } = await supabase.from('team_names').select('name').eq('active', true).ilike('name', assignTo).maybeSingle();
@@ -494,6 +496,12 @@ export type DashboardActivityRow = {
   live_date: string | null;
   sync_state: string;
   sync_error: string | null;
+  sheet_flag?: string | null;
+  placement_page?: string | null;
+  target_url?: string | null;
+  anchor?: string | null;
+  deadline?: string | null;
+  project_column_mapping?: unknown;
   projects: { name: string; slug: string } | null;
 };
 
@@ -515,6 +523,7 @@ export type DashboardOverview = {
     rejected: number;
     failedSync: number;
     thisMonth: number;
+    incomplete: number;
   };
   recent: DashboardActivityRow[];
   becameLive: DashboardActivityRow[];
@@ -553,6 +562,12 @@ function normalizeDashboardActivityRows(rows: Array<{
   live_date: unknown;
   sync_state: unknown;
   sync_error: unknown;
+  sheet_flag?: unknown;
+  placement_page?: unknown;
+  target_url?: unknown;
+  anchor?: unknown;
+  deadline?: unknown;
+  project_column_mapping?: unknown;
   projects: unknown;
 }> | null | undefined): DashboardActivityRow[] {
   return (rows ?? []).map((row) => ({
@@ -564,6 +579,12 @@ function normalizeDashboardActivityRows(rows: Array<{
     live_date: row.live_date == null ? null : String(row.live_date),
     sync_state: String(row.sync_state),
     sync_error: row.sync_error == null ? null : String(row.sync_error),
+    sheet_flag: row.sheet_flag == null ? null : String(row.sheet_flag),
+    placement_page: row.placement_page == null ? null : String(row.placement_page),
+    target_url: row.target_url == null ? null : String(row.target_url),
+    anchor: row.anchor == null ? null : String(row.anchor),
+    deadline: row.deadline == null ? null : String(row.deadline),
+    project_column_mapping: row.project_column_mapping,
     projects: normalizeProjectSummary(row.projects),
   }));
 }
@@ -607,6 +628,12 @@ export async function getDashboardOverview(): Promise<DashboardOverview> {
     live_date: row.live_date == null ? null : String(row.live_date),
     sync_state: String(row.sync_state ?? 'skipped'),
     sync_error: row.sync_error == null ? null : String(row.sync_error),
+    sheet_flag: row.sheet_flag == null ? null : String(row.sheet_flag),
+    placement_page: row.placement_page == null ? null : String(row.placement_page),
+    target_url: row.target_url == null ? null : String(row.target_url),
+    anchor: row.anchor == null ? null : String(row.anchor),
+    deadline: row.deadline == null ? null : String(row.deadline),
+    project_column_mapping: row.project_column_mapping,
     projects: row.project_name ? { name: String(row.project_name), slug: String(row.project_slug ?? '') } : null,
   });
 
@@ -648,6 +675,7 @@ export async function getDashboardOverview(): Promise<DashboardOverview> {
       rejected: Number(stats.rejected ?? 0),
       failedSync: Number(stats.failedSync ?? 0),
       thisMonth: Number(stats.thisMonth ?? 0),
+      incomplete: Number(stats.incomplete ?? 0),
     },
     recent: Array.isArray(payload.recent) ? payload.recent.map(toActivity) : [],
     becameLive: Array.isArray(payload.becameLive) ? payload.becameLive.map(toActivity) : [],
