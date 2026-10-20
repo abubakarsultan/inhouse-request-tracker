@@ -3,7 +3,7 @@ import LogoutButton from '@/components/app/logout-button';
 import GoogleDriveConnectionCard from '@/components/app/google-drive-connection-card';
 import { getConnectionStatus } from '@/lib/google-user-auth';
 
-export default async function ProfilePage({ searchParams }: { searchParams: Promise<{ google?: string }> }) {
+export default async function ProfilePage({ searchParams }: { searchParams: Promise<{ google?: string; google_ref?: string }> }) {
   const profile = await requireActiveProfile();
   const [drive, params] = await Promise.all([getConnectionStatus(profile.id), searchParams]);
   const googleMessages: Record<string, { text: string; tone: 'success' | 'error' | 'info' }> = {
@@ -11,13 +11,16 @@ export default async function ProfilePage({ searchParams }: { searchParams: Prom
     state_error: { text: 'Google connection could not be verified. Start Connect again from this page.', tone: 'error' },
     configuration_error: { text: 'Google Drive setup is incomplete. Set NEXT_PUBLIC_SITE_URL to the exact deployed site origin in Vercel, then redeploy.', tone: 'error' },
     reconnect_required: { text: 'Google did not issue a refresh token. Remove this app from your Google Account security permissions, then reconnect and approve access.', tone: 'error' },
+    token_error: { text: 'Google authorization succeeded but the token exchange failed. Check the OAuth Client ID/Secret pair in Vercel.', tone: 'error' },
+    storage_error: { text: 'Google authorized access, but saving the connection to Supabase failed. Check the database schema and server logs.', tone: 'error' },
     error: { text: 'Google Drive connection failed. Check OAuth settings and try again.', tone: 'error' },
   };
   const googleMessage = params.google ? googleMessages[params.google] || { text: 'Google Drive returned an unrecognized connection result. Try connecting again.', tone: 'info' as const } : null;
+  const reference = params.google_ref?.match(/^[a-f0-9]{8}$/)?.[0];
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-6"><h1 className="text-2xl font-bold">Profile</h1><p className="mt-1 text-sm text-[var(--muted)]">Your Google identity and Guest Post Anchor mapping.</p></div>
-      {googleMessage && <p role="status" className={`mb-4 rounded-xl border p-3 text-sm ${googleMessage.tone === 'success' ? 'border-[#b7dfc0] bg-[#e6f4ea] text-[#137333]' : googleMessage.tone === 'error' ? 'border-[#f2b8b5] bg-[#fce8e6] text-[#b3261e]' : 'border-[var(--border)] bg-[var(--canvas)] text-[var(--text)]'}`}>{googleMessage.text}</p>}
+      {googleMessage && <p role="status" className={`mb-4 rounded-xl border p-3 text-sm ${googleMessage.tone === 'success' ? 'border-[#b7dfc0] bg-[#e6f4ea] text-[#137333]' : googleMessage.tone === 'error' ? 'border-[#f2b8b5] bg-[#fce8e6] text-[#b3261e]' : 'border-[var(--border)] bg-[var(--canvas)] text-[var(--text)]'}`}>{googleMessage.text}{reference && googleMessage.tone === 'error' ? ` Reference: ${reference}` : ''}</p>}
       <GoogleDriveConnectionCard status={drive.status} email={drive.email} lastError={drive.lastError} />
       <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
         <div className="flex flex-wrap items-center gap-4">

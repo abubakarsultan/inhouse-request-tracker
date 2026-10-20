@@ -38,7 +38,7 @@ export async function exchangeGoogleCode(code: string) {
   return { refreshToken: tokens.refresh_token, email, scopes: String(tokens.scope || GOOGLE_DRIVE_SCOPES.join(' ')).split(' ') };
 }
 export async function storeGoogleConnection(userId: string, connection: { refreshToken: string; email: string; scopes: string[] }) {
-  const { error } = await adminClient.from('user_google_connections').upsert({ user_id: userId, google_email: connection.email, refresh_token_encrypted: encryptToken(connection.refreshToken), scopes: connection.scopes, status: 'connected', last_error: null, connected_at: new Date().toISOString(), updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  const { error } = await adminClient.from('user_google_connections').upsert({ user_id: userId, google_email: connection.email, refresh_token_encrypted: encryptToken(connection.refreshToken), scopes: connection.scopes.join(' '), status: 'connected', last_error: null, connected_at: new Date().toISOString(), updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
   if (error) throw new Error(`Could not save Google Drive connection: ${error.message}`);
 }
 export async function getConnectionStatus(userId: string): Promise<{ connected: boolean; status: 'connected' | 'needs_reconnect' | 'disconnected'; email: string | null; lastError: string | null }> {

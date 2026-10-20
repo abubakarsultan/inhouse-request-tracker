@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     return response;
   } catch (error) {
     const profile = await getCurrentProfile().catch(() => null);
-    const code = error instanceof Error && /NEXT_PUBLIC_SITE_URL|Google OAuth is not configured/i.test(error.message) ? 'configuration_error' : 'error';
+    const code = error instanceof Error && /NEXT_PUBLIC_SITE_URL|Google OAuth is not configured|TOKEN_ENCRYPTION_KEY/i.test(error.message) ? 'configuration_error' : 'error';
     return NextResponse.redirect(new URL(profile ? `/profile?google=${code}` : '/login', request.url));
   }
 }
