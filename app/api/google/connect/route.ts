@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
+import { classifyGoogleConnectError } from '@/lib/google-connect-error';
 import { getCurrentProfile } from '@/lib/auth';
 import { requireActiveUserForAction } from '@/lib/auth';
 import { createGoogleConsentUrl } from '@/lib/google-user-auth';
@@ -15,7 +17,15 @@ export async function GET(request: NextRequest) {
     return response;
   } catch (error) {
     const profile = await getCurrentProfile().catch(() => null);
-    const code = error instanceof Error && /NEXT_PUBLIC_SITE_URL|Google OAuth is not configured|TOKEN_ENCRYPTION_KEY/i.test(error.message) ? 'configuration_error' : 'error';
-    return NextResponse.redirect(new URL(profile ? `/profile?google=${code}` : '/login', request.url));
+    const code = classifyGoogleConnectError(error);
+    const reference = randomUUID().slice(0, 8);
+    // Only log a safe category; never log Google tokens, credentials, or full provider errors.
+    console.error(`[google-drive-connect][${reference}]`, { code });
+    const destination = profile ? new URL('/profile', request.url) : new URL('/login', request.url);
+    if (profile) {
+      destination.searchParams.set('google', code);
+      destination.searchParams.set('google_ref', reference);
+    }
+    return NextResponse.redirect(destination);
   }
 }
