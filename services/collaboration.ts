@@ -52,14 +52,20 @@ export async function listCollaborationPartners() {
   let query=adminClient.from('collaboration_partners').select('id,name,email,website,active,default_give_qty,default_receive_qty,sheet_setup_state,sync_enabled,spreadsheet_id,created_by').order('name').limit(500);
   if(profile.role!=='admin')query=query.eq('created_by',profile.id);
   const {data,error}=await query;
-  return check(data,error,'Unable to load partners');
+  const partners = check(data,error,'Unable to load partners');
+  const {data:overview, error:overviewError}=await adminClient.rpc('collaboration_partner_overview');
+  if(overviewError)console.warn('[v9] Partner overview unavailable until migration 014:',overviewError.message);
+  const lookup=new Map<string,{given_live:number;received_live:number;pending:number;rejected:number;received_rejected:number;open_deals:number;owed_by_us:number;owed_by_partner:number;failed_sync:number}>((overview||[]).map((row:any)=>[String(row.partner_id),row]));
+  return partners.map(p=>({...p,overview:lookup.get(p.id)||null}));
 }
-export async function getCollaborationPartner(id:string){
+export async function getCollaborationPartner(id:string,linkPage=1,dealPage=1){
   await requirePartnerAccess(id);
-  const [{data:partner,error:pError},{data:deals,error:dError},{data:links,error:lError},{data:logs}]=await Promise.all([
+  const safeLinkPage = Math.min(Math.max(1,Math.floor(linkPage)||1),10000);
+  const safeDealPage = Math.min(Math.max(1,Math.floor(dealPage)||1),10000);
+  const [{data:partner,error:pError},{data:deals,error:dError,count:dealCount},{data:links,error:lError,count:linkCount},{data:logs}]=await Promise.all([
     adminClient.from('collaboration_partners').select('*').eq('id',id).single(),
-    adminClient.from('collaboration_deals').select('*').eq('partner_id',id).order('created_at',{ascending:false}).limit(250),
-    adminClient.from('collaboration_links').select('*').eq('partner_id',id).order('created_at',{ascending:false}).limit(500),
+    adminClient.from('collaboration_deals').select('*',{count:'exact'}).eq('partner_id',id).order('created_at',{ascending:false}).range((safeDealPage-1)*50,safeDealPage*50-1),
+    adminClient.from('collaboration_links').select('*',{count:'exact'}).eq('partner_id',id).order('created_at',{ascending:false}).range((safeLinkPage-1)*50,safeLinkPage*50-1),
     adminClient.from('collaboration_sync_log').select('id,action,state,details,created_at').eq('partner_id',id).order('created_at',{ascending:false}).limit(15),
   ]);
   const validPartner = check(partner,pError,'Partner not found');
@@ -67,7 +73,16 @@ export async function getCollaborationPartner(id:string){
   const {data:fullMetrics,error:metricsError}=await adminClient.rpc('collaboration_partner_stats',{p_partner_id:id});
   if(metricsError)console.warn('[collaboration] Aggregate RPC unavailable; check migration 010:',metricsError.message);
   const metrics=fullMetrics && !metricsError ? fullMetrics as ReturnType<typeof partnerMetrics> : partnerMetrics(deals||[],links||[]);
-  return {partner:validPartner, deals:deals||[],links:links||[],logs:logs||[],metrics,truncated:(deals||[]).length>=250||(links||[]).length>=500,statsUnavailable:Boolean(metricsError)};
+  const [{data:allDealProgress,error:progressError},{data:checks,error:checksError},{data:availableGivenLinks}]=await Promise.all([
+    adminClient.rpc('collaboration_deal_progress',{p_partner_id:id}),
+    adminClient.from('collaboration_link_checks').select('link_id,result,detail,checked_at').eq('partner_id',id).in('link_id',(links||[]).map(x=>x.id).length?(links||[]).map(x=>x.id):['00000000-0000-0000-0000-000000000000']),
+    adminClient.from('collaboration_links').select('id,website,anchor,direction,status,deal_id').eq('partner_id',id).eq('direction','given').eq('status','Live').is('deal_id',null).order('created_at',{ascending:false}).limit(60),
+  ]);
+  if(progressError||checksError) console.warn('[v9] Run migration 014 for link checks and deal progress');
+  return {partner:validPartner, deals:deals||[],links:links||[],logs:logs||[],metrics,
+    linkCount:linkCount||0,dealCount:dealCount||0,linkPage:safeLinkPage,dealPage:safeDealPage,
+    dealProgressRows:allDealProgress||[],checks:checks||[],availableGivenLinks:availableGivenLinks||[],
+    truncated:false,statsUnavailable:Boolean(metricsError)};
 }
 export async function createCollaborationPartner(raw:z.input<typeof partnerInput>){
   const profile=await requireActiveUserForAction();const input=partnerInput.parse(raw);
@@ -104,11 +119,9 @@ export async function connectPartnerSheet(partnerId:string,url:string){
   if(duplicate)throw new Error(`That spreadsheet is already connected to ${duplicate.name}. Each partner needs a separate Sheet.`);
   const {error:saveError}=await adminClient.from('collaboration_partners').update({...connection,sheet_setup_state:'connected',sheet_setup_error:null,sync_enabled:true}).eq('id',partnerId);
   if(saveError)throw new Error(saveError.message);
-  // Resync all pending rows without duplicating by stable record ID.
-  const {data:links}=await adminClient.from('collaboration_links').select('id').eq('partner_id',partnerId).limit(200);
-  let failures=0;for(const link of links||[]){const result=await syncCollaborationLink(link.id);if(result.state==='failed')failures++;}
+  // Large history backfills run in explicit small batches to avoid serverless timeouts.
   refresh(partnerId);
-  return `Sheet connected. ${links?.length||0} existing links checked; ${failures} sync errors${(links?.length||0)===200?' (only first 200 processed; retry remaining links manually)':''}.`;
+  return 'Sheet connected. Use Sync Next 25 Rows below to backfill existing links safely.';
 }
 export async function assignCollaborationOwner(partnerId: string, ownerId: string) {
   const admin = await (await import('@/lib/auth')).requireAdminForAction();

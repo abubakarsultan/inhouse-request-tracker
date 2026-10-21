@@ -10,6 +10,7 @@ import { getMissingRequestFields } from '@/lib/request-completeness';
 import { getMemberDashboardWorkspace } from '@/services/member-workspace';
 import MemberWorkspaceView from '@/components/app/member-workspace-view';
 import { getAdminTeamAttention } from '@/services/team';
+import {getOperationsAttention} from '@/services/operations';
 
 const CARDS = [
   { key: 'total', label: 'Total Requests', icon: LayoutGrid },
@@ -32,7 +33,7 @@ export default async function Dashboard() {
       </div>
     );
   }
-  const [data, teamAttention] = await Promise.all([getDashboardOverview(), getAdminTeamAttention()]);
+  const [data, teamAttention, operations] = await Promise.all([getDashboardOverview(), getAdminTeamAttention(), getOperationsAttention().catch(e=>{console.warn('[v9] Attention unavailable until migration 014:',e);return {alerts:[],alertCount:0,failingLinks:0};})]);
   const { stats } = data;
 
   return (
@@ -51,6 +52,7 @@ export default async function Dashboard() {
         <Link href="/team" className={`rounded-xl border p-4 transition hover:-translate-y-0.5 ${teamAttention.invalidAssignments ? 'border-[#f4b7b2] bg-[#fce8e6]' : 'border-[var(--border)] bg-[var(--card)]'}`}><p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Invalid assignments</p><p className={`mt-1 text-2xl font-bold ${teamAttention.invalidAssignments ? 'text-[#c5221f]' : ''}`}>{teamAttention.invalidAssignments}</p><p className="mt-1 truncate text-xs text-[var(--muted)]" title={teamAttention.invalidLabels.join(', ')}>{teamAttention.invalidLabels.length ? teamAttention.invalidLabels.join(', ') : 'No invalid person labels'}</p></Link>
       </section>
 
+      <section className="mb-5 grid gap-3 md:grid-cols-3"><Link href="/attention" className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-xs text-[var(--muted)]">Needs Attention</p><p className="mt-2 text-2xl font-bold">{operations.alertCount}</p><p className="mt-1 text-xs text-[var(--brand)]">Review alerts →</p></Link><Link href="/collaborations" className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-xs text-[var(--muted)]">Collaboration Sync Issues</p><p className="mt-2 text-2xl font-bold">{operations.failingLinks}</p><p className="mt-1 text-xs text-[var(--brand)]">Open Partners →</p></Link><Link href="/reports" className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4"><p className="text-xs text-[var(--muted)]">Performance Reports</p><p className="mt-2 text-sm font-bold">12-Month Overview</p><p className="mt-1 text-xs text-[var(--brand)]">Charts and CSV →</p></Link></section>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         {CARDS.map(({ key, label, icon: Icon }) => {
           const content = (

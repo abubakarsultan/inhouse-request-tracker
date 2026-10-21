@@ -9,6 +9,8 @@ import { redirect } from 'next/navigation';
 import DeadlineCell from '@/components/deadline-cell';
 import { karachiDateString } from '@/lib/date';
 import { requireActiveProfile } from '@/lib/auth';
+import { BulkRequestPanel, VerifyRequestButton } from '@/components/app/operations-actions';
+import {getRequestLinkChecks} from '@/services/operations';
 import { getMissingRequestFields } from '@/lib/request-completeness';
 
 export default async function Requests({ searchParams }: { searchParams: Promise<{ status?: string; project?: string; page?: string; incomplete?: string }> }) {
@@ -20,6 +22,8 @@ export default async function Requests({ searchParams }: { searchParams: Promise
   const pageUrl = (target: number) => { const params = new URLSearchParams(); if (status) params.set('status', status); if (project) params.set('project', project); if (incomplete === '1') params.set('incomplete','1'); params.set('page', String(target)); return `/requests?${params.toString()}`; };
   const today = karachiDateString();
   const [{ rows, total }, projects] = await Promise.all([getRequests({ status, project_id: project, incomplete: incomplete === '1' }, page), getProjects()]);
+  const checks = await getRequestLinkChecks(rows.map(row=>row.id));
+  const checkMap=new Map(checks.map(row=>[row.request_id,row]));
 
   return (
     <div className="min-w-0">
@@ -34,6 +38,7 @@ export default async function Requests({ searchParams }: { searchParams: Promise
         <button className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 text-sm font-medium text-[var(--muted)] hover:bg-[var(--canvas)]">Filter</button>
       </form>
 
+      <BulkRequestPanel rows={rows.map(r=>({id:r.id,approved_site:r.approved_site,status:r.status}))}/>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-[var(--muted)]">Showing {rows.length ? (page - 1) * 50 + 1 : 0}–{Math.min(page * 50, total)} of {total} requests</p><div className="flex gap-2">{page > 1 && <Link href={pageUrl(page - 1)} className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">Previous</Link>}{page * 50 < total && <Link href={pageUrl(page + 1)} className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">Next</Link>}</div></div>
 
       <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
@@ -50,7 +55,7 @@ export default async function Requests({ searchParams }: { searchParams: Promise
                 <td className="p-3"><DeadlineCell deadline={row.deadline} status={row.status} today={today} /></td>
                 <td className="p-3"><div className="flex flex-wrap gap-1.5"><StatusControl id={row.id} status={row.status} syncState={row.sync_state} />{row.sheet_flag === 'Removed' && <span title="Google Sheet status is Removed; the app status is preserved." className="rounded-full bg-[#fce8e6] px-2 py-1 text-[10px] font-bold text-[#b3261e]">Removed in sheet</span>}{getMissingRequestFields(row,row.projects).length>0&&<span title={`Missing: ${getMissingRequestFields(row,row.projects).join(', ')}`} className="rounded-full bg-[#fef7e0] px-2 py-1 text-[10px] font-bold text-[#8a6200]">Incomplete</span>}</div></td>
                 <td className="p-3">{row.sync_state === 'failed' ? <div><StatusBadge status={row.status} failedSync /><p className="mt-1 max-w-48 text-xs text-[#c5221f]">{row.sync_error || 'Sheet sync failed'}</p></div> : <span className="text-xs text-[var(--muted)]">{row.sync_state === 'synced' ? `${row.team_tab || 'Team sheet'} · row ${row.team_row ?? '—'}` : 'Saved here only'}</span>}</td>
-                <td className="p-3"><RequestActions id={row.id} syncState={row.sync_state} /></td>
+                <td className="p-3"><RequestActions id={row.id} syncState={row.sync_state} />{row.status === 'Live' && <div className="mt-2"><span title={checkMap.get(row.id)?.detail||'Not yet checked'} className="text-[10px] text-[var(--muted)]">Link check: {checkMap.get(row.id)?.result||'not checked'}</span><VerifyRequestButton id={row.id}/></div>}</td>
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-[var(--muted)]">No requests match these filters.</td></tr>}

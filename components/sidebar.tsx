@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FolderKanban, ShieldCheck, ListTodo, Upload, Settings, Search, ScanSearch, HeartPulse, UsersRound, Handshake, PlusCircle, UserRound, type LucideIcon } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, ShieldCheck, ListTodo, Upload, Settings, Search, ScanSearch, HeartPulse, UsersRound, Handshake, PlusCircle, UserRound, Bell, BarChart3, type LucideIcon } from 'lucide-react';
 import type { AppRole } from '@/lib/auth-types';
 
 const memberLinks = [
@@ -20,6 +20,8 @@ const adminPrimaryLinks = [
   ['Projects', '/projects', FolderKanban],
   ['Collaborations', '/collaborations', Handshake],
   ['All Requests', '/requests', ListTodo],
+  ['Needs Attention', '/attention', Bell],
+  ['Reports', '/reports', BarChart3],
   ['My Requests', '/my-requests', UserRound],
   ['Create Request', '/requests/new', PlusCircle],
   ['Search', '/search', Search],
