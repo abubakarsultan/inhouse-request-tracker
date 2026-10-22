@@ -9,6 +9,20 @@ import { repairServiceAccountAccess } from '@/lib/google-sheet-factory';
 import {updateRequestFromCollaboration} from '@/lib/collaboration-status-bridge';
 import { COLLAB_STATUSES, dealProgress, partnerMetrics, normalizeCollabStatus, type CollabStatus, type CollabDirection } from '@/lib/collaboration-core';
 
+// Explicitly type and normalize responses from untyped PostgREST RPCs.
+// PostgreSQL bigint values can arrive as JSON numbers or decimal strings.
+type CollaborationDealProgressRow = {
+  deal_id: string;
+  given_live: number;
+  received_live: number;
+};
+type CollaborationLinkCheckRow = {
+  link_id: string;
+  result: string;
+  detail: string | null;
+  checked_at: string | null;
+};
+
 const uuid = z.string().uuid();
 const partnerInput = z.object({
   name: z.string().trim().min(2).max(120), email: z.string().trim().max(200).optional(),
@@ -79,9 +93,24 @@ export async function getCollaborationPartner(id:string,linkPage=1,dealPage=1){
     adminClient.from('collaboration_links').select('id,website,anchor,direction,status,deal_id').eq('partner_id',id).eq('direction','given').eq('status','Live').is('deal_id',null).order('created_at',{ascending:false}).limit(60),
   ]);
   if(progressError||checksError) console.warn('[v9] Run migration 014 for link checks and deal progress');
+  const dealProgressRows: CollaborationDealProgressRow[] = Array.isArray(allDealProgress)
+    ? (allDealProgress as Array<{deal_id: unknown; given_live: unknown; received_live: unknown}>).map(row => ({
+        deal_id: String(row.deal_id),
+        given_live: Number(row.given_live ?? 0),
+        received_live: Number(row.received_live ?? 0),
+      }))
+    : [];
+  const linkChecks: CollaborationLinkCheckRow[] = Array.isArray(checks)
+    ? (checks as Array<{link_id: unknown; result: unknown; detail: unknown; checked_at: unknown}>).map(row => ({
+        link_id: String(row.link_id),
+        result: String(row.result ?? 'unknown'),
+        detail: row.detail == null ? null : String(row.detail),
+        checked_at: row.checked_at == null ? null : String(row.checked_at),
+      }))
+    : [];
   return {partner:validPartner, deals:deals||[],links:links||[],logs:logs||[],metrics,
     linkCount:linkCount||0,dealCount:dealCount||0,linkPage:safeLinkPage,dealPage:safeDealPage,
-    dealProgressRows:allDealProgress||[],checks:checks||[],availableGivenLinks:availableGivenLinks||[],
+    dealProgressRows,checks:linkChecks,availableGivenLinks:availableGivenLinks||[],
     truncated:false,statsUnavailable:Boolean(metricsError)};
 }
 export async function createCollaborationPartner(raw:z.input<typeof partnerInput>){
