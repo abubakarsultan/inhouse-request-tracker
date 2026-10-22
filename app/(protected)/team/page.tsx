@@ -6,6 +6,7 @@ import InviteUserPanel from '@/components/app/invite-user-panel';
 import AccessRequestPanel from '@/components/app/access-request-panel';
 import { getAccessRequests, getPendingInvitations, getTeamDirectory, getRecentUserAudits } from '@/services/team';
 import TeamDirectoryPanel from '@/components/app/team-directory-panel';
+import AdminTeamTabs from '@/components/app/admin-team-tabs';
 
 export default async function TeamPage() {
   await requireAdminProfile();
@@ -22,10 +23,11 @@ export default async function TeamPage() {
         </div>
         <div className="flex gap-2 text-xs"><span className="rounded-full bg-[#fef7e0] px-3 py-1.5 font-semibold text-[#b06000]">{pending} pending approval{pending === 1 ? '' : 's'}</span><span className="rounded-full bg-[#fce8e6] px-3 py-1.5 font-semibold text-[#c5221f]">{invalid} invalid label{invalid === 1 ? '' : 's'}</span></div>
       </div>
-      <InviteUserPanel />
-      <AccessRequestPanel requests={accessRequests as any} invitations={invitations as any} />
-      <TeamDirectoryPanel entries={directory as any} audits={audits as any} />
-      <TeamAdminPanel data={data} />
+      <AdminTeamTabs
+        team={<TeamAdminPanel data={data} />}
+        invitations={<div className="space-y-5"><InviteUserPanel /><AccessRequestPanel requests={accessRequests as any} invitations={invitations as any} /></div>}
+        access={<TeamDirectoryPanel entries={directory as any} audits={audits as any} />}
+      />
     </div>
   );
 }

@@ -36,7 +36,7 @@ test('cron protected by secret and bounded checks',()=>{
 test('new screens and operations actions are integrated',()=>{
   const nav=source('components/sidebar.tsx');
   assert.match(nav,/\/reports/);assert.match(nav,/\/attention/);
-  assert.match(source('app/(protected)/collaborations/page.tsx'),/given_live/);
+  assert.match(source('components/app/collaboration-team-directory.tsx'),/given_live/);
   assert.match(source('app/(protected)/collaborations/[id]/page.tsx'),/BulkLinkPanel/);
   assert.match(source('app/(protected)/reports/page.tsx'),/Export CSV/);
   assert.match(source('services/operations.ts'),/resyncPartnerBatch/);

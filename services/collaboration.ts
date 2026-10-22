@@ -46,10 +46,11 @@ function refresh(id?:string){revalidatePath('/collaborations');if(id)revalidateP
 async function requirePartnerAccess(partnerId:string){
   const profile=await requireActiveUserForAction();
   uuid.parse(partnerId);
-  const {data:partner,error}=await adminClient.from('collaboration_partners').select('id,created_by').eq('id',partnerId).maybeSingle();
+  const {data:partner,error}=await adminClient.from('collaboration_partners').select('id,created_by,active').eq('id',partnerId).maybeSingle();
   if(error)throw new Error(error.message);
   if(!partner)throw new Error('Partner not found');
   if(profile.role!=='admin' && partner.created_by!==profile.id)throw new Error('You do not have access to this collaboration.');
+  if(profile.role!=='admin' && !partner.active)throw new Error('This collaboration is archived. Ask an administrator to restore it.');
   return {profile,partner};
 }
 async function requireLinkAccess(linkId:string){
@@ -64,13 +65,17 @@ async function requireLinkAccess(linkId:string){
 export async function listCollaborationPartners() {
   const profile=await requireActiveUserForAction();
   let query=adminClient.from('collaboration_partners').select('id,name,email,website,active,default_give_qty,default_receive_qty,sheet_setup_state,sync_enabled,spreadsheet_id,created_by').order('name').limit(500);
-  if(profile.role!=='admin')query=query.eq('created_by',profile.id);
+  if(profile.role!=='admin')query=query.eq('created_by',profile.id).eq('active',true);
   const {data,error}=await query;
   const partners = check(data,error,'Unable to load partners');
   const {data:overview, error:overviewError}=await adminClient.rpc('collaboration_partner_overview');
   if(overviewError)console.warn('[v9] Partner overview unavailable until migration 014:',overviewError.message);
   const lookup=new Map<string,{given_live:number;received_live:number;pending:number;rejected:number;received_rejected:number;open_deals:number;owed_by_us:number;owed_by_partner:number;failed_sync:number}>((overview||[]).map((row:any)=>[String(row.partner_id),row]));
-  return partners.map(p=>({...p,overview:lookup.get(p.id)||null}));
+  const ownerIds=[...new Set(partners.map(p=>p.created_by).filter((v):v is string=>typeof v==='string'&&v.length>0))];
+  const {data:owners,error:ownersError}=ownerIds.length?await adminClient.from('users').select('id,email,name').in('id',ownerIds):{data:[],error:null};
+  if(ownersError)console.warn('[collaboration] Team owner names unavailable:',ownersError.message);
+  const ownersById=new Map((owners||[]).map(owner=>[String(owner.id),{name:String(owner.name||owner.email||'Team member'),email:String(owner.email||'')} ]));
+  return partners.map(p=>({...p,owner:ownersById.get(String(p.created_by))||null,overview:lookup.get(p.id)||null}));
 }
 export async function getCollaborationPartner(id:string,linkPage=1,dealPage=1){
   await requirePartnerAccess(id);
@@ -290,4 +295,36 @@ export async function getPreviousGivenLinks(partnerId:string){
   await requirePartnerAccess(partnerId);
   const {data,error}=await adminClient.from('collaboration_links').select('id,website,placement_page,anchor').eq('partner_id',partnerId).eq('direction','given').eq('status','Live').is('deal_id',null).order('created_at',{ascending:false}).limit(60);
   return check(data,error,'Cannot load previously given links');
+}
+
+
+/** Collaboration archiving does not remove deals, links or Sheet data. */
+export async function setCollaborationPartnerArchived(partnerId:string,archived:boolean){
+  const {requireAdminForAction}=await import('@/lib/auth');await requireAdminForAction();
+  const id=uuid.parse(partnerId);
+  const {data:partner,error:lookupError}=await adminClient.from('collaboration_partners').select('id,name').eq('id',id).maybeSingle();
+  if(lookupError||!partner)throw new Error(lookupError?.message||'Partner not found.');
+  const {error}=await adminClient.from('collaboration_partners').update({active:!archived}).eq('id',id);
+  if(error)throw new Error(`Could not update partner: ${error.message}`);
+  refresh(id);
+  return archived?'Partner archived. Existing deals, links and Google Sheet are preserved.':'Partner restored.';
+}
+
+/** Guarded delete: never cascade through a live exchange or delete Google Drive files. */
+export async function deleteEmptyCollaborationPartner(partnerId:string,expectedName:string){
+  const {requireAdminForAction}=await import('@/lib/auth');await requireAdminForAction();
+  const id=uuid.parse(partnerId);
+  const {data:partner,error:lookupError}=await adminClient.from('collaboration_partners').select('id,name').eq('id',id).maybeSingle();
+  if(lookupError||!partner)throw new Error(lookupError?.message||'Partner not found.');
+  if(String(expectedName).trim()!==partner.name)throw new Error('Partner name confirmation does not match.');
+  const checks=await Promise.all([
+    adminClient.from('collaboration_links').select('id',{count:'exact',head:true}).eq('partner_id',id),
+    adminClient.from('collaboration_deals').select('id',{count:'exact',head:true}).eq('partner_id',id),
+  ]);
+  for(const checkResult of checks)if(checkResult.error)throw new Error(`Could not verify linked records: ${checkResult.error.message}`);
+  if((checks[0].count??0)>0||(checks[1].count??0)>0)throw new Error('Partner has links or exchange deals. Archive instead to preserve history.');
+  const {error}=await adminClient.from('collaboration_partners').delete().eq('id',id);
+  if(error)throw new Error(`Deletion blocked to protect related records: ${error.message}. Archive instead.`);
+  refresh(id);
+  return 'Empty partner deleted. The Google Spreadsheet was not deleted.';
 }

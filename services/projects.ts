@@ -466,3 +466,35 @@ export async function toggleProjectActive(id: string, active: boolean) {
   revalidatePath('/projects');
   revalidatePath('/requests/new');
 }
+
+
+/** Admin-only archival; never changes historical requests or Sheets. */
+export async function setProjectArchived(projectId: string, archived: boolean) {
+  await requireAdminForAction();
+  const id = z.string().uuid().parse(projectId);
+  const {data:project,error:lookupError}=await adminClient.from('projects').select('id,name,active').eq('id',id).maybeSingle();
+  if(lookupError || !project)throw new Error(lookupError?.message||'Project no longer exists.');
+  const {error}=await adminClient.from('projects').update({active:!archived}).eq('id',id);
+  if(error)throw new Error(`Could not ${archived?'archive':'restore'} project: ${error.message}`);
+  revalidatePath('/projects');revalidatePath('/requests/new');
+  return archived?'Project archived. Existing requests and Google Sheets are unchanged.':'Project restored.';
+}
+
+/** Permanent deletion is intentionally restricted to empty projects only. */
+export async function deleteEmptyProject(projectId: string, expectedName: string) {
+  await requireAdminForAction();
+  const id=z.string().uuid().parse(projectId);
+  const {data:project,error:lookupError}=await adminClient.from('projects').select('id,name').eq('id',id).maybeSingle();
+  if(lookupError||!project)throw new Error(lookupError?.message||'Project not found.');
+  if(String(expectedName).trim()!==project.name)throw new Error('The typed project name does not match. Nothing was deleted.');
+  const {count,error:countError}=await adminClient.from('requests').select('id',{count:'exact',head:true}).eq('project_id',id);
+  if(countError)throw new Error(`Could not safely verify project requests: ${countError.message}`);
+  if((count??0)>0)throw new Error(`This project has ${count} request(s). Archive it instead; linked history cannot be permanently deleted here.`);
+  const {count:siteCount,error:siteError}=await adminClient.from('project_sites').select('id',{count:'exact',head:true}).eq('project_id',id);
+  if(siteError)throw new Error(`Could not safely verify project sites: ${siteError.message}`);
+  if((siteCount??0)>0)throw new Error(`This project has ${siteCount} linked site row(s). Archive it instead.`);
+  const {error}=await adminClient.from('projects').delete().eq('id',id);
+  if(error)throw new Error(`Deletion blocked to protect linked data: ${error.message}. Archive the project instead.`);
+  revalidatePath('/projects');revalidatePath('/requests/new');
+  return 'Empty project removed. No Google Sheet was deleted.';
+}
