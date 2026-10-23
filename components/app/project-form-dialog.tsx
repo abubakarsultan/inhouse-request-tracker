@@ -187,7 +187,7 @@ export default function ProjectFormDialog({ project, serviceAccountEmail, catego
       // A proxy or expired session can return HTML instead of JSON. Show a
       // useful message rather than exposing React's masked Server Action error.
       const result = await response.json().catch(() => null) as
-        | { ok: boolean; message?: string; reference?: string }
+        | { ok: boolean; message?: string; reference?: string; slug?: string }
         | null;
       if (!response.ok || !result?.ok) {
         const reason = result?.message || (response.status === 401 || response.status === 403
@@ -197,7 +197,13 @@ export default function ProjectFormDialog({ project, serviceAccountEmail, catego
         return;
       }
       setOpen(false);
-      router.refresh();
+      // A new project goes straight to its Sheet setup walkthrough.
+      // Existing project edits keep the user on the Projects page.
+      if (!isEdit && result.slug) {
+        router.push(`/projects/${encodeURIComponent(result.slug)}/sheet-setup`);
+      } else {
+        router.refresh();
+      }
     } catch (caught) {
       console.error('[project-form] Project save request failed:', caught);
       setError('Network error while saving this project. Check your connection, then retry once.');

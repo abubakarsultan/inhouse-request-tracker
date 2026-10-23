@@ -296,7 +296,7 @@ export async function createProject(input: ProjectInput) {
       }
       throw error;
     }
-    revalidatePath('/projects'); revalidatePath('/requests/new'); return;
+    revalidatePath('/projects'); revalidatePath('/requests/new'); return { slug };
   }
   const { error } = await supabase.from('projects').insert({
     name: parsed.name,
@@ -324,6 +324,7 @@ export async function createProject(input: ProjectInput) {
   }
   revalidatePath('/projects');
   revalidatePath('/requests/new');
+  return { slug };
 }
 
 export async function updateProject(id: string, input: ProjectInput) {

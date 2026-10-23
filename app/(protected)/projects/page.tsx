@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { getProjectsWithCounts, getProjectCategories } from '@/services/projects';
 import ProjectFormDialog from '@/components/app/project-form-dialog';
 import AdminRecordActions from '@/components/app/admin-record-actions';
-import { ArrowRight, Database, Link2, Clock, XCircle, Sheet } from 'lucide-react';
+import { ArrowRight, Database, Link2, Clock, XCircle, Sheet, ExternalLink } from 'lucide-react';
 import { requireActiveProfile } from '@/lib/auth';
 import ProjectCategoryManager from '@/components/app/project-category-manager';
 import { getServiceAccountEmail } from '@/lib/google-sheet-setup';
@@ -11,6 +11,7 @@ import ProjectSheetRecovery from '@/components/app/project-sheet-recovery';
 import { buildProjectTriggerSnippet } from '@/lib/sheet-webhook';
 import { headers } from 'next/headers';
 import { projectCategorySlug } from '@/lib/project-category-slugs';
+import { buildGoogleSheetUrl } from '@/lib/google-sheet-url';
 
 export default async function Projects({ searchParams }: { searchParams: Promise<{ q?: string; category?: string; view?: string }> }) {
   const profile = await requireActiveProfile();
@@ -65,17 +66,17 @@ export default async function Projects({ searchParams }: { searchParams: Promise
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {visibleProjects.map((project: any) => (
-          <article key={project.id} className="flex min-h-64 flex-col rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+          <article key={project.id} className="flex min-h-64 flex-col rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm transition-shadow hover:shadow-md">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0"><h2 className="truncate text-lg font-bold text-[var(--text)]" title={project.name}>{project.name}</h2><p className="mt-1 truncate text-xs text-[var(--muted)]" title={project.guest_post_tab_name || ''}>{project.sheet_source === 'custom_sheet' ? (project.sheet_name || 'Custom Google Sheet') : 'Guest Post Anchor'} · Tab: {project.guest_post_tab_name || 'No tab mapped'}</p></div>
               {isAdmin && <div className="flex shrink-0 items-center gap-1"><ProjectFormDialog project={project} serviceAccountEmail={serviceAccountEmail} categories={selectableCategories} /><AdminRecordActions kind="project" id={project.id} name={project.name} active={project.active} /></div>}
             </div>
 
-            <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <div className="rounded-xl bg-[var(--canvas)] p-3"><Database size={15} className="text-[var(--brand)]" /><p className="mt-2 text-2xl font-bold">{project.counts.requests ?? '—'}</p><p className="text-[11px] text-[var(--muted)]">Requests</p></div>
-              <div className="rounded-xl bg-[#e6f4ea] p-3"><Link2 size={15} className="text-[#188038]" /><p className="mt-2 text-2xl font-bold text-[#188038]">{project.counts.live ?? '—'}</p><p className="text-[11px] text-[#188038]">Live</p></div>
-              <div className="rounded-xl bg-[#fef7e0] p-3"><Clock size={15} className="text-[#b06000]" /><p className="mt-2 text-2xl font-bold text-[#b06000]">{project.counts.pending ?? '—'}</p><p className="text-[11px] text-[#b06000]">Pending</p></div>
-              <div className="rounded-xl bg-[#fce8e6] p-3"><XCircle size={15} className="text-[#c5221f]" /><p className="mt-2 text-2xl font-bold text-[#c5221f]">{project.counts.rejected ?? '—'}</p><p className="text-[11px] text-[#c5221f]">Rejected</p></div>
+            <div className="mt-4 grid grid-cols-4 divide-x divide-[var(--border)] rounded-xl border border-[var(--border)] bg-[var(--canvas)] py-3">
+              <div className="min-w-0 px-2 text-center"><Database size={14} className="mx-auto text-[var(--muted)]"/><p className="mt-1 text-xl font-bold text-[var(--text)]">{project.counts.requests ?? '—'}</p><p className="text-[10px] text-[var(--muted)]">Requests</p></div>
+              <div className="min-w-0 px-2 text-center"><Link2 size={14} className="mx-auto text-[#188038]"/><p className="mt-1 text-xl font-bold text-[#188038]">{project.counts.live ?? '—'}</p><p className="text-[10px] text-[var(--muted)]">Live</p></div>
+              <div className="min-w-0 px-2 text-center"><Clock size={14} className="mx-auto text-[#b06000]"/><p className="mt-1 text-xl font-bold text-[#b06000]">{project.counts.pending ?? '—'}</p><p className="text-[10px] text-[var(--muted)]">Pending</p></div>
+              <div className="min-w-0 px-2 text-center"><XCircle size={14} className="mx-auto text-[#c5221f]"/><p className="mt-1 text-xl font-bold text-[#c5221f]">{project.counts.rejected ?? '—'}</p><p className="text-[10px] text-[var(--muted)]">Rejected</p></div>
             </div>
 
             {(project.sheet_setup_state === 'pending' || project.sheet_setup_state === 'error' || project.tab_setup_state === 'pending' || project.tab_setup_state === 'error') && <div role="status" className={`mt-3 rounded-lg border p-3 text-xs ${project.sheet_setup_state === 'error' ? 'border-[#f2b8b5] bg-[#fce8e6] text-[#b3261e]' : 'border-[#f3dfad] bg-[#fef7e0] text-[#785000]'}`}><strong>Sheet setup {project.sheet_setup_state === 'error' || project.sheet_setup_state === 'pending' ? project.sheet_setup_state : `tab ${project.tab_setup_state}`}</strong>{(project.sheet_setup_error || project.tab_setup_error) && <p className="mt-1">{project.sheet_setup_error || project.tab_setup_error}</p>}</div>}
@@ -84,7 +85,20 @@ export default async function Projects({ searchParams }: { searchParams: Promise
               <span className={`rounded-full px-2.5 py-1 font-medium ${project.active ? 'bg-[#e6f4ea] text-[#188038]' : 'bg-[var(--canvas)] text-[var(--muted)]'}`}>{project.active ? 'Active' : 'Archived'}</span>
             </div>
 
-            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-5"><Link href={`/projects/${project.slug}`} className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--brand)] hover:text-[var(--brand-dark)]">Open Project <ArrowRight size={15} /></Link>{isAdmin && <><ProjectSheetDetails compact project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={buildProjectTriggerSnippet(siteUrl, project)} /><ProjectSheetRecovery projectId={project.id} hasSheet={Boolean(project.google_sheet_id)} canCreateSheet={project.sheet_source === 'custom_sheet'} setupState={project.sheet_setup_state} tabSetupState={project.tab_setup_state} /></>}</div>
+            <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-4">
+              <Link href={`/projects/${project.slug}`} className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[var(--brand)] transition hover:bg-[var(--brand-soft)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand)]" title={`Open ${project.name} project`}>
+                Open Project <ArrowRight size={15} />
+              </Link>
+              {(project.google_sheet_id || (project.sheet_source === 'guest_post_anchor' && process.env.TEAM_SHEET_ID)) ? (
+                <a href={buildGoogleSheetUrl(project.google_sheet_id || process.env.TEAM_SHEET_ID!, project.google_sheet_gid)} target="_blank" rel="noopener noreferrer" title={`Open ${project.name} Google Sheet in a new tab`} className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-xs font-semibold text-[var(--text)] transition hover:border-[#7bbd95] hover:bg-[#e6f4ea] hover:text-[#137333] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand)]">
+                  <Sheet size={15} className="text-[#188038]"/> Open Sheet <ExternalLink size={12}/>
+                </a>
+              ) : <span className="ml-auto text-xs text-[var(--muted)]" title="No Google Sheet has been connected yet">No Sheet</span>}
+              {isAdmin && <>
+                <ProjectSheetDetails compact project={project} teamSheetId={process.env.TEAM_SHEET_ID || null} appScript={buildProjectTriggerSnippet(siteUrl, project)} />
+                <ProjectSheetRecovery projectId={project.id} hasSheet={Boolean(project.google_sheet_id)} canCreateSheet={project.sheet_source === 'custom_sheet'} setupState={project.sheet_setup_state} tabSetupState={project.tab_setup_state} />
+              </>}
+            </div>
           </article>
         ))}
       </div>

@@ -41,8 +41,11 @@ export async function POST(request: NextRequest) {
       return reply({ ok: false, message: 'Invalid project ID.', reference: traceId }, 400);
     }
 
-    if (mode === 'create') await createProject(projectInput.data);
-    else await updateProject(body.projectId as string, projectInput.data);
+    if (mode === 'create') {
+      const created = await createProject(projectInput.data);
+      return reply({ ok: true, slug: created.slug }, 200);
+    }
+    await updateProject(body.projectId as string, projectInput.data);
     return reply({ ok: true }, 200);
   } catch (error) {
     console.error(`[project:save][${traceId}] Failed to save project`, error);
